@@ -68,6 +68,21 @@ export interface TraceSummary {
   started: string;
 }
 
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface ApiKeyCreated {
+  id: string;
+  name: string;
+  prefix: string;
+  key: string;
+}
+
 export interface Span {
   span_id: string;
   parent_span_id: string;

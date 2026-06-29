@@ -1,10 +1,12 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
@@ -100,4 +102,66 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.toProjectResponse(p))
+}
+
+type provisionRequest struct {
+	Name     string `json:"name"`
+	Slug     string `json:"slug"`
+	Platform string `json:"platform"`
+}
+
+// handleProvisionProject get-or-creates a project by (org, slug) with a STABLE
+// slug. It is idempotent so an external system (Cloud) can call it on every
+// deploy without creating duplicates. Authenticated by an org API key.
+func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) {
+	var req provisionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	org := orgIDFrom(r.Context())
+	source := req.Slug
+	if source == "" {
+		source = req.Name
+	}
+	slug := slugify(source)
+	if slug == "" {
+		writeErr(w, http.StatusBadRequest, "name or slug is required")
+		return
+	}
+
+	if p, err := s.q.GetProjectBySlug(r.Context(), generated.GetProjectBySlugParams{OrgID: org, Slug: slug}); err == nil {
+		writeJSON(w, http.StatusOK, s.toProjectResponse(p))
+		return
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		slogError(w, "provision lookup", err)
+		return
+	}
+
+	publicKey, err := id.Token(16)
+	if err != nil {
+		slogError(w, "provision key", err)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = slug
+	}
+	platform := strings.TrimSpace(req.Platform)
+	if platform == "" {
+		platform = "other"
+	}
+	p, err := s.q.CreateProject(r.Context(), generated.CreateProjectParams{
+		ID: id.New(), OrgID: org, Name: name, Slug: slug, Platform: platform, PublicKey: publicKey,
+	})
+	if err != nil {
+		// Lost a race with a concurrent deploy: fall back to the existing row.
+		if p2, e2 := s.q.GetProjectBySlug(r.Context(), generated.GetProjectBySlugParams{OrgID: org, Slug: slug}); e2 == nil {
+			writeJSON(w, http.StatusOK, s.toProjectResponse(p2))
+			return
+		}
+		slogError(w, "provision create", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s.toProjectResponse(p))
 }

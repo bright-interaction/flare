@@ -16,3 +16,6 @@ SELECT * FROM projects WHERE public_key = $1;
 SELECT * FROM projects
 WHERE id = $1
   AND (sqlc.arg(org_scope)::text = '' OR org_id = sqlc.arg(org_scope));
+
+-- name: GetProjectBySlug :one
+SELECT * FROM projects WHERE org_id = $1 AND slug = $2;

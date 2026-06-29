@@ -92,6 +92,30 @@ func (q *Queries) GetProjectByPublicKey(ctx context.Context, publicKey string) (
 	return &i, err
 }
 
+const getProjectBySlug = `-- name: GetProjectBySlug :one
+SELECT id, org_id, name, slug, platform, public_key, created_at FROM projects WHERE org_id = $1 AND slug = $2
+`
+
+type GetProjectBySlugParams struct {
+	OrgID string `json:"org_id"`
+	Slug  string `json:"slug"`
+}
+
+func (q *Queries) GetProjectBySlug(ctx context.Context, arg GetProjectBySlugParams) (*Project, error) {
+	row := q.db.QueryRow(ctx, getProjectBySlug, arg.OrgID, arg.Slug)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.Slug,
+		&i.Platform,
+		&i.PublicKey,
+		&i.CreatedAt,
+	)
+	return &i, err
+}
+
 const listProjectsByOrg = `-- name: ListProjectsByOrg :many
 SELECT id, org_id, name, slug, platform, public_key, created_at FROM projects
 WHERE org_id = $1

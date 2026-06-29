@@ -70,6 +70,39 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (*ApiKey,
 	return &i, err
 }
 
+const listAPIKeysByOrg = `-- name: ListAPIKeysByOrg :many
+SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC
+`
+
+func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID string) ([]*ApiKey, error) {
+	rows, err := q.db.Query(ctx, listAPIKeysByOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*ApiKey{}
+	for rows.Next() {
+		var i ApiKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.Name,
+			&i.KeyHash,
+			&i.KeyPrefix,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const touchAPIKey = `-- name: TouchAPIKey :exec
 UPDATE api_keys SET last_used_at = now() WHERE id = $1
 `

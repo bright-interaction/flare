@@ -1,5 +1,7 @@
 import type {
   AlertRule,
+  ApiKey,
+  ApiKeyCreated,
   Channel,
   Issue,
   IssueEvent,
@@ -84,6 +86,9 @@ export const api = {
 
   traces: (pid: string) => req<TraceSummary[]>('GET', `/projects/${pid}/traces`),
   trace: (traceID: string) => req<Span[]>('GET', `/traces/${traceID}`),
+
+  apiKeys: () => req<ApiKey[]>('GET', '/keys'),
+  createApiKey: (name: string) => req<ApiKeyCreated>('POST', '/keys', { name }),
 
   channels: () => req<Channel[]>('GET', '/channels'),
   createChannel: (type: string, config: Record<string, unknown>) =>

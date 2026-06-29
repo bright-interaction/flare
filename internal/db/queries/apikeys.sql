@@ -10,3 +10,6 @@ SELECT * FROM api_keys WHERE key_hash = $1;
 -- ciguard:allow-unscoped touches a single row already resolved by key_hash above
 -- name: TouchAPIKey :exec
 UPDATE api_keys SET last_used_at = now() WHERE id = $1;
+
+-- name: ListAPIKeysByOrg :many
+SELECT * FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC;

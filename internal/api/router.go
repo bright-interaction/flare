@@ -45,6 +45,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Use(s.requireAuth)
 
 				r.Post("/projects", s.handleCreateProject)
+				r.Post("/projects/provision", s.handleProvisionProject)
 				r.Get("/projects", s.handleListProjects)
 				r.Get("/projects/{id}", s.handleGetProject)
 				r.Get("/projects/{id}/issues", s.handleListIssues)
@@ -60,6 +61,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 
 				r.Get("/channels", s.handleListChannels)
 				r.Post("/channels", s.handleCreateChannel)
+
+				r.Get("/keys", s.handleListAPIKeys)
+				r.Post("/keys", s.handleCreateAPIKey)
 			})
 		})
 	})

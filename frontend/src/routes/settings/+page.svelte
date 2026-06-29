@@ -3,13 +3,18 @@
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
-  import type { Channel } from '$lib/types';
+  import type { ApiKey, Channel } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
   let error = $state<string | null>(null);
   let type = $state('log');
   let url = $state('');
   let busy = $state(false);
+
+  let apiKeys = $state<ApiKey[] | null>(null);
+  let keyName = $state('');
+  let newKey = $state<string | null>(null);
+  let keyBusy = $state(false);
 
   $effect(() => {
     if (session.loaded && !session.user) goto('/login', { replaceState: true });
@@ -20,8 +25,28 @@
   async function load() {
     try {
       channels = await api.channels();
+      apiKeys = await api.apiKeys();
     } catch (err) {
-      error = err instanceof ApiError ? err.message : 'Failed to load channels';
+      error = err instanceof ApiError ? err.message : 'Failed to load settings';
+    }
+  }
+
+  async function createKey(e: SubmitEvent) {
+    e.preventDefault();
+    keyBusy = true;
+    error = null;
+    try {
+      const k = await api.createApiKey(keyName.trim() || 'API key');
+      newKey = k.key;
+      apiKeys = [
+        { id: k.id, name: k.name, prefix: k.prefix, created_at: new Date().toISOString(), last_used_at: null },
+        ...(apiKeys ?? [])
+      ];
+      keyName = '';
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to create key';
+    } finally {
+      keyBusy = false;
     }
   }
 
@@ -105,4 +130,52 @@
       </li>
     {/each}
   </ul>
+{/if}
+
+<h2 class="mt-14 text-xl font-semibold tracking-tight">API keys</h2>
+<p class="mt-1 mb-8 text-sm text-zinc-500">
+  Org-scoped keys for programmatic access (Bearer auth). Used by Cloud to auto-provision a
+  project per service, and for OTLP ingest via the <code class="font-mono">x-flare-key</code> header.
+</p>
+
+<form onsubmit={createKey} class="mb-6 flex flex-wrap items-end gap-3 border-b border-zinc-800/80 pb-8">
+  <div class="flex flex-1 flex-col gap-1.5">
+    <label for="keyname" class="text-xs font-medium text-zinc-400">Key name</label>
+    <input
+      id="keyname"
+      bind:value={keyName}
+      placeholder="gopile"
+      class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+    />
+  </div>
+  <button
+    type="submit"
+    disabled={keyBusy}
+    class="rounded-md bg-amber-400 px-3.5 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-amber-300 active:translate-y-px disabled:opacity-60"
+  >
+    {keyBusy ? 'Creating...' : 'Create key'}
+  </button>
+</form>
+
+{#if newKey}
+  <div class="mb-6 rounded-md border border-amber-400/40 bg-amber-400/10 px-4 py-3">
+    <p class="text-sm font-medium text-amber-200">Copy this key now. It will not be shown again.</p>
+    <code class="mt-2 block break-all font-mono text-xs text-amber-100">{newKey}</code>
+  </div>
+{/if}
+
+{#if apiKeys && apiKeys.length}
+  <ul class="divide-y divide-zinc-800/60">
+    {#each apiKeys as k (k.id)}
+      <li class="flex items-center gap-3 py-3">
+        <span class="text-sm font-medium text-zinc-200">{k.name}</span>
+        <span class="font-mono text-xs text-zinc-500">{k.prefix}...</span>
+        <span class="ml-auto text-xs text-zinc-600">
+          {k.last_used_at ? 'used' : 'never used'}
+        </span>
+      </li>
+    {/each}
+  </ul>
+{:else if apiKeys}
+  <p class="text-sm text-zinc-500">No keys yet.</p>
 {/if}
