@@ -1,6 +1,6 @@
 -- name: CreateProject :one
-INSERT INTO projects (id, org_id, name, slug, platform, public_key)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO projects (id, org_id, name, slug, platform, public_key, dsn_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: ListProjectsByOrg :many
@@ -19,3 +19,7 @@ WHERE id = $1
 
 -- name: GetProjectBySlug :one
 SELECT * FROM projects WHERE org_id = $1 AND slug = $2;
+
+-- ciguard:allow-unscoped /go/{dsnID} redirect resolves numeric dsn_id; target page requires a session
+-- name: GetProjectByDsnID :one
+SELECT * FROM projects WHERE dsn_id = $1;

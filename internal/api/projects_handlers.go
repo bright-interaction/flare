@@ -32,7 +32,7 @@ func (s *Server) toProjectResponse(p *generated.Project) projectResponse {
 		Name:         p.Name,
 		Slug:         p.Slug,
 		Platform:     p.Platform,
-		DSN:          s.dsn(p.PublicKey, p.ID),
+		DSN:          s.dsn(p.PublicKey, p.DsnID),
 		OTLPEndpoint: s.otlpEndpoint(),
 	}
 }
@@ -58,6 +58,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "generate ingest key", err)
 		return
 	}
+	dsnID, err := id.Numeric(12)
+	if err != nil {
+		slogError(w, "generate dsn id", err)
+		return
+	}
 	slug := slugify(req.Name)
 	if slug == "" {
 		slug = "project"
@@ -71,12 +76,26 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Slug:      slug,
 		Platform:  platform,
 		PublicKey: publicKey,
+		DsnID:     dsnID,
 	})
 	if err != nil {
 		slogError(w, "create project", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, s.toProjectResponse(p))
+}
+
+// handleDSNRedirect maps a numeric DSN id to the dashboard project page. The
+// DSN that Cloud injects carries the numeric dsn_id, not the cuid the SPA
+// routes on, so the Observability deep-link points here and we 302 to the real
+// project. Unauthenticated: the target page enforces the session itself.
+func (s *Server) handleDSNRedirect(w http.ResponseWriter, r *http.Request) {
+	p, err := s.q.GetProjectByDsnID(r.Context(), chi.URLParam(r, "dsnID"))
+	if err != nil {
+		http.Redirect(w, r, "/projects", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/projects/"+p.ID, http.StatusFound)
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +162,11 @@ func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) 
 		slogError(w, "provision key", err)
 		return
 	}
+	dsnID, err := id.Numeric(12)
+	if err != nil {
+		slogError(w, "provision dsn id", err)
+		return
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = slug
@@ -152,7 +176,7 @@ func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) 
 		platform = "other"
 	}
 	p, err := s.q.CreateProject(r.Context(), generated.CreateProjectParams{
-		ID: id.New(), OrgID: org, Name: name, Slug: slug, Platform: platform, PublicKey: publicKey,
+		ID: id.New(), OrgID: org, Name: name, Slug: slug, Platform: platform, PublicKey: publicKey, DsnID: dsnID,
 	})
 	if err != nil {
 		// Lost a race with a concurrent deploy: fall back to the existing row.

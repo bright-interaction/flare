@@ -40,10 +40,11 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 }
 
 // dsn builds the Sentry-style DSN a client SDK uses to point at this project.
-// Shape: {scheme}://{publicKey}@{host}/{projectID}
-func (s *Server) dsn(publicKey, projectID string) string {
+// Shape: {scheme}://{publicKey}@{host}/{dsnID}. dsnID is numeric because
+// @sentry/* SDKs reject a non-numeric project id in the DSN path.
+func (s *Server) dsn(publicKey, dsnID string) string {
 	scheme, host := splitBaseURL(s.cfg.BaseURL)
-	return fmt.Sprintf("%s://%s@%s/%s", scheme, publicKey, host, projectID)
+	return fmt.Sprintf("%s://%s@%s/%s", scheme, publicKey, host, dsnID)
 }
 
 // otlpEndpoint is the OTLP/HTTP base a collector or SDK exports logs+traces to.

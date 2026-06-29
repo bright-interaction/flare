@@ -10,9 +10,9 @@ import (
 )
 
 const createProject = `-- name: CreateProject :one
-INSERT INTO projects (id, org_id, name, slug, platform, public_key)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, org_id, name, slug, platform, public_key, created_at
+INSERT INTO projects (id, org_id, name, slug, platform, public_key, dsn_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, org_id, name, slug, platform, public_key, created_at, dsn_id
 `
 
 type CreateProjectParams struct {
@@ -22,6 +22,7 @@ type CreateProjectParams struct {
 	Slug      string `json:"slug"`
 	Platform  string `json:"platform"`
 	PublicKey string `json:"public_key"`
+	DsnID     string `json:"dsn_id"`
 }
 
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (*Project, error) {
@@ -32,6 +33,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (*
 		arg.Slug,
 		arg.Platform,
 		arg.PublicKey,
+		arg.DsnID,
 	)
 	var i Project
 	err := row.Scan(
@@ -42,12 +44,35 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (*
 		&i.Platform,
 		&i.PublicKey,
 		&i.CreatedAt,
+		&i.DsnID,
+	)
+	return &i, err
+}
+
+const getProjectByDsnID = `-- name: GetProjectByDsnID :one
+SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects WHERE dsn_id = $1
+`
+
+// ciguard:allow-unscoped resolves the numeric DSN id to the project for the
+// /go/{dsnID} dashboard redirect; the redirect target itself requires a session.
+func (q *Queries) GetProjectByDsnID(ctx context.Context, dsnID string) (*Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByDsnID, dsnID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.Slug,
+		&i.Platform,
+		&i.PublicKey,
+		&i.CreatedAt,
+		&i.DsnID,
 	)
 	return &i, err
 }
 
 const getProjectByID = `-- name: GetProjectByID :one
-SELECT id, org_id, name, slug, platform, public_key, created_at FROM projects
+SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects
 WHERE id = $1
   AND ($2::text = '' OR org_id = $2)
 `
@@ -68,12 +93,13 @@ func (q *Queries) GetProjectByID(ctx context.Context, arg GetProjectByIDParams) 
 		&i.Platform,
 		&i.PublicKey,
 		&i.CreatedAt,
+		&i.DsnID,
 	)
 	return &i, err
 }
 
 const getProjectByPublicKey = `-- name: GetProjectByPublicKey :one
-SELECT id, org_id, name, slug, platform, public_key, created_at FROM projects WHERE public_key = $1
+SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects WHERE public_key = $1
 `
 
 // ciguard:allow-unscoped ingest path keyed by the unguessable public_key (the DSN secret)
@@ -88,12 +114,13 @@ func (q *Queries) GetProjectByPublicKey(ctx context.Context, publicKey string) (
 		&i.Platform,
 		&i.PublicKey,
 		&i.CreatedAt,
+		&i.DsnID,
 	)
 	return &i, err
 }
 
 const getProjectBySlug = `-- name: GetProjectBySlug :one
-SELECT id, org_id, name, slug, platform, public_key, created_at FROM projects WHERE org_id = $1 AND slug = $2
+SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects WHERE org_id = $1 AND slug = $2
 `
 
 type GetProjectBySlugParams struct {
@@ -112,12 +139,13 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, arg GetProjectBySlugPara
 		&i.Platform,
 		&i.PublicKey,
 		&i.CreatedAt,
+		&i.DsnID,
 	)
 	return &i, err
 }
 
 const listProjectsByOrg = `-- name: ListProjectsByOrg :many
-SELECT id, org_id, name, slug, platform, public_key, created_at FROM projects
+SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects
 WHERE org_id = $1
 ORDER BY created_at DESC
 `
@@ -139,6 +167,7 @@ func (q *Queries) ListProjectsByOrg(ctx context.Context, orgID string) ([]*Proje
 			&i.Platform,
 			&i.PublicKey,
 			&i.CreatedAt,
+			&i.DsnID,
 		); err != nil {
 			return nil, err
 		}

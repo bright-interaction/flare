@@ -136,6 +136,7 @@ type Project struct {
 	Platform  string             `json:"platform"`
 	PublicKey string             `json:"public_key"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	DsnID     string             `json:"dsn_id"`
 }
 
 type Session struct {

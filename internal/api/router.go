@@ -75,6 +75,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 	r.Post("/otlp/v1/logs", s.handleOTLPLogs)
 	r.Post("/otlp/v1/traces", s.handleOTLPTraces)
 
+	// Deep-link from a DSN (numeric dsn_id) to the dashboard project page.
+	r.Get("/go/{dsnID}", s.handleDSNRedirect)
+
 	r.Handle("/*", spaHandler(build))
 	return r
 }

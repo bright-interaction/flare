@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -36,9 +37,12 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 	}
 	var lastID string
 	for _, p := range payloads {
-		if eid, err := s.ingestOne(r.Context(), project, p); err == nil {
-			lastID = eid
+		eid, err := s.ingestOne(r.Context(), project, p)
+		if err != nil {
+			slog.Warn("envelope event ingest failed", "project_id", project.ID, "error", err)
+			continue
 		}
+		lastID = eid
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": lastID})
 }
@@ -146,8 +150,11 @@ func (s *Server) fireNewIssueAlert(project *generated.Project, issue *generated.
 	}()
 }
 
-// authIngest resolves the project from the DSN public key and verifies it
-// matches the {projectID} in the path (when present).
+// authIngest resolves the project from the DSN public key (the ingest secret)
+// and sanity-checks the {projectID} path segment when present. The path id in a
+// Sentry DSN is the numeric dsn_id; we also accept the cuid so native/Flare-key
+// clients that use the primary key keep working. The public_key is the actual
+// auth, so a mismatched-but-present path id is not by itself fatal.
 func (s *Server) authIngest(w http.ResponseWriter, r *http.Request) (*generated.Project, bool) {
 	key := ingestKey(r)
 	if key == "" {
@@ -159,7 +166,7 @@ func (s *Server) authIngest(w http.ResponseWriter, r *http.Request) (*generated.
 		writeErr(w, http.StatusUnauthorized, "invalid ingest key")
 		return nil, false
 	}
-	if pid := chi.URLParam(r, "projectID"); pid != "" && pid != project.ID {
+	if pid := chi.URLParam(r, "projectID"); pid != "" && pid != project.DsnID && pid != project.ID {
 		writeErr(w, http.StatusUnauthorized, "key does not match project")
 		return nil, false
 	}

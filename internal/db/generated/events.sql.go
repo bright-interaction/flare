@@ -37,6 +37,7 @@ type GetIssueParams struct {
 	OrgID string `json:"org_id"`
 }
 
+// ciguard:allow-no-project issue id is project-unique (one issue belongs to one project)
 func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (*Issue, error) {
 	row := q.db.QueryRow(ctx, getIssue, arg.ID, arg.OrgID)
 	var i Issue
@@ -66,6 +67,7 @@ type GetLatestEventParams struct {
 	OrgID   string      `json:"org_id"`
 }
 
+// ciguard:allow-no-project issue_id is project-unique
 func (q *Queries) GetLatestEvent(ctx context.Context, arg GetLatestEventParams) (*Event, error) {
 	row := q.db.QueryRow(ctx, getLatestEvent, arg.IssueID, arg.OrgID)
 	var i Event
@@ -138,6 +140,7 @@ type ListEventsByIssueParams struct {
 	Limit   int32       `json:"limit"`
 }
 
+// ciguard:allow-no-project issue_id is project-unique, so events under it are one project's
 func (q *Queries) ListEventsByIssue(ctx context.Context, arg ListEventsByIssueParams) ([]*Event, error) {
 	rows, err := q.db.Query(ctx, listEventsByIssue, arg.IssueID, arg.OrgID, arg.Limit)
 	if err != nil {
@@ -239,6 +242,7 @@ type UpdateIssueStatusParams struct {
 	Status string `json:"status"`
 }
 
+// ciguard:allow-no-project write by project-unique issue id
 func (q *Queries) UpdateIssueStatus(ctx context.Context, arg UpdateIssueStatusParams) (*Issue, error) {
 	row := q.db.QueryRow(ctx, updateIssueStatus, arg.ID, arg.OrgID, arg.Status)
 	var i Issue
