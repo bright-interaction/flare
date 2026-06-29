@@ -21,6 +21,7 @@ import (
 	"github.com/bright-interaction/flare/internal/auth"
 	"github.com/bright-interaction/flare/internal/config"
 	"github.com/bright-interaction/flare/internal/db"
+	"github.com/bright-interaction/flare/internal/partition"
 )
 
 //go:embed all:frontend/build
@@ -59,6 +60,11 @@ func run() error {
 	}
 	defer pool.Close()
 	slog.Info("database connected", "max_conns", cfg.DBMaxConns)
+
+	// Partition manager: pre-create daily telemetry partitions and drop expired
+	// ones (retention = DROP PARTITION).
+	go partition.New(pool, cfg.RetentionDays).Run(ctx)
+	slog.Info("partition manager started", "retention_days", cfg.RetentionDays)
 
 	sessions := auth.NewSessionManager(cfg.SessionLifetime, cfg.SessionIdleTimeout, cfg.IsProduction())
 	sessions.Store = pgxstore.New(pool)

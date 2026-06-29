@@ -16,9 +16,10 @@ type Config struct {
 	Port        string
 	BaseURL     string
 
-	DatabaseURL string
-	DBMaxConns  int32
-	DBMinConns  int32
+	DatabaseURL   string
+	DBMaxConns    int32
+	DBMinConns    int32
+	RetentionDays int
 
 	SessionKey         string
 	CSRFKey            string
@@ -39,6 +40,7 @@ func Load() (Config, error) {
 		DatabaseURL:        env("DATABASE_URL", ""),
 		DBMaxConns:         int32(envInt("DB_MAX_CONNS", 20)),
 		DBMinConns:         int32(envInt("DB_MIN_CONNS", 2)),
+		RetentionDays:      envInt("RETENTION_DAYS", 30),
 		SessionKey:         env("SESSION_KEY", ""),
 		CSRFKey:            env("CSRF_KEY", ""),
 		SessionLifetime:    time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,

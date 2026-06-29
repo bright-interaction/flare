@@ -49,6 +49,36 @@ export interface IssueEvent {
   received_at: string;
 }
 
+export interface LogRow {
+  id: string;
+  severity: string;
+  body: string;
+  attributes: Record<string, unknown> | null;
+  trace_id: string;
+  span_id: string;
+  observed_at: string;
+}
+
+export interface TraceSummary {
+  trace_id: string;
+  root_name: string;
+  span_count: number;
+  has_error: boolean;
+  duration_ms: number;
+  started: string;
+}
+
+export interface Span {
+  span_id: string;
+  parent_span_id: string;
+  name: string;
+  kind: string;
+  status: string;
+  start_unix_ms: number;
+  duration_ms: number;
+  attributes: Record<string, unknown> | null;
+}
+
 export interface Channel {
   id: string;
   type: string;

@@ -1,4 +1,14 @@
-import type { AlertRule, Channel, Issue, IssueEvent, Project, User } from './types';
+import type {
+  AlertRule,
+  Channel,
+  Issue,
+  IssueEvent,
+  LogRow,
+  Project,
+  Span,
+  TraceSummary,
+  User
+} from './types';
 
 let csrfToken: string | null = null;
 
@@ -63,6 +73,17 @@ export const api = {
   issue: (id: string) => req<Issue>('GET', `/issues/${id}`),
   issueEvents: (id: string) => req<IssueEvent[]>('GET', `/issues/${id}/events`),
   setIssueStatus: (id: string, status: string) => req<Issue>('PATCH', `/issues/${id}`, { status }),
+
+  logs: (pid: string, opts: { q?: string; severity?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.q) p.set('q', opts.q);
+    if (opts.severity) p.set('severity', opts.severity);
+    const qs = p.toString();
+    return req<LogRow[]>('GET', `/projects/${pid}/logs${qs ? `?${qs}` : ''}`);
+  },
+
+  traces: (pid: string) => req<TraceSummary[]>('GET', `/projects/${pid}/traces`),
+  trace: (traceID: string) => req<Span[]>('GET', `/traces/${traceID}`),
 
   channels: () => req<Channel[]>('GET', '/channels'),
   createChannel: (type: string, config: Record<string, unknown>) =>

@@ -31,6 +31,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 		r.Post("/{projectID}/store/", s.handleStore)
 		r.Post("/{projectID}/store", s.handleStore)
 		r.Post("/{projectID}/events", s.handleStore)
+		r.Post("/{projectID}/logs", s.handleNativeLogs)
 
 		r.Group(func(r chi.Router) {
 			r.Use(ccsrf)
@@ -47,6 +48,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects", s.handleListProjects)
 				r.Get("/projects/{id}", s.handleGetProject)
 				r.Get("/projects/{id}/issues", s.handleListIssues)
+				r.Get("/projects/{id}/logs", s.handleSearchLogs)
+				r.Get("/projects/{id}/traces", s.handleListTraces)
+				r.Get("/traces/{id}", s.handleGetTrace)
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
 				r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
 
@@ -59,6 +63,11 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 			})
 		})
 	})
+
+	// OTLP/HTTP ingest lives at the spec path (clients append /v1/logs to the
+	// configured OTLP endpoint). DSN-key auth, no CSRF/session.
+	r.Post("/otlp/v1/logs", s.handleOTLPLogs)
+	r.Post("/otlp/v1/traces", s.handleOTLPTraces)
 
 	r.Handle("/*", spaHandler(build))
 	return r

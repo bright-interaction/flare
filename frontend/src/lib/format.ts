@@ -20,9 +20,13 @@ export function levelColor(level: string): string {
     case 'error':
       return 'text-rose-400';
     case 'warning':
+    case 'warn':
       return 'text-amber-400';
     case 'info':
       return 'text-sky-400';
+    case 'debug':
+    case 'trace':
+      return 'text-zinc-500';
     default:
       return 'text-zinc-400';
   }
