@@ -1,0 +1,56 @@
+// Package api wires Flare's HTTP surface: auth, projects, ingest, and the
+// embedded SvelteKit dashboard.
+package api
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/alexedwards/scs/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/bright-interaction/flare/internal/alerts"
+	"github.com/bright-interaction/flare/internal/config"
+	"github.com/bright-interaction/flare/internal/db/generated"
+)
+
+type Server struct {
+	q          *generated.Queries
+	pool       *pgxpool.Pool
+	sessions   *scs.SessionManager
+	cfg        config.Config
+	dispatcher *alerts.Dispatcher
+}
+
+func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config) *Server {
+	return &Server{
+		q:          generated.New(pool),
+		pool:       pool,
+		sessions:   sessions,
+		cfg:        cfg,
+		dispatcher: alerts.NewDispatcher(),
+	}
+}
+
+// dsn builds the Sentry-style DSN a client SDK uses to point at this project.
+// Shape: {scheme}://{publicKey}@{host}/{projectID}
+func (s *Server) dsn(publicKey, projectID string) string {
+	scheme, host := splitBaseURL(s.cfg.BaseURL)
+	return fmt.Sprintf("%s://%s@%s/%s", scheme, publicKey, host, projectID)
+}
+
+// otlpEndpoint is the OTLP/HTTP base a collector or SDK exports logs+traces to.
+func (s *Server) otlpEndpoint() string {
+	return strings.TrimRight(s.cfg.BaseURL, "/") + "/otlp"
+}
+
+func splitBaseURL(base string) (scheme, host string) {
+	scheme = "https"
+	host = base
+	if i := strings.Index(base, "://"); i >= 0 {
+		scheme = base[:i]
+		host = base[i+3:]
+	}
+	host = strings.TrimRight(host, "/")
+	return scheme, host
+}

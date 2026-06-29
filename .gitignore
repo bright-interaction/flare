@@ -1,0 +1,11 @@
+/bin/
+/server
+*.env
+.env
+.env.*
+!*.env.example
+
+# Embedded frontend build is produced by bun (local) or the Docker frontend
+# stage. Keep only the .gitkeep so go:embed compiles on a fresh checkout.
+/cmd/server/frontend/build/*
+!/cmd/server/frontend/build/.gitkeep

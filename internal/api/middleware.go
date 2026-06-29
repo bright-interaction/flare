@@ -1,0 +1,65 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/bright-interaction/flare/internal/auth"
+)
+
+// securityHeaders sets the baseline response headers required by the repo
+// security rules.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireAuth accepts either a browser session (dashboard) or a Bearer API
+// key (programmatic). It injects the user and org ids into the request
+// context for downstream handlers.
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		if uid := s.sessions.GetString(ctx, "user_id"); uid != "" {
+			if oid := s.sessions.GetString(ctx, "org_id"); oid != "" {
+				ctx = context.WithValue(ctx, ctxUserID, uid)
+				ctx = context.WithValue(ctx, ctxOrgID, oid)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
+		if key := bearerToken(r); key != "" {
+			ak, err := s.q.GetAPIKeyByHash(ctx, auth.HashAPIKey(key))
+			if err == nil && (!ak.ExpiresAt.Valid || ak.ExpiresAt.Time.After(time.Now())) {
+				_ = s.q.TouchAPIKey(ctx, ak.ID)
+				ctx = context.WithValue(ctx, ctxOrgID, ak.OrgID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
+		writeErr(w, http.StatusUnauthorized, "authentication required")
+	})
+}
+
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	const prefix = "Bearer "
+	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+		return strings.TrimSpace(h[len(prefix):])
+	}
+	return ""
+}
