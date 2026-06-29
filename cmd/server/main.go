@@ -17,6 +17,7 @@ import (
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/gorilla/csrf"
 
+	"github.com/bright-interaction/flare/internal/analytics"
 	"github.com/bright-interaction/flare/internal/api"
 	"github.com/bright-interaction/flare/internal/auth"
 	"github.com/bright-interaction/flare/internal/config"
@@ -61,9 +62,28 @@ func run() error {
 	defer pool.Close()
 	slog.Info("database connected", "max_conns", cfg.DBMaxConns)
 
-	// Partition manager: pre-create daily telemetry partitions and drop expired
-	// ones (retention = DROP PARTITION).
-	go partition.New(pool, cfg.RetentionDays).Run(ctx)
+	// Analytics: embedded DuckDB attached read-only to Postgres + a Parquet cold
+	// tier. Non-fatal: if it fails to open, the server still serves every read
+	// via the hot tier; only the analytics endpoints + cold export are disabled.
+	var analyticsMgr *analytics.Manager
+	var exporter partition.Exporter
+	if mgr, aerr := analytics.Open(ctx, analytics.Config{
+		PostgresDSN: cfg.DatabaseURL,
+		ParquetDir:  cfg.ParquetDir,
+		S3Endpoint:  cfg.S3Endpoint, S3Bucket: cfg.S3Bucket,
+		S3AccessKey: cfg.S3AccessKey, S3SecretKey: cfg.S3SecretKey,
+		S3Region: cfg.S3Region, S3UseSSL: cfg.S3UseSSL,
+	}); aerr != nil {
+		slog.Warn("analytics disabled (DuckDB open failed)", "error", aerr)
+	} else {
+		analyticsMgr = mgr
+		exporter = analytics.NewExporter(mgr, pool)
+		defer mgr.Close()
+	}
+
+	// Partition manager: pre-create daily telemetry partitions, export aged ones
+	// to the Parquet cold tier, then drop (retention = export-then-DROP).
+	go partition.New(pool, cfg.RetentionDays, exporter).Run(ctx)
 	slog.Info("partition manager started", "retention_days", cfg.RetentionDays)
 
 	sessions := auth.NewSessionManager(cfg.SessionLifetime, cfg.SessionIdleTimeout, cfg.IsProduction())
@@ -96,7 +116,7 @@ func run() error {
 		return fmt.Errorf("frontend fs: %w", err)
 	}
 
-	srv := api.NewServer(pool, sessions, cfg)
+	srv := api.NewServer(pool, sessions, cfg, analyticsMgr)
 	handler := srv.Routes(build, csrfMW)
 
 	httpServer := &http.Server{

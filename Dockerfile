@@ -3,9 +3,10 @@
 # Local build:
 #   cd flare && docker build -t flare .
 #
-# Pure-Go for now. The DuckDB columnar analytics tier (logs/traces phases)
-# will switch the backend stage to the glibc/bookworm toolchain, matching
-# atomicsite's analyticsdb build.
+# CGO note: the analytics package uses marcboeker/go-duckdb (DuckDB columnar
+# reads + Parquet cold tier), which needs CGO + glibc. The backend stage builds
+# on golang:1.26.4-bookworm (glibc) and the runtime is debian:bookworm-slim,
+# matching atomicsite's analyticsdb build.
 
 # Stage 1: SvelteKit dashboard.
 FROM oven/bun:1-alpine AS frontend
@@ -16,10 +17,12 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY frontend/ .
 RUN bun run build
 
-# Stage 2: Go server. The frontend build is copied in for go:embed.
-FROM golang:1.26-alpine AS backend
+# Stage 2: Go server (CGO for go-duckdb). The frontend build is copied in for go:embed.
+FROM golang:1.26.4-bookworm AS backend
 WORKDIR /app
-RUN apk add --no-cache git ca-certificates
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends git ca-certificates build-essential gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
@@ -27,14 +30,20 @@ COPY . .
 COPY --from=frontend /app/frontend/build ./cmd/server/frontend/build
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /flare ./cmd/server
+    CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /flare ./cmd/server
 
-# Stage 3: runtime.
-FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata wget \
-    && adduser -D -u 1000 flare
+# Stage 3: runtime (debian-slim for glibc + libstdc++, which the duckdb static
+# lib needs at runtime).
+FROM debian:bookworm-slim
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+       ca-certificates tzdata wget libstdc++6 libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 flare && useradd -u 1000 -g flare -m -d /app flare \
+    && mkdir -p /app/data/parquet && chown -R flare:flare /app
 COPY --from=backend /flare /usr/local/bin/flare
 USER flare
+ENV FLARE_PARQUET_DIR=/app/data/parquet
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://127.0.0.1:8080/api/health || exit 1

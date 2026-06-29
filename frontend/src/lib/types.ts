@@ -94,6 +94,12 @@ export interface Span {
   attributes: Record<string, unknown> | null;
 }
 
+export interface LogVolumeBucket {
+  hour: string;
+  severity: string;
+  count: number;
+}
+
 export interface Channel {
   id: string;
   type: string;

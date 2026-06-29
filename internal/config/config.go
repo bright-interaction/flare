@@ -21,6 +21,15 @@ type Config struct {
 	DBMinConns    int32
 	RetentionDays int
 
+	// Cold-tier Parquet. Local dir by default (self-host friendly); S3/MinIO opt-in.
+	ParquetDir  string
+	S3Endpoint  string
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
+	S3UseSSL    bool
+
 	SessionKey         string
 	CSRFKey            string
 	SessionLifetime    time.Duration
@@ -41,6 +50,13 @@ func Load() (Config, error) {
 		DBMaxConns:         int32(envInt("DB_MAX_CONNS", 20)),
 		DBMinConns:         int32(envInt("DB_MIN_CONNS", 2)),
 		RetentionDays:      envInt("RETENTION_DAYS", 30),
+		ParquetDir:         env("FLARE_PARQUET_DIR", "data/parquet"),
+		S3Endpoint:         env("FLARE_PARQUET_S3_ENDPOINT", ""),
+		S3Bucket:           env("FLARE_PARQUET_S3_BUCKET", "flare"),
+		S3AccessKey:        env("FLARE_PARQUET_S3_ACCESS_KEY", ""),
+		S3SecretKey:        env("FLARE_PARQUET_S3_SECRET_KEY", ""),
+		S3Region:           env("FLARE_PARQUET_S3_REGION", "us-east-1"),
+		S3UseSSL:           env("FLARE_PARQUET_S3_USE_SSL", "true") == "true",
 		SessionKey:         env("SESSION_KEY", ""),
 		CSRFKey:            env("CSRF_KEY", ""),
 		SessionLifetime:    time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,

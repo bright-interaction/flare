@@ -16,17 +16,24 @@ import (
 
 var tables = []string{"events", "logs", "spans"}
 
+// Exporter archives a dated partition to the cold tier before it is dropped.
+// nil = no cold tier (just drop). analytics.Exporter satisfies this.
+type Exporter interface {
+	ExportDay(ctx context.Context, table string, day time.Time) error
+}
+
 type Manager struct {
 	pool          *pgxpool.Pool
 	retentionDays int
 	aheadDays     int
+	exporter      Exporter
 }
 
-func New(pool *pgxpool.Pool, retentionDays int) *Manager {
+func New(pool *pgxpool.Pool, retentionDays int, exporter Exporter) *Manager {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
-	return &Manager{pool: pool, retentionDays: retentionDays, aheadDays: 3}
+	return &Manager{pool: pool, retentionDays: retentionDays, aheadDays: 3, exporter: exporter}
 }
 
 // Run does one pass now, then every 6 hours until ctx is cancelled.
@@ -86,6 +93,15 @@ func (m *Manager) prune(ctx context.Context, table string) error {
 			continue
 		}
 		if d.Before(cutoff) {
+			// Export-then-drop: a partition is only dropped after its rows are
+			// durably in the Parquet cold tier. If export fails, keep the
+			// partition and retry next cycle (no data loss).
+			if m.exporter != nil {
+				if err := m.exporter.ExportDay(ctx, table, d); err != nil {
+					slog.Warn("partition export failed; keeping partition for retry", "partition", name, "error", err)
+					continue
+				}
+			}
 			if _, err := m.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", name)); err != nil {
 				slog.Warn("drop partition failed", "partition", name, "error", err)
 				continue

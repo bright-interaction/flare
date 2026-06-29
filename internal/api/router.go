@@ -52,6 +52,8 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects/{id}/logs", s.handleSearchLogs)
 				r.Get("/projects/{id}/traces", s.handleListTraces)
 				r.Get("/traces/{id}", s.handleGetTrace)
+				r.Get("/projects/{id}/analytics/log-volume", s.handleLogVolume)
+				r.Get("/projects/{id}/analytics/span-latency", s.handleSpanLatency)
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
 				r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
 

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bright-interaction/flare/internal/alerts"
+	"github.com/bright-interaction/flare/internal/analytics"
 	"github.com/bright-interaction/flare/internal/config"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/telemetry"
@@ -20,16 +21,18 @@ type Server struct {
 	q          *generated.Queries
 	pool       *pgxpool.Pool
 	store      telemetry.Store
+	analytics  *analytics.Manager // may be nil when DuckDB failed to open
 	sessions   *scs.SessionManager
 	cfg        config.Config
 	dispatcher *alerts.Dispatcher
 }
 
-func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config) *Server {
+func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
 	return &Server{
 		q:          generated.New(pool),
 		pool:       pool,
 		store:      pgstore.New(pool),
+		analytics:  analyticsMgr,
 		sessions:   sessions,
 		cfg:        cfg,
 		dispatcher: alerts.NewDispatcher(),
