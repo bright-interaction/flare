@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -87,7 +88,12 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	i, err := s.store.GetIssue(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()))
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "issue not found")
+		var nf telemetry.ErrNotFound
+		if errors.As(err, &nf) {
+			writeErr(w, http.StatusNotFound, "issue not found")
+			return
+		}
+		slogError(w, "get issue", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toIssueResponse(i))

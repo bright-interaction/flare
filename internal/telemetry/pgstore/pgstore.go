@@ -112,8 +112,8 @@ func (s *PGStore) ListTraces(ctx context.Context, projectID, orgID string, limit
 	return out, nil
 }
 
-func (s *PGStore) GetTraceSpans(ctx context.Context, traceID, orgID string) ([]telemetry.Span, error) {
-	rows, err := s.q.GetTraceSpans(ctx, generated.GetTraceSpansParams{TraceID: traceID, OrgID: orgID})
+func (s *PGStore) GetTraceSpans(ctx context.Context, traceID, projectID, orgID string) ([]telemetry.Span, error) {
+	rows, err := s.q.GetTraceSpans(ctx, generated.GetTraceSpansParams{TraceID: traceID, ProjectID: projectID, OrgID: orgID})
 	if err != nil {
 		return nil, err
 	}

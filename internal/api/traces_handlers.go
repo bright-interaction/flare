@@ -99,7 +99,7 @@ type spanResponse struct {
 }
 
 func (s *Server) handleGetTrace(w http.ResponseWriter, r *http.Request) {
-	spans, err := s.store.GetTraceSpans(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()))
+	spans, err := s.store.GetTraceSpans(r.Context(), chi.URLParam(r, "traceID"), chi.URLParam(r, "id"), orgIDFrom(r.Context()))
 	if err != nil {
 		slogError(w, "get trace", err)
 		return

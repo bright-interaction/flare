@@ -10,7 +10,7 @@ SELECT
     count(*) AS span_count,
     bool_or(s.status ILIKE '%error%') AS has_error,
     (SELECT r.name FROM spans r
-       WHERE r.trace_id = s.trace_id AND r.org_id = s.org_id
+       WHERE r.trace_id = s.trace_id AND r.org_id = s.org_id AND r.project_id = s.project_id
        ORDER BY (r.parent_span_id = '') DESC, r.start_time
        LIMIT 1) AS root_name
 FROM spans s
@@ -20,6 +20,8 @@ ORDER BY started DESC
 LIMIT $3;
 
 -- name: GetTraceSpans :many
+-- project_id scoped: trace_id is not project-unique (a distributed trace can
+-- span projects), so org_id alone would mix projects' spans.
 SELECT * FROM spans
-WHERE trace_id = $1 AND org_id = $2
+WHERE trace_id = $1 AND project_id = $2 AND org_id = $3
 ORDER BY start_time;

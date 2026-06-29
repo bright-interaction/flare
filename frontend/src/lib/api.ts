@@ -89,7 +89,7 @@ export const api = {
     req<LogVolumeBucket[]>('GET', `/projects/${pid}/analytics/log-volume?hours=${hours}`),
 
   traces: (pid: string) => req<TraceSummary[]>('GET', `/projects/${pid}/traces`),
-  trace: (traceID: string) => req<Span[]>('GET', `/traces/${traceID}`),
+  trace: (pid: string, traceID: string) => req<Span[]>('GET', `/projects/${pid}/traces/${traceID}`),
 
   apiKeys: () => req<ApiKey[]>('GET', '/keys'),
   createApiKey: (name: string) => req<ApiKeyCreated>('POST', '/keys', { name }),

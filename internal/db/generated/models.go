@@ -66,6 +66,13 @@ type EventsDefault struct {
 	ReceivedAt     pgtype.Timestamptz `json:"received_at"`
 }
 
+type ExportLog struct {
+	Tbl        string             `json:"tbl"`
+	Day        pgtype.Date        `json:"day"`
+	ExportedAt pgtype.Timestamptz `json:"exported_at"`
+	RowCount   int64              `json:"row_count"`
+}
+
 type Issue struct {
 	ID          string             `json:"id"`
 	ProjectID   string             `json:"project_id"`

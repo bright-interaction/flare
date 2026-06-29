@@ -63,7 +63,7 @@
     <ul class="divide-y divide-zinc-800/60">
       {#each traces as t (t.trace_id)}
         <li>
-          <a href="/traces/{t.trace_id}" class="flex items-center gap-4 py-3 transition-colors hover:bg-zinc-900/40">
+          <a href="/projects/{id}/traces/{t.trace_id}" class="flex items-center gap-4 py-3 transition-colors hover:bg-zinc-900/40">
             <span class="inline-block h-2 w-2 shrink-0 rounded-full {t.has_error ? 'bg-rose-400' : 'bg-emerald-400'}"></span>
             <div class="min-w-0 flex-1">
               <div class="truncate text-sm font-medium text-zinc-100">{t.root_name || '(root)'}</div>

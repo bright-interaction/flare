@@ -14,17 +14,20 @@ import (
 
 const getTraceSpans = `-- name: GetTraceSpans :many
 SELECT trace_id, span_id, parent_span_id, project_id, org_id, name, kind, status, start_time, end_time, duration_ms, attributes FROM spans
-WHERE trace_id = $1 AND org_id = $2
+WHERE trace_id = $1 AND project_id = $2 AND org_id = $3
 ORDER BY start_time
 `
 
 type GetTraceSpansParams struct {
-	TraceID string `json:"trace_id"`
-	OrgID   string `json:"org_id"`
+	TraceID   string `json:"trace_id"`
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
 }
 
+// project_id scoped: trace_id is not project-unique (a distributed trace can
+// span projects), so org_id alone would mix projects' spans.
 func (q *Queries) GetTraceSpans(ctx context.Context, arg GetTraceSpansParams) ([]*Span, error) {
-	rows, err := q.db.Query(ctx, getTraceSpans, arg.TraceID, arg.OrgID)
+	rows, err := q.db.Query(ctx, getTraceSpans, arg.TraceID, arg.ProjectID, arg.OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +82,7 @@ SELECT
     count(*) AS span_count,
     bool_or(s.status ILIKE '%error%') AS has_error,
     (SELECT r.name FROM spans r
-       WHERE r.trace_id = s.trace_id AND r.org_id = s.org_id
+       WHERE r.trace_id = s.trace_id AND r.org_id = s.org_id AND r.project_id = s.project_id
        ORDER BY (r.parent_span_id = '') DESC, r.start_time
        LIMIT 1) AS root_name
 FROM spans s

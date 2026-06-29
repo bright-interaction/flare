@@ -29,14 +29,18 @@ LIMIT $3 OFFSET $4;
 -- name: CountIssues :one
 SELECT count(*) FROM issues WHERE project_id = $1 AND org_id = $2;
 
+-- ciguard:allow-no-project issue id is project-unique (one issue belongs to one project)
 -- name: GetIssue :one
 SELECT * FROM issues WHERE id = $1 AND org_id = $2;
 
+-- ciguard:allow-no-project issue_id is project-unique, so events under it are one project's
 -- name: ListEventsByIssue :many
 SELECT * FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT $3;
 
+-- ciguard:allow-no-project issue_id is project-unique
 -- name: GetLatestEvent :one
 SELECT * FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT 1;
 
+-- ciguard:allow-no-project write by project-unique issue id
 -- name: UpdateIssueStatus :one
 UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING *;

@@ -6,7 +6,8 @@
   import { session } from '$lib/session.svelte';
   import type { Span } from '$lib/types';
 
-  const traceID = $derived(page.params.id ?? '');
+  const projectID = $derived(page.params.id ?? '');
+  const traceID = $derived(page.params.traceID ?? '');
 
   let spans = $state<Span[] | null>(null);
   let error = $state<string | null>(null);
@@ -17,7 +18,7 @@
 
   onMount(async () => {
     try {
-      const data = await api.trace(traceID);
+      const data = await api.trace(projectID, traceID);
       spans = data.slice().sort((a, b) => a.start_unix_ms - b.start_unix_ms);
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load trace';
@@ -53,6 +54,8 @@
 
 <div class="mb-6 flex items-center gap-2 text-sm text-zinc-500">
   <a href="/projects" class="hover:text-zinc-300">Projects</a>
+  <span>/</span>
+  <a href="/projects/{projectID}/traces" class="hover:text-zinc-300">Traces</a>
   <span>/</span>
   <span class="text-zinc-300">Trace</span>
 </div>

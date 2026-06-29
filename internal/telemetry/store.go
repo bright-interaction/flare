@@ -16,7 +16,7 @@ type Store interface {
 	ListEventsByIssue(ctx context.Context, issueID, orgID string, limit int32) ([]Event, error)
 	SearchLogs(ctx context.Context, projectID, orgID string, f LogFilter) ([]Log, error)
 	ListTraces(ctx context.Context, projectID, orgID string, limit int32) ([]TraceSummary, error)
-	GetTraceSpans(ctx context.Context, traceID, orgID string) ([]Span, error)
+	GetTraceSpans(ctx context.Context, traceID, projectID, orgID string) ([]Span, error)
 	Healthy(ctx context.Context) bool
 }
 
