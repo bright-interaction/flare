@@ -72,24 +72,16 @@ type traceSummary struct {
 }
 
 func (s *Server) handleListTraces(w http.ResponseWriter, r *http.Request) {
-	traces, err := s.q.ListTraces(r.Context(), generated.ListTracesParams{
-		ProjectID: chi.URLParam(r, "id"),
-		OrgID:     orgIDFrom(r.Context()),
-		Limit:     100,
-	})
+	traces, err := s.store.ListTraces(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), 100)
 	if err != nil {
 		slogError(w, "list traces", err)
 		return
 	}
 	out := make([]traceSummary, 0, len(traces))
 	for _, t := range traces {
-		dur := 0.0
-		if t.Started.Valid && t.Ended.Valid {
-			dur = float64(t.Ended.Time.Sub(t.Started.Time).Microseconds()) / 1000.0
-		}
 		out = append(out, traceSummary{
 			TraceID: t.TraceID, RootName: t.RootName, SpanCount: t.SpanCount,
-			HasError: t.HasError, DurationMs: dur, Started: t.Started.Time,
+			HasError: t.HasError, DurationMs: t.DurationMs, Started: t.Started,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -107,10 +99,7 @@ type spanResponse struct {
 }
 
 func (s *Server) handleGetTrace(w http.ResponseWriter, r *http.Request) {
-	spans, err := s.q.GetTraceSpans(r.Context(), generated.GetTraceSpansParams{
-		TraceID: chi.URLParam(r, "id"),
-		OrgID:   orgIDFrom(r.Context()),
-	})
+	spans, err := s.store.GetTraceSpans(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()))
 	if err != nil {
 		slogError(w, "get trace", err)
 		return
@@ -124,7 +113,7 @@ func (s *Server) handleGetTrace(w http.ResponseWriter, r *http.Request) {
 		out = append(out, spanResponse{
 			SpanID: sp.SpanID, ParentSpanID: sp.ParentSpanID, Name: sp.Name,
 			Kind: sp.Kind, Status: sp.Status,
-			StartUnixMs: sp.StartTime.Time.UnixMilli(), DurationMs: sp.DurationMs,
+			StartUnixMs: sp.StartUnixMs, DurationMs: sp.DurationMs,
 			Attributes: sp.Attributes,
 		})
 	}

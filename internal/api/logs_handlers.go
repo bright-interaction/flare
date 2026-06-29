@@ -13,6 +13,7 @@ import (
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
 	"github.com/bright-interaction/flare/internal/ingest"
+	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
 // handleOTLPLogs ingests OTLP/HTTP logs (protobuf or OTLP/JSON). Auth is the
@@ -97,22 +98,18 @@ type logResponse struct {
 // handleSearchLogs is the authenticated dashboard query over the hot tier.
 func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	params := generated.SearchLogsParams{
-		ProjectID: chi.URLParam(r, "id"),
-		OrgID:     orgIDFrom(r.Context()),
-		Limit:     100,
-	}
+	f := telemetry.LogFilter{Limit: 100}
 	if v := strings.TrimSpace(q.Get("q")); v != "" {
-		params.Q = pgText(v)
+		f.Query = &v
 	}
 	if v := strings.TrimSpace(q.Get("severity")); v != "" {
-		params.Severity = pgText(v)
+		f.Severity = &v
 	}
 	if v := strings.TrimSpace(q.Get("trace_id")); v != "" {
-		params.TraceID = pgText(v)
+		f.TraceID = &v
 	}
 
-	logs, err := s.q.SearchLogs(r.Context(), params)
+	logs, err := s.store.SearchLogs(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), f)
 	if err != nil {
 		slogError(w, "search logs", err)
 		return
@@ -121,7 +118,7 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	for _, l := range logs {
 		out = append(out, logResponse{
 			ID: l.ID, Severity: l.Severity, Body: l.Body, Attributes: l.Attributes,
-			TraceID: l.TraceID, SpanID: l.SpanID, ObservedAt: l.ObservedAt.Time,
+			TraceID: l.TraceID, SpanID: l.SpanID, ObservedAt: l.ObservedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

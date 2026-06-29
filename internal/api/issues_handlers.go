@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
 type issueResponse struct {
@@ -24,7 +24,17 @@ type issueResponse struct {
 	EventCount int64     `json:"event_count"`
 }
 
-func toIssueResponse(i *generated.Issue) issueResponse {
+func toIssueResponse(i telemetry.Issue) issueResponse {
+	return issueResponse{
+		ID: i.ID, Title: i.Title, Culprit: i.Culprit, Level: i.Level,
+		Status: i.Status, Platform: i.Platform,
+		FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, EventCount: i.EventCount,
+	}
+}
+
+// genIssueToResponse maps the write-path row (UpdateIssueStatus returns the
+// generated type) into the same response shape.
+func genIssueToResponse(i *generated.Issue) issueResponse {
 	return issueResponse{
 		ID: i.ID, Title: i.Title, Culprit: i.Culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
@@ -51,21 +61,17 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	org := orgIDFrom(ctx)
 	limit, offset := parsePaging(r)
 
-	params := generated.ListIssuesParams{
-		ProjectID: projectID, OrgID: org, Limit: limit, Offset: offset,
-	}
-	if status := r.URL.Query().Get("status"); status != "" {
-		params.Status = pgText(status)
-	} else {
-		params.Status = pgtype.Text{} // NULL -> all statuses
+	var status *string
+	if v := r.URL.Query().Get("status"); v != "" {
+		status = &v
 	}
 
-	issues, err := s.q.ListIssues(ctx, params)
+	issues, err := s.store.ListIssues(ctx, projectID, org, limit, offset, status)
 	if err != nil {
 		slogError(w, "list issues", err)
 		return
 	}
-	total, err := s.q.CountIssues(ctx, generated.CountIssuesParams{ProjectID: projectID, OrgID: org})
+	total, err := s.store.CountIssues(ctx, projectID, org)
 	if err != nil {
 		slogError(w, "count issues", err)
 		return
@@ -79,9 +85,7 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
-	i, err := s.q.GetIssue(r.Context(), generated.GetIssueParams{
-		ID: chi.URLParam(r, "id"), OrgID: orgIDFrom(r.Context()),
-	})
+	i, err := s.store.GetIssue(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "issue not found")
 		return
@@ -90,9 +94,7 @@ func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.q.ListEventsByIssue(r.Context(), generated.ListEventsByIssueParams{
-		IssueID: pgText(chi.URLParam(r, "id")), OrgID: orgIDFrom(r.Context()), Limit: 50,
-	})
+	events, err := s.store.ListEventsByIssue(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), 50)
 	if err != nil {
 		slogError(w, "list issue events", err)
 		return
@@ -103,7 +105,7 @@ func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
 			ID: e.ID, Level: e.Level, Message: e.Message,
 			ExceptionType: e.ExceptionType, ExceptionValue: e.ExceptionValue,
 			Platform: e.Platform, Environment: e.Environment, Release: e.Release,
-			Stacktrace: e.Stacktrace, ReceivedAt: e.ReceivedAt.Time,
+			Stacktrace: e.Stacktrace, ReceivedAt: e.ReceivedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -130,7 +132,7 @@ func (s *Server) handleUpdateIssueStatus(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusNotFound, "issue not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toIssueResponse(i))
+	writeJSON(w, http.StatusOK, genIssueToResponse(i))
 }
 
 func parsePaging(r *http.Request) (limit, offset int32) {

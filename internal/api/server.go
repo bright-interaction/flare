@@ -12,11 +12,14 @@ import (
 	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/config"
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/telemetry"
+	"github.com/bright-interaction/flare/internal/telemetry/pgstore"
 )
 
 type Server struct {
 	q          *generated.Queries
 	pool       *pgxpool.Pool
+	store      telemetry.Store
 	sessions   *scs.SessionManager
 	cfg        config.Config
 	dispatcher *alerts.Dispatcher
@@ -26,6 +29,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 	return &Server{
 		q:          generated.New(pool),
 		pool:       pool,
+		store:      pgstore.New(pool),
 		sessions:   sessions,
 		cfg:        cfg,
 		dispatcher: alerts.NewDispatcher(),
