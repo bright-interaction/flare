@@ -9,6 +9,7 @@
   let error = $state<string | null>(null);
   let type = $state('log');
   let url = $state('');
+  let emailTo = $state('');
   let busy = $state(false);
 
   let apiKeys = $state<ApiKey[] | null>(null);
@@ -55,10 +56,12 @@
     busy = true;
     error = null;
     try {
-      const config = type === 'webhook' ? { url } : {};
+      const config =
+        type === 'webhook' ? { url } : type === 'email' ? { to: emailTo } : {};
       const ch = await api.createChannel(type, config);
       channels = [ch, ...(channels ?? [])];
       url = '';
+      emailTo = '';
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to create channel';
     } finally {
@@ -101,6 +104,7 @@
       class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
     >
       <option value="log">Server log</option>
+      <option value="email">Email</option>
       <option value="webhook">Webhook</option>
     </select>
   </div>
@@ -114,6 +118,18 @@
         class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
       />
       <span class="text-xs text-zinc-600">Private and loopback addresses are rejected.</span>
+    </div>
+  {:else if type === 'email'}
+    <div class="flex flex-1 flex-col gap-1.5">
+      <label for="emailto" class="text-xs font-medium text-zinc-400">Send to</label>
+      <input
+        id="emailto"
+        type="email"
+        bind:value={emailTo}
+        placeholder="alerts@yourteam.com"
+        class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+      />
+      <span class="text-xs text-zinc-600">New-issue alerts are emailed here.</span>
     </div>
   {/if}
   <button
@@ -147,6 +163,7 @@
         <span class="inline-block h-1.5 w-1.5 rounded-full {ch.enabled ? 'bg-emerald-400' : 'bg-zinc-600'}"></span>
         <span class="text-sm font-medium capitalize text-zinc-200">{ch.type}</span>
         {#if ch.config?.url}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.url)}</span>{/if}
+        {#if ch.config?.to}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.to)}</span>{/if}
         <button
           onclick={() => removeChannel(ch.id)}
           class="ml-auto shrink-0 text-xs text-zinc-600 transition-colors hover:text-rose-400"

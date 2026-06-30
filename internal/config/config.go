@@ -37,9 +37,23 @@ type Config struct {
 	DisableCSRF        bool
 
 	RedisURL string
+
+	// SMTP for transactional email (alert delivery, password reset). Optional:
+	// when SMTPHost/SMTPFrom are unset, email features quietly no-op so a
+	// self-host without a mail server still runs.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUser     string
+	SMTPPass     string
+	SMTPFrom     string
+	SMTPFromName string
+	SMTPTLS      string // "tls" (implicit 465) | "starttls" (587) | "none" (dev)
 }
 
 func (c Config) IsProduction() bool { return c.Environment == "production" }
+
+// EmailEnabled reports whether transactional email can be sent.
+func (c Config) EmailEnabled() bool { return c.SMTPHost != "" && c.SMTPFrom != "" }
 
 func Load() (Config, error) {
 	c := Config{
@@ -63,6 +77,13 @@ func Load() (Config, error) {
 		SessionIdleTimeout: time.Duration(envInt("SESSION_IDLE_HOURS", 168)) * time.Hour,
 		DisableCSRF:        env("DISABLE_CSRF", "") == "true",
 		RedisURL:           env("REDIS_URL", ""),
+		SMTPHost:           env("SMTP_HOST", ""),
+		SMTPPort:           envInt("SMTP_PORT", 587),
+		SMTPUser:           env("SMTP_USER", ""),
+		SMTPPass:           env("SMTP_PASS", ""),
+		SMTPFrom:           env("SMTP_FROM", ""),
+		SMTPFromName:       env("SMTP_FROM_NAME", "Flare"),
+		SMTPTLS:            env("SMTP_TLS", "starttls"),
 	}
 
 	if c.DatabaseURL == "" {

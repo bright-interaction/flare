@@ -7,6 +7,8 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countUsers = `-- name: CountUsers :one
@@ -18,6 +20,28 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createPasswordResetToken = `-- name: CreatePasswordResetToken :exec
+INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at)
+VALUES ($1, $2, $3, $4)
+`
+
+type CreatePasswordResetTokenParams struct {
+	ID        string             `json:"id"`
+	UserID    string             `json:"user_id"`
+	TokenHash string             `json:"token_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) error {
+	_, err := q.db.Exec(ctx, createPasswordResetToken,
+		arg.ID,
+		arg.UserID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	return err
 }
 
 const createUser = `-- name: CreateUser :one
@@ -49,6 +73,26 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (*User, 
 		&i.Email,
 		&i.PasswordHash,
 		&i.Role,
+		&i.CreatedAt,
+	)
+	return &i, err
+}
+
+const getPasswordResetToken = `-- name: GetPasswordResetToken :one
+SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM password_reset_tokens
+WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+`
+
+// ciguard:allow-unscoped reset flow resolves the user from the secret token_hash; not an org-filtered read
+func (q *Queries) GetPasswordResetToken(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetToken, tokenHash)
+	var i PasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
 		&i.CreatedAt,
 	)
 	return &i, err
@@ -88,4 +132,27 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
 		&i.CreatedAt,
 	)
 	return &i, err
+}
+
+const markPasswordResetTokenUsed = `-- name: MarkPasswordResetTokenUsed :exec
+UPDATE password_reset_tokens SET used_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkPasswordResetTokenUsed(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markPasswordResetTokenUsed, id)
+	return err
+}
+
+const updateUserPassword = `-- name: UpdateUserPassword :exec
+UPDATE users SET password_hash = $2 WHERE id = $1
+`
+
+type UpdateUserPasswordParams struct {
+	ID           string `json:"id"`
+	PasswordHash string `json:"password_hash"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
+	_, err := q.db.Exec(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
+	return err
 }

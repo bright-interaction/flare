@@ -40,8 +40,20 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "webhook channel requires config.url (http/https)")
 			return
 		}
+	case "email":
+		var cfg struct {
+			To string `json:"to"`
+		}
+		if json.Unmarshal(req.Config, &cfg) != nil || !strings.Contains(cfg.To, "@") {
+			writeErr(w, http.StatusBadRequest, "email channel requires a valid config.to address")
+			return
+		}
+		if !s.mailer.Enabled() {
+			writeErr(w, http.StatusBadRequest, "email delivery is not configured on this server (set SMTP_*)")
+			return
+		}
 	default:
-		writeErr(w, http.StatusBadRequest, "type must be webhook or log")
+		writeErr(w, http.StatusBadRequest, "type must be email, webhook, or log")
 		return
 	}
 

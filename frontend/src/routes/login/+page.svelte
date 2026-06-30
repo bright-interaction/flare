@@ -66,7 +66,12 @@
         />
       </div>
       <div class="flex flex-col gap-1.5">
-        <label for="password" class="text-xs font-medium text-zinc-400">Password</label>
+        <div class="flex items-center justify-between">
+          <label for="password" class="text-xs font-medium text-zinc-400">Password</label>
+          {#if mode === 'login'}
+            <a href="/forgot-password" class="text-xs text-zinc-500 transition-colors hover:text-amber-300">Forgot password?</a>
+          {/if}
+        </div>
         <input
           id="password"
           type="password"

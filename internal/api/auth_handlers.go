@@ -2,11 +2,16 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"html"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/bright-interaction/flare/internal/auth"
 	"github.com/bright-interaction/flare/internal/db/generated"
@@ -146,4 +151,100 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toUserResponse(user))
+}
+
+// handleForgotPassword always responds 200 (never reveals whether the email
+// exists). When the account exists and SMTP is configured, it mails a
+// single-use, 1-hour reset link. Only the token hash is stored.
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ok := func() { writeJSON(w, http.StatusOK, map[string]string{"status": "ok"}) }
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	ctx := r.Context()
+	user, err := s.q.GetUserByEmail(ctx, email)
+	if err != nil {
+		ok() // unknown address: respond identically, send nothing.
+		return
+	}
+	if !s.mailer.Enabled() {
+		slog.Warn("password reset requested but SMTP not configured", "email", email)
+		ok()
+		return
+	}
+
+	token, err := id.Token(32)
+	if err != nil {
+		slogError(w, "reset token", err)
+		return
+	}
+	if err := s.q.CreatePasswordResetToken(ctx, generated.CreatePasswordResetTokenParams{
+		ID:        id.New(),
+		UserID:    user.ID,
+		TokenHash: auth.HashAPIKey(token),
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	}); err != nil {
+		slogError(w, "create reset token", err)
+		return
+	}
+
+	link := strings.TrimRight(s.cfg.BaseURL, "/") + "/reset-password?token=" + token
+	go s.sendResetEmail(user.Email, link)
+	ok()
+}
+
+func (s *Server) sendResetEmail(to, link string) {
+	subject := "Reset your Flare password"
+	text := fmt.Sprintf("Reset your Flare password with this link (valid for 1 hour):\n\n%s\n\nIf you did not request this, ignore this email.\n", link)
+	body := fmt.Sprintf(`<div style="font:15px/1.6 -apple-system,Segoe UI,sans-serif;color:#18181b;max-width:520px">
+<h2 style="margin:0 0 8px;font-size:18px">Reset your password</h2>
+<p style="margin:0 0 16px;color:#52525b">Click below to set a new password. This link expires in 1 hour.</p>
+<p style="margin:0 0 16px"><a href="%s" style="display:inline-block;background:#f59e0b;color:#18181b;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600">Reset password</a></p>
+<p style="margin:0;color:#a1a1aa;font-size:13px">If you did not request this, you can ignore this email.</p>
+</div>`, html.EscapeString(link))
+	if err := s.mailer.Send(to, subject, body, text); err != nil {
+		slog.Warn("reset email delivery failed", "error", err)
+	}
+}
+
+// handleResetPassword consumes a valid token and sets the new password.
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+
+	ctx := r.Context()
+	prt, err := s.q.GetPasswordResetToken(ctx, auth.HashAPIKey(strings.TrimSpace(req.Token)))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid or expired reset link")
+		return
+	}
+	hash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		slogError(w, "hash password", err)
+		return
+	}
+	if err := s.q.UpdateUserPassword(ctx, generated.UpdateUserPasswordParams{ID: prt.UserID, PasswordHash: hash}); err != nil {
+		slogError(w, "update password", err)
+		return
+	}
+	if err := s.q.MarkPasswordResetTokenUsed(ctx, prt.ID); err != nil {
+		slog.Warn("mark reset token used", "error", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

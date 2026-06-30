@@ -128,6 +128,15 @@ type Org struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type PasswordResetToken struct {
+	ID        string             `json:"id"`
+	UserID    string             `json:"user_id"`
+	TokenHash string             `json:"token_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	UsedAt    pgtype.Timestamptz `json:"used_at"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Project struct {
 	ID        string             `json:"id"`
 	OrgID     string             `json:"org_id"`

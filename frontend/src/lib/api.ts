@@ -62,6 +62,9 @@ export const api = {
   register: (email: string, password: string, org_name: string) =>
     req<User>('POST', '/auth/register', { email, password, org_name }),
   logout: () => req<void>('POST', '/auth/logout'),
+  forgotPassword: (email: string) => req<void>('POST', '/auth/forgot-password', { email }),
+  resetPassword: (token: string, password: string) =>
+    req<void>('POST', '/auth/reset-password', { token, password }),
 
   projects: () => req<Project[]>('GET', '/projects'),
   createProject: (name: string, platform: string) =>

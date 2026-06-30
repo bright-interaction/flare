@@ -13,6 +13,7 @@ import (
 	"github.com/bright-interaction/flare/internal/analytics"
 	"github.com/bright-interaction/flare/internal/config"
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/email"
 	"github.com/bright-interaction/flare/internal/telemetry"
 	"github.com/bright-interaction/flare/internal/telemetry/pgstore"
 )
@@ -25,9 +26,11 @@ type Server struct {
 	sessions   *scs.SessionManager
 	cfg        config.Config
 	dispatcher *alerts.Dispatcher
+	mailer     *email.Mailer
 }
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
+	mailer := email.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom, cfg.SMTPFromName, cfg.SMTPTLS)
 	return &Server{
 		q:          generated.New(pool),
 		pool:       pool,
@@ -35,7 +38,8 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		analytics:  analyticsMgr,
 		sessions:   sessions,
 		cfg:        cfg,
-		dispatcher: alerts.NewDispatcher(),
+		dispatcher: alerts.NewDispatcher(mailer),
+		mailer:     mailer,
 	}
 }
 

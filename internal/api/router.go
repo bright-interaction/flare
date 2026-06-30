@@ -39,6 +39,8 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 			r.Post("/auth/register", s.handleRegister)
 			r.Post("/auth/login", s.handleLogin)
 			r.Post("/auth/logout", s.handleLogout)
+			r.Post("/auth/forgot-password", s.handleForgotPassword)
+			r.Post("/auth/reset-password", s.handleResetPassword)
 			r.Get("/auth/me", s.handleMe)
 
 			r.Group(func(r chi.Router) {
