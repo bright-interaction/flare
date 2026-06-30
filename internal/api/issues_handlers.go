@@ -21,10 +21,11 @@ type issueResponse struct {
 	Level      string    `json:"level"`
 	Status     string    `json:"status"`
 	Platform   string    `json:"platform"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
-	EventCount int64     `json:"event_count"`
-	GithubURL  string    `json:"github_url"`
+	FirstSeen    time.Time `json:"first_seen"`
+	LastSeen     time.Time `json:"last_seen"`
+	EventCount   int64     `json:"event_count"`
+	GithubURL    string    `json:"github_url"`
+	FirstRelease string    `json:"first_release"`
 }
 
 func toIssueResponse(i telemetry.Issue) issueResponse {
@@ -32,7 +33,7 @@ func toIssueResponse(i telemetry.Issue) issueResponse {
 		ID: i.ID, Title: i.Title, Culprit: i.Culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, EventCount: i.EventCount,
-		GithubURL: i.GithubURL,
+		GithubURL: i.GithubURL, FirstRelease: i.FirstRelease,
 	}
 }
 
@@ -43,7 +44,7 @@ func genIssueToResponse(i *generated.Issue) issueResponse {
 		ID: i.ID, Title: i.Title, Culprit: i.Culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen.Time, LastSeen: i.LastSeen.Time, EventCount: i.EventCount,
-		GithubURL: i.GithubUrl,
+		GithubURL: i.GithubUrl, FirstRelease: i.FirstRelease,
 	}
 }
 

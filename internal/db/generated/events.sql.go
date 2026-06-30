@@ -47,7 +47,7 @@ func (q *Queries) CountIssues(ctx context.Context, arg CountIssuesParams) (int64
 }
 
 const getIssue = `-- name: GetIssue :one
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url FROM issues WHERE id = $1 AND org_id = $2
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release FROM issues WHERE id = $1 AND org_id = $2
 `
 
 type GetIssueParams struct {
@@ -74,6 +74,7 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (*Issue, err
 		&i.EventCount,
 		&i.LastSpikeAt,
 		&i.GithubUrl,
+		&i.FirstRelease,
 	)
 	return &i, err
 }
@@ -197,7 +198,7 @@ func (q *Queries) ListEventsByIssue(ctx context.Context, arg ListEventsByIssuePa
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url FROM issues
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
@@ -243,6 +244,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 			&i.EventCount,
 			&i.LastSpikeAt,
 			&i.GithubUrl,
+			&i.FirstRelease,
 		); err != nil {
 			return nil, err
 		}
@@ -293,7 +295,7 @@ func (q *Queries) TrySetIssueSpike(ctx context.Context, arg TrySetIssueSpikePara
 }
 
 const updateIssueStatus = `-- name: UpdateIssueStatus :one
-UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url
+UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release
 `
 
 type UpdateIssueStatusParams struct {
@@ -321,13 +323,14 @@ func (q *Queries) UpdateIssueStatus(ctx context.Context, arg UpdateIssueStatusPa
 		&i.EventCount,
 		&i.LastSpikeAt,
 		&i.GithubUrl,
+		&i.FirstRelease,
 	)
 	return &i, err
 }
 
 const upsertIssue = `-- name: UpsertIssue :one
-INSERT INTO issues (id, project_id, org_id, fingerprint, title, culprit, level, platform, first_seen, last_seen, event_count)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), 1)
+INSERT INTO issues (id, project_id, org_id, fingerprint, title, culprit, level, platform, first_release, first_seen, last_seen, event_count)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), 1)
 ON CONFLICT (project_id, fingerprint) DO UPDATE
 SET last_seen    = now(),
     event_count  = issues.event_count + 1,
@@ -335,34 +338,36 @@ SET last_seen    = now(),
     title        = EXCLUDED.title,
     culprit      = EXCLUDED.culprit
 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform,
-          first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new
+          first_release, first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new
 `
 
 type UpsertIssueParams struct {
-	ID          string `json:"id"`
-	ProjectID   string `json:"project_id"`
-	OrgID       string `json:"org_id"`
-	Fingerprint string `json:"fingerprint"`
-	Title       string `json:"title"`
-	Culprit     string `json:"culprit"`
-	Level       string `json:"level"`
-	Platform    string `json:"platform"`
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	OrgID        string `json:"org_id"`
+	Fingerprint  string `json:"fingerprint"`
+	Title        string `json:"title"`
+	Culprit      string `json:"culprit"`
+	Level        string `json:"level"`
+	Platform     string `json:"platform"`
+	FirstRelease string `json:"first_release"`
 }
 
 type UpsertIssueRow struct {
-	ID          string             `json:"id"`
-	ProjectID   string             `json:"project_id"`
-	OrgID       string             `json:"org_id"`
-	Fingerprint string             `json:"fingerprint"`
-	Title       string             `json:"title"`
-	Culprit     string             `json:"culprit"`
-	Level       string             `json:"level"`
-	Status      string             `json:"status"`
-	Platform    string             `json:"platform"`
-	FirstSeen   pgtype.Timestamptz `json:"first_seen"`
-	LastSeen    pgtype.Timestamptz `json:"last_seen"`
-	EventCount  int64              `json:"event_count"`
-	IsNew       bool               `json:"is_new"`
+	ID           string             `json:"id"`
+	ProjectID    string             `json:"project_id"`
+	OrgID        string             `json:"org_id"`
+	Fingerprint  string             `json:"fingerprint"`
+	Title        string             `json:"title"`
+	Culprit      string             `json:"culprit"`
+	Level        string             `json:"level"`
+	Status       string             `json:"status"`
+	Platform     string             `json:"platform"`
+	FirstRelease string             `json:"first_release"`
+	FirstSeen    pgtype.Timestamptz `json:"first_seen"`
+	LastSeen     pgtype.Timestamptz `json:"last_seen"`
+	EventCount   int64              `json:"event_count"`
+	IsNew        bool               `json:"is_new"`
 }
 
 // Groups an incoming event into its issue. is_new distinguishes a freshly
@@ -379,6 +384,7 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (*Upse
 		arg.Culprit,
 		arg.Level,
 		arg.Platform,
+		arg.FirstRelease,
 	)
 	var i UpsertIssueRow
 	err := row.Scan(
@@ -391,6 +397,7 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (*Upse
 		&i.Level,
 		&i.Status,
 		&i.Platform,
+		&i.FirstRelease,
 		&i.FirstSeen,
 		&i.LastSeen,
 		&i.EventCount,

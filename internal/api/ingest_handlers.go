@@ -79,15 +79,24 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		eventID = id.New()
 	}
 
+	// Auto-track the release this event reports (deploy markers can also
+	// register one explicitly). Best-effort: a failure never blocks ingest.
+	if ev.Release != "" {
+		_ = s.q.UpsertRelease(ctx, generated.UpsertReleaseParams{
+			ID: id.New(), ProjectID: project.ID, OrgID: project.OrgID, Version: ev.Release,
+		})
+	}
+
 	issue, err := s.q.UpsertIssue(ctx, generated.UpsertIssueParams{
-		ID:          id.New(),
-		ProjectID:   project.ID,
-		OrgID:       project.OrgID,
-		Fingerprint: ev.Fingerprint(),
-		Title:       ev.Title,
-		Culprit:     ev.Culprit,
-		Level:       ev.Level,
-		Platform:    ev.Platform,
+		ID:           id.New(),
+		ProjectID:    project.ID,
+		OrgID:        project.OrgID,
+		Fingerprint:  ev.Fingerprint(),
+		Title:        ev.Title,
+		Culprit:      ev.Culprit,
+		Level:        ev.Level,
+		Platform:     ev.Platform,
+		FirstRelease: ev.Release,
 	})
 	if err != nil {
 		return "", err

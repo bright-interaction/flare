@@ -68,6 +68,9 @@
       </div>
       <h1 class="mt-2 text-lg font-semibold tracking-tight break-words">{issue.title}</h1>
       {#if issue.culprit}<p class="mt-1 font-mono text-sm text-zinc-500">{issue.culprit}</p>{/if}
+      {#if issue.first_release}
+        <p class="mt-1 text-xs text-zinc-500">first seen in <span class="font-mono text-zinc-400">{issue.first_release}</span></p>
+      {/if}
     </div>
     <div class="flex flex-wrap gap-2">
       {#if issue.github_url}

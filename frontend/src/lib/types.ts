@@ -25,6 +25,13 @@ export interface Issue {
   last_seen: string;
   event_count: number;
   github_url: string;
+  first_release: string;
+}
+
+export interface Release {
+  version: string;
+  created_at: string;
+  new_issues: number;
 }
 
 export interface GithubConfig {

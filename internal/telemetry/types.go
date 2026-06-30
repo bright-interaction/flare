@@ -19,10 +19,11 @@ type Issue struct {
 	Level       string
 	Status      string
 	Platform    string
-	FirstSeen   time.Time
-	LastSeen    time.Time
-	EventCount  int64
-	GithubURL   string
+	FirstSeen    time.Time
+	LastSeen     time.Time
+	EventCount   int64
+	GithubURL    string
+	FirstRelease string
 }
 
 type Event struct {

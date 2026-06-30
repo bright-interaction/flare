@@ -94,20 +94,21 @@ type Invitation struct {
 }
 
 type Issue struct {
-	ID          string             `json:"id"`
-	ProjectID   string             `json:"project_id"`
-	OrgID       string             `json:"org_id"`
-	Fingerprint string             `json:"fingerprint"`
-	Title       string             `json:"title"`
-	Culprit     string             `json:"culprit"`
-	Level       string             `json:"level"`
-	Status      string             `json:"status"`
-	Platform    string             `json:"platform"`
-	FirstSeen   pgtype.Timestamptz `json:"first_seen"`
-	LastSeen    pgtype.Timestamptz `json:"last_seen"`
-	EventCount  int64              `json:"event_count"`
-	LastSpikeAt pgtype.Timestamptz `json:"last_spike_at"`
-	GithubUrl   string             `json:"github_url"`
+	ID           string             `json:"id"`
+	ProjectID    string             `json:"project_id"`
+	OrgID        string             `json:"org_id"`
+	Fingerprint  string             `json:"fingerprint"`
+	Title        string             `json:"title"`
+	Culprit      string             `json:"culprit"`
+	Level        string             `json:"level"`
+	Status       string             `json:"status"`
+	Platform     string             `json:"platform"`
+	FirstSeen    pgtype.Timestamptz `json:"first_seen"`
+	LastSeen     pgtype.Timestamptz `json:"last_seen"`
+	EventCount   int64              `json:"event_count"`
+	LastSpikeAt  pgtype.Timestamptz `json:"last_spike_at"`
+	GithubUrl    string             `json:"github_url"`
+	FirstRelease string             `json:"first_release"`
 }
 
 type Log struct {
@@ -168,6 +169,14 @@ type Project struct {
 	PublicKey string             `json:"public_key"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	DsnID     string             `json:"dsn_id"`
+}
+
+type Release struct {
+	ID        string             `json:"id"`
+	ProjectID string             `json:"project_id"`
+	OrgID     string             `json:"org_id"`
+	Version   string             `json:"version"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Session struct {

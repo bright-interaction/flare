@@ -7,6 +7,7 @@ import type {
   GithubConfig,
   Invite,
   Member,
+  Release,
   Issue,
   IssueEvent,
   LogRow,
@@ -112,6 +113,10 @@ export const api = {
 
   logVolume: (pid: string, hours = 24) =>
     req<LogVolumeBucket[]>('GET', `/projects/${pid}/analytics/log-volume?hours=${hours}`),
+
+  releases: (pid: string) => req<Release[]>('GET', `/projects/${pid}/releases`),
+  createRelease: (pid: string, version: string) =>
+    req<Release>('POST', `/projects/${pid}/releases`, { version }),
 
   traces: (pid: string) => req<TraceSummary[]>('GET', `/projects/${pid}/traces`),
   trace: (pid: string, traceID: string) => req<Span[]>('GET', `/projects/${pid}/traces/${traceID}`),

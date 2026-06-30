@@ -3,8 +3,8 @@
 -- created issue (first_seen == last_seen on insert) from a recurrence. Status
 -- is intentionally left untouched on conflict so RETURNING exposes the PRIOR
 -- status: the caller reopens a 'resolved' issue and fires a regression alert.
-INSERT INTO issues (id, project_id, org_id, fingerprint, title, culprit, level, platform, first_seen, last_seen, event_count)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), 1)
+INSERT INTO issues (id, project_id, org_id, fingerprint, title, culprit, level, platform, first_release, first_seen, last_seen, event_count)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), 1)
 ON CONFLICT (project_id, fingerprint) DO UPDATE
 SET last_seen    = now(),
     event_count  = issues.event_count + 1,
@@ -12,7 +12,7 @@ SET last_seen    = now(),
     title        = EXCLUDED.title,
     culprit      = EXCLUDED.culprit
 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform,
-          first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new;
+          first_release, first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new;
 
 -- ciguard:allow-no-project reopen by project-unique issue id
 -- name: ReopenIssue :exec
