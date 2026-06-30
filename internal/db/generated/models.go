@@ -153,6 +153,16 @@ type NotificationChannel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type OidcConfig struct {
+	OrgID        string             `json:"org_id"`
+	Issuer       string             `json:"issuer"`
+	ClientID     string             `json:"client_id"`
+	ClientSecret string             `json:"client_secret"`
+	DefaultRole  string             `json:"default_role"`
+	Enabled      bool               `json:"enabled"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Org struct {
 	ID        string             `json:"id"`
 	Name      string             `json:"name"`

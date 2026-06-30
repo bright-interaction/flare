@@ -46,6 +46,15 @@ export interface AuditEntry {
   created_at: string;
 }
 
+export interface OidcConfig {
+  enabled: boolean;
+  issuer: string;
+  client_id: string;
+  default_role: string;
+  redirect_uri: string;
+  login_url: string;
+}
+
 export interface Frame {
   filename?: string;
   function?: string;

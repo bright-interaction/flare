@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
 
@@ -9,6 +11,29 @@
   let orgName = $state('');
   let error = $state<string | null>(null);
   let busy = $state(false);
+
+  let ssoOpen = $state(false);
+  let ssoOrg = $state('');
+
+  const ssoErrors: Record<string, string> = {
+    sso_unknown_org: 'No workspace with that name.',
+    sso_disabled: 'SSO is not enabled for that workspace.',
+    sso_state: 'The sign-in link expired. Please try again.',
+    sso_unverified: 'Your identity provider has not verified your email.',
+    sso_other_org: 'That account belongs to a different workspace.',
+    sso_provision: 'Could not create your account. Ask an admin to invite you.'
+  };
+
+  onMount(() => {
+    const code = page.url.searchParams.get('error');
+    if (code) error = ssoErrors[code] ?? 'Single sign-on failed. Please try again.';
+  });
+
+  function startSso(e: SubmitEvent) {
+    e.preventDefault();
+    if (!ssoOrg.trim()) return;
+    window.location.href = '/api/auth/oidc/start?org=' + encodeURIComponent(ssoOrg.trim());
+  }
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
@@ -107,5 +132,24 @@
     >
       {mode === 'login' ? 'Need an account? Create one' : 'Have an account? Sign in'}
     </button>
+
+    {#if mode === 'login'}
+      <div class="mt-6 border-t border-zinc-800/80 pt-5">
+        {#if ssoOpen}
+          <form onsubmit={startSso} class="flex gap-2">
+            <input
+              bind:value={ssoOrg}
+              placeholder="workspace name"
+              class="flex-1 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+            />
+            <button type="submit" class="rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px">Continue</button>
+          </form>
+        {:else}
+          <button onclick={() => (ssoOpen = true)} class="text-sm text-zinc-400 transition-colors hover:text-zinc-200">
+            Sign in with SSO
+          </button>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>

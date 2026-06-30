@@ -4,7 +4,7 @@
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
   import { relativeTime } from '$lib/format';
-  import type { ApiKey, AuditEntry, Channel, GithubConfig } from '$lib/types';
+  import type { ApiKey, AuditEntry, Channel, GithubConfig, OidcConfig } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
   let error = $state<string | null>(null);
@@ -31,6 +31,15 @@
   let confirmDelete = $state('');
   let deletingOrg = $state(false);
 
+  let oidc = $state<OidcConfig | null>(null);
+  let ssoIssuer = $state('');
+  let ssoClientId = $state('');
+  let ssoSecret = $state('');
+  let ssoRole = $state('member');
+  let ssoEnabled = $state(false);
+  let ssoBusy = $state(false);
+  let copiedRedirect = $state(false);
+
   $effect(() => {
     if (session.loaded && !session.user) goto('/login', { replaceState: true });
   });
@@ -45,6 +54,11 @@
         github = await api.githubConfig();
         ghRepo = github.repo;
         audit = await api.auditLog();
+        oidc = await api.oidcConfig();
+        ssoIssuer = oidc.issuer;
+        ssoClientId = oidc.client_id;
+        ssoRole = oidc.default_role || 'member';
+        ssoEnabled = oidc.enabled;
       }
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load settings';
@@ -86,6 +100,46 @@
 
   function fmtAction(a: string) {
     return a.replace(/\./g, ' ');
+  }
+
+  async function saveOidc(e: SubmitEvent) {
+    e.preventDefault();
+    ssoBusy = true;
+    error = null;
+    try {
+      oidc = await api.setOidcConfig({
+        issuer: ssoIssuer.trim(),
+        client_id: ssoClientId.trim(),
+        client_secret: ssoSecret.trim(), // blank keeps the stored secret (server-side)
+        default_role: ssoRole,
+        enabled: ssoEnabled
+      });
+      ssoSecret = '';
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to save SSO config';
+    } finally {
+      ssoBusy = false;
+    }
+  }
+
+  async function disconnectOidc() {
+    if (!confirm('Disconnect SSO? Members will sign in with email + password again.')) return;
+    try {
+      await api.deleteOidcConfig();
+      oidc = await api.oidcConfig();
+      ssoIssuer = '';
+      ssoClientId = '';
+      ssoEnabled = false;
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to disconnect SSO';
+    }
+  }
+
+  async function copyRedirect() {
+    if (!oidc) return;
+    await navigator.clipboard.writeText(oidc.redirect_uri);
+    copiedRedirect = true;
+    setTimeout(() => (copiedRedirect = false), 1500);
   }
 
   async function saveGithub(e: SubmitEvent) {
@@ -373,6 +427,64 @@
     >
       {ghBusy ? 'Saving...' : github?.configured ? 'Update' : 'Connect'}
     </button>
+  </form>
+
+  <h2 class="mt-14 text-xl font-semibold tracking-tight">Single sign-on (OIDC)</h2>
+  <p class="mt-1 mb-4 text-sm text-zinc-500">
+    Let members sign in through your identity provider (Zitadel, Okta, Auth0, Keycloak, Entra). Register an
+    OIDC app there with the redirect URI below, then paste its client id + secret.
+  </p>
+
+  {#if oidc}
+    <div class="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-zinc-800/80 bg-zinc-900/40 px-4 py-3 text-sm">
+      <span class="text-zinc-400">Redirect URI</span>
+      <code class="truncate font-mono text-[12px] text-zinc-300">{oidc.redirect_uri}</code>
+      <button onclick={copyRedirect} class="rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:border-zinc-700 hover:text-zinc-200">
+        {copiedRedirect ? 'Copied' : 'Copy'}
+      </button>
+      {#if oidc.enabled}
+        <span class="ml-auto inline-flex items-center gap-1.5 text-xs text-emerald-400"><span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>enabled</span>
+      {/if}
+    </div>
+  {/if}
+
+  <form onsubmit={saveOidc} class="space-y-3">
+    <div class="flex flex-wrap gap-3">
+      <div class="flex flex-1 flex-col gap-1.5">
+        <label for="ssoissuer" class="text-xs font-medium text-zinc-400">Issuer URL</label>
+        <input id="ssoissuer" bind:value={ssoIssuer} placeholder="https://auth.example.com" class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60" />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="ssorole" class="text-xs font-medium text-zinc-400">Default role for new members</label>
+        <select id="ssorole" bind:value={ssoRole} class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm capitalize outline-none focus:border-amber-400/60">
+          <option value="viewer">viewer</option>
+          <option value="member">member</option>
+          <option value="admin">admin</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-3">
+      <div class="flex flex-1 flex-col gap-1.5">
+        <label for="ssocid" class="text-xs font-medium text-zinc-400">Client ID</label>
+        <input id="ssocid" bind:value={ssoClientId} placeholder="client id" class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60" />
+      </div>
+      <div class="flex flex-1 flex-col gap-1.5">
+        <label for="ssosecret" class="text-xs font-medium text-zinc-400">{oidc?.issuer ? 'Replace client secret' : 'Client secret'}</label>
+        <input id="ssosecret" type="password" bind:value={ssoSecret} placeholder={oidc?.issuer ? 'leave blank to keep' : 'client secret'} class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60" />
+      </div>
+    </div>
+    <label class="flex items-center gap-2 text-sm text-zinc-300">
+      <input type="checkbox" bind:checked={ssoEnabled} class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 accent-amber-400" />
+      Enable SSO sign-in for this workspace
+    </label>
+    <div class="flex items-center gap-3">
+      <button type="submit" disabled={ssoBusy} class="rounded-md bg-amber-400 px-3.5 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-amber-300 active:translate-y-px disabled:opacity-60">
+        {ssoBusy ? 'Saving...' : 'Save SSO'}
+      </button>
+      {#if oidc?.issuer}
+        <button type="button" onclick={disconnectOidc} class="text-xs text-zinc-600 transition-colors hover:text-rose-400">Disconnect</button>
+      {/if}
+    </div>
   </form>
 
   <h2 class="mt-14 text-xl font-semibold tracking-tight">Audit log</h2>

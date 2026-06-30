@@ -43,6 +43,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 			r.Post("/auth/reset-password", s.handleResetPassword)
 			r.Post("/auth/accept-invite", s.handleAcceptInvite)
 			r.Get("/auth/me", s.handleMe)
+			// SSO browser redirects (GET, so CSRF middleware passes them through).
+			r.Get("/auth/oidc/start", s.handleOIDCStart)
+			r.Get("/auth/oidc/callback", s.handleOIDCCallback)
 
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAuth)
@@ -99,6 +102,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Delete("/integrations/github", s.handleDeleteGithubConfig)
 					r.Get("/audit-log", s.handleListAuditLog)
 					r.Get("/export", s.handleExport)
+					r.Get("/integrations/oidc", s.handleGetOIDCConfig)
+					r.Put("/integrations/oidc", s.handleSetOIDCConfig)
+					r.Delete("/integrations/oidc", s.handleDeleteOIDCConfig)
 				})
 
 				// Workspace erasure: owner only.

@@ -8,6 +8,7 @@ import type {
   GithubConfig,
   Invite,
   Member,
+  OidcConfig,
   Release,
   Issue,
   IssueEvent,
@@ -80,6 +81,16 @@ export const api = {
   deleteGithubConfig: () => req<void>('DELETE', '/integrations/github'),
   createGithubIssue: (issueId: string) =>
     req<{ github_url: string }>('POST', `/issues/${issueId}/github`),
+
+  oidcConfig: () => req<OidcConfig>('GET', '/integrations/oidc'),
+  setOidcConfig: (cfg: {
+    issuer: string;
+    client_id: string;
+    client_secret: string;
+    default_role: string;
+    enabled: boolean;
+  }) => req<OidcConfig>('PUT', '/integrations/oidc', cfg),
+  deleteOidcConfig: () => req<void>('DELETE', '/integrations/oidc'),
 
   auditLog: () => req<AuditEntry[]>('GET', '/audit-log'),
   exportData: () => req<Record<string, unknown>>('GET', '/export'),
