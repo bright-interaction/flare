@@ -47,6 +47,24 @@ export interface Artifact {
   created_at: string;
 }
 
+export interface Member {
+  id: string;
+  email: string;
+  role: string;
+  is_you: boolean;
+  created_at: string;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: string;
+  expires_at: string;
+  created_at: string;
+  accept_url?: string;
+  emailed?: boolean;
+}
+
 export interface IssueEvent {
   id: string;
   level: string;

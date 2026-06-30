@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countOwnersByOrg = `-- name: CountOwnersByOrg :one
+SELECT count(*) FROM users WHERE org_id = $1 AND role = 'owner'
+`
+
+func (q *Queries) CountOwnersByOrg(ctx context.Context, orgID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countOwnersByOrg, orgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
 `
@@ -78,6 +89,23 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (*User, 
 	return &i, err
 }
 
+const deleteUser = `-- name: DeleteUser :execrows
+DELETE FROM users WHERE id = $1 AND org_id = $2
+`
+
+type DeleteUserParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+func (q *Queries) DeleteUser(ctx context.Context, arg DeleteUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUser, arg.ID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getPasswordResetToken = `-- name: GetPasswordResetToken :one
 SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM password_reset_tokens
 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
@@ -134,6 +162,65 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return &i, err
 }
 
+const getUserInOrg = `-- name: GetUserInOrg :one
+SELECT id, org_id, email, password_hash, role, created_at FROM users WHERE id = $1 AND org_id = $2
+`
+
+type GetUserInOrgParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+func (q *Queries) GetUserInOrg(ctx context.Context, arg GetUserInOrgParams) (*User, error) {
+	row := q.db.QueryRow(ctx, getUserInOrg, arg.ID, arg.OrgID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+	)
+	return &i, err
+}
+
+const listUsersByOrg = `-- name: ListUsersByOrg :many
+SELECT id, email, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at ASC
+`
+
+type ListUsersByOrgRow struct {
+	ID        string             `json:"id"`
+	Email     string             `json:"email"`
+	Role      string             `json:"role"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListUsersByOrg(ctx context.Context, orgID string) ([]*ListUsersByOrgRow, error) {
+	rows, err := q.db.Query(ctx, listUsersByOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*ListUsersByOrgRow{}
+	for rows.Next() {
+		var i ListUsersByOrgRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Role,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markPasswordResetTokenUsed = `-- name: MarkPasswordResetTokenUsed :exec
 UPDATE password_reset_tokens SET used_at = now() WHERE id = $1
 `
@@ -155,4 +242,22 @@ type UpdateUserPasswordParams struct {
 func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
 	_, err := q.db.Exec(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
 	return err
+}
+
+const updateUserRole = `-- name: UpdateUserRole :execrows
+UPDATE users SET role = $3 WHERE id = $1 AND org_id = $2
+`
+
+type UpdateUserRoleParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+	Role  string `json:"role"`
+}
+
+func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserRole, arg.ID, arg.OrgID, arg.Role)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

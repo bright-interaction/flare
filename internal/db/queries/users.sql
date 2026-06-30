@@ -26,3 +26,18 @@ WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now();
 
 -- name: MarkPasswordResetTokenUsed :exec
 UPDATE password_reset_tokens SET used_at = now() WHERE id = $1;
+
+-- name: ListUsersByOrg :many
+SELECT id, email, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at ASC;
+
+-- name: GetUserInOrg :one
+SELECT * FROM users WHERE id = $1 AND org_id = $2;
+
+-- name: UpdateUserRole :execrows
+UPDATE users SET role = $3 WHERE id = $1 AND org_id = $2;
+
+-- name: DeleteUser :execrows
+DELETE FROM users WHERE id = $1 AND org_id = $2;
+
+-- name: CountOwnersByOrg :one
+SELECT count(*) FROM users WHERE org_id = $1 AND role = 'owner';

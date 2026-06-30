@@ -73,6 +73,18 @@ type ExportLog struct {
 	RowCount   int64              `json:"row_count"`
 }
 
+type Invitation struct {
+	ID         string             `json:"id"`
+	OrgID      string             `json:"org_id"`
+	Email      string             `json:"email"`
+	Role       string             `json:"role"`
+	TokenHash  string             `json:"token_hash"`
+	InvitedBy  pgtype.Text        `json:"invited_by"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
+	AcceptedAt pgtype.Timestamptz `json:"accepted_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
 type Issue struct {
 	ID          string             `json:"id"`
 	ProjectID   string             `json:"project_id"`

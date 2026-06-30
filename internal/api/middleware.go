@@ -29,20 +29,26 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		// Session: re-read the user row so a removed user is rejected and a
+		// role change takes effect on the next request (no stale session role).
 		if uid := s.sessions.GetString(ctx, "user_id"); uid != "" {
-			if oid := s.sessions.GetString(ctx, "org_id"); oid != "" {
-				ctx = context.WithValue(ctx, ctxUserID, uid)
-				ctx = context.WithValue(ctx, ctxOrgID, oid)
+			if user, err := s.q.GetUserByID(ctx, uid); err == nil {
+				ctx = context.WithValue(ctx, ctxUserID, user.ID)
+				ctx = context.WithValue(ctx, ctxOrgID, user.OrgID)
+				ctx = context.WithValue(ctx, ctxRole, user.Role)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 		}
 
+		// API key: org-scoped programmatic access (provisioning, source-map
+		// upload, ingest). Acts at member level, never team management.
 		if key := bearerToken(r); key != "" {
 			ak, err := s.q.GetAPIKeyByHash(ctx, auth.HashAPIKey(key))
 			if err == nil && (!ak.ExpiresAt.Valid || ak.ExpiresAt.Time.After(time.Now())) {
 				_ = s.q.TouchAPIKey(ctx, ak.ID)
 				ctx = context.WithValue(ctx, ctxOrgID, ak.OrgID)
+				ctx = context.WithValue(ctx, ctxRole, "member")
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -50,6 +56,20 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 
 		writeErr(w, http.StatusUnauthorized, "authentication required")
 	})
+}
+
+// requireRole returns middleware that rejects callers below min in the role
+// hierarchy with 403.
+func (s *Server) requireRole(min string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !roleAtLeast(roleFrom(r.Context()), min) {
+				writeErr(w, http.StatusForbidden, "insufficient permissions for this action")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(r.Context()))
+		})
+	}
 }
 
 func bearerToken(r *http.Request) string {

@@ -41,16 +41,15 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 			r.Post("/auth/logout", s.handleLogout)
 			r.Post("/auth/forgot-password", s.handleForgotPassword)
 			r.Post("/auth/reset-password", s.handleResetPassword)
+			r.Post("/auth/accept-invite", s.handleAcceptInvite)
 			r.Get("/auth/me", s.handleMe)
 
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAuth)
 
-				r.Post("/projects", s.handleCreateProject)
-				r.Post("/projects/provision", s.handleProvisionProject)
+				// Reads: any authenticated role (viewer+).
 				r.Get("/projects", s.handleListProjects)
 				r.Get("/projects/{id}", s.handleGetProject)
-				r.Delete("/projects/{id}", s.handleDeleteProject)
 				r.Get("/projects/{id}/issues", s.handleListIssues)
 				r.Get("/projects/{id}/logs", s.handleSearchLogs)
 				r.Get("/projects/{id}/traces", s.handleListTraces)
@@ -58,23 +57,41 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects/{id}/analytics/log-volume", s.handleLogVolume)
 				r.Get("/projects/{id}/analytics/span-latency", s.handleSpanLatency)
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
-				r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
-				r.Delete("/projects/{id}/alert-rules/{ruleID}", s.handleDeleteAlertRule)
 				r.Get("/projects/{id}/artifacts", s.handleListSourceMaps)
-				r.Post("/projects/{id}/artifacts", s.handleUploadSourceMap)
-				r.Delete("/projects/{id}/artifacts/{artifactID}", s.handleDeleteSourceMap)
-
 				r.Get("/issues/{id}", s.handleGetIssue)
 				r.Get("/issues/{id}/events", s.handleListIssueEvents)
-				r.Patch("/issues/{id}", s.handleUpdateIssueStatus)
-
 				r.Get("/channels", s.handleListChannels)
-				r.Post("/channels", s.handleCreateChannel)
-				r.Delete("/channels/{id}", s.handleDeleteChannel)
-
 				r.Get("/keys", s.handleListAPIKeys)
-				r.Post("/keys", s.handleCreateAPIKey)
-				r.Delete("/keys/{id}", s.handleDeleteAPIKey)
+				r.Get("/members", s.handleListMembers)
+
+				// Writes: member+ (viewers are read-only). API keys act here.
+				r.Group(func(r chi.Router) {
+					r.Use(s.requireRole("member"))
+
+					r.Post("/projects", s.handleCreateProject)
+					r.Post("/projects/provision", s.handleProvisionProject)
+					r.Delete("/projects/{id}", s.handleDeleteProject)
+					r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
+					r.Delete("/projects/{id}/alert-rules/{ruleID}", s.handleDeleteAlertRule)
+					r.Post("/projects/{id}/artifacts", s.handleUploadSourceMap)
+					r.Delete("/projects/{id}/artifacts/{artifactID}", s.handleDeleteSourceMap)
+					r.Patch("/issues/{id}", s.handleUpdateIssueStatus)
+					r.Post("/channels", s.handleCreateChannel)
+					r.Delete("/channels/{id}", s.handleDeleteChannel)
+					r.Post("/keys", s.handleCreateAPIKey)
+					r.Delete("/keys/{id}", s.handleDeleteAPIKey)
+				})
+
+				// Team management: admin+.
+				r.Group(func(r chi.Router) {
+					r.Use(s.requireRole("admin"))
+
+					r.Patch("/members/{userID}", s.handleUpdateMemberRole)
+					r.Delete("/members/{userID}", s.handleRemoveMember)
+					r.Get("/invites", s.handleListInvites)
+					r.Post("/invites", s.handleInviteMember)
+					r.Delete("/invites/{inviteID}", s.handleRevokeInvite)
+				})
 			})
 		})
 	})

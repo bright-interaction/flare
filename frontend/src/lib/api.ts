@@ -4,6 +4,8 @@ import type {
   ApiKeyCreated,
   Artifact,
   Channel,
+  Invite,
+  Member,
   Issue,
   IssueEvent,
   LogRow,
@@ -66,6 +68,16 @@ export const api = {
   forgotPassword: (email: string) => req<void>('POST', '/auth/forgot-password', { email }),
   resetPassword: (token: string, password: string) =>
     req<void>('POST', '/auth/reset-password', { token, password }),
+  acceptInvite: (token: string, password: string) =>
+    req<User>('POST', '/auth/accept-invite', { token, password }),
+
+  members: () => req<Member[]>('GET', '/members'),
+  updateMemberRole: (userId: string, role: string) =>
+    req<void>('PATCH', `/members/${userId}`, { role }),
+  removeMember: (userId: string) => req<void>('DELETE', `/members/${userId}`),
+  invites: () => req<Invite[]>('GET', '/invites'),
+  inviteMember: (email: string, role: string) => req<Invite>('POST', '/invites', { email, role }),
+  revokeInvite: (inviteId: string) => req<void>('DELETE', `/invites/${inviteId}`),
 
   projects: () => req<Project[]>('GET', '/projects'),
   createProject: (name: string, platform: string) =>
