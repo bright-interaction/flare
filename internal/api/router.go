@@ -97,7 +97,12 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Delete("/invites/{inviteID}", s.handleRevokeInvite)
 					r.Put("/integrations/github", s.handleSetGithubConfig)
 					r.Delete("/integrations/github", s.handleDeleteGithubConfig)
+					r.Get("/audit-log", s.handleListAuditLog)
+					r.Get("/export", s.handleExport)
 				})
+
+				// Workspace erasure: owner only.
+				r.With(s.requireRole("owner")).Delete("/org", s.handleDeleteOrg)
 			})
 		})
 	})

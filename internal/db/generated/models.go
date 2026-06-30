@@ -33,6 +33,15 @@ type ApiKey struct {
 	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
 }
 
+type AuditLog struct {
+	ID          string             `json:"id"`
+	OrgID       string             `json:"org_id"`
+	ActorUserID pgtype.Text        `json:"actor_user_id"`
+	Action      string             `json:"action"`
+	Target      string             `json:"target"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Event struct {
 	ID             string             `json:"id"`
 	ProjectID      string             `json:"project_id"`

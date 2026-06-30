@@ -3,7 +3,8 @@
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
-  import type { ApiKey, Channel, GithubConfig } from '$lib/types';
+  import { relativeTime } from '$lib/format';
+  import type { ApiKey, AuditEntry, Channel, GithubConfig } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
   let error = $state<string | null>(null);
@@ -23,6 +24,12 @@
   let ghToken = $state('');
   let ghBusy = $state(false);
   const isAdmin = $derived(session.user?.role === 'admin' || session.user?.role === 'owner');
+  const isOwner = $derived(session.user?.role === 'owner');
+
+  let audit = $state<AuditEntry[]>([]);
+  let exporting = $state(false);
+  let confirmDelete = $state('');
+  let deletingOrg = $state(false);
 
   $effect(() => {
     if (session.loaded && !session.user) goto('/login', { replaceState: true });
@@ -37,10 +44,48 @@
       if (isAdmin) {
         github = await api.githubConfig();
         ghRepo = github.repo;
+        audit = await api.auditLog();
       }
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load settings';
     }
+  }
+
+  async function exportData() {
+    exporting = true;
+    error = null;
+    try {
+      const bundle = await api.exportData();
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'flare-export.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Export failed';
+    } finally {
+      exporting = false;
+    }
+  }
+
+  async function deleteOrg() {
+    if (confirmDelete !== 'DELETE') return;
+    deletingOrg = true;
+    error = null;
+    try {
+      await api.deleteOrg();
+      session.user = null;
+      goto('/login', { replaceState: true });
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to delete workspace';
+      deletingOrg = false;
+    }
+  }
+
+  function fmtAction(a: string) {
+    return a.replace(/\./g, ' ');
   }
 
   async function saveGithub(e: SubmitEvent) {
@@ -329,4 +374,56 @@
       {ghBusy ? 'Saving...' : github?.configured ? 'Update' : 'Connect'}
     </button>
   </form>
+
+  <h2 class="mt-14 text-xl font-semibold tracking-tight">Audit log</h2>
+  <p class="mt-1 mb-6 text-sm text-zinc-500">Sensitive actions across the workspace, newest first.</p>
+  {#if audit.length}
+    <ul class="divide-y divide-zinc-800/60 text-sm">
+      {#each audit as a (a.created_at + a.action + a.target)}
+        <li class="flex items-center gap-3 py-2.5">
+          <span class="font-mono text-xs capitalize text-zinc-200">{fmtAction(a.action)}</span>
+          {#if a.target}<span class="truncate text-zinc-400">{a.target}</span>{/if}
+          <span class="ml-auto shrink-0 text-xs text-zinc-600">{a.actor}</span>
+          <span class="shrink-0 text-xs text-zinc-600">{relativeTime(a.created_at)}</span>
+        </li>
+      {/each}
+    </ul>
+  {:else}
+    <p class="text-sm text-zinc-500">No audited actions yet.</p>
+  {/if}
+
+  <h2 class="mt-14 text-xl font-semibold tracking-tight">Data</h2>
+  <p class="mt-1 mb-4 text-sm text-zinc-500">
+    Download the workspace's structured data (members, projects, issues, alert rules, channels, releases) as JSON.
+  </p>
+  <button
+    onclick={exportData}
+    disabled={exporting}
+    class="rounded-md border border-zinc-700 px-3.5 py-2 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px disabled:opacity-60"
+  >
+    {exporting ? 'Preparing...' : 'Export workspace data'}
+  </button>
+
+  {#if isOwner}
+    <div class="mt-14 rounded-lg border border-rose-900/50 bg-rose-950/20 p-5">
+      <h3 class="text-sm font-medium text-rose-300">Delete workspace</h3>
+      <p class="mt-1 max-w-2xl text-xs text-zinc-500">
+        Permanently erase this workspace and everything in it - every project, issue, log, trace, member, key and setting. This cannot be undone.
+      </p>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          bind:value={confirmDelete}
+          placeholder="Type DELETE to confirm"
+          class="min-w-[14rem] flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-rose-500/60"
+        />
+        <button
+          onclick={deleteOrg}
+          disabled={confirmDelete !== 'DELETE' || deletingOrg}
+          class="rounded-md border border-rose-700/70 bg-rose-600/10 px-3 py-1.5 text-sm text-rose-300 transition-colors hover:bg-rose-600/20 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {deletingOrg ? 'Deleting...' : 'Delete workspace'}
+        </button>
+      </div>
+    </div>
+  {/if}
 {/if}

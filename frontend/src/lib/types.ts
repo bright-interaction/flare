@@ -39,6 +39,13 @@ export interface GithubConfig {
   repo: string;
 }
 
+export interface AuditEntry {
+  action: string;
+  target: string;
+  actor: string;
+  created_at: string;
+}
+
 export interface Frame {
   filename?: string;
   function?: string;

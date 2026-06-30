@@ -82,6 +82,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "create project", err)
 		return
 	}
+	s.audit(r.Context(), "project.create", req.Name)
 	writeJSON(w, http.StatusCreated, s.toProjectResponse(p))
 }
 
@@ -164,6 +165,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "delete project: commit", err)
 		return
 	}
+	s.audit(r.Context(), "project.delete", pid)
 	writeJSON(w, http.StatusNoContent, nil)
 }
 

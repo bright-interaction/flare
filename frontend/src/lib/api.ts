@@ -3,6 +3,7 @@ import type {
   ApiKey,
   ApiKeyCreated,
   Artifact,
+  AuditEntry,
   Channel,
   GithubConfig,
   Invite,
@@ -79,6 +80,10 @@ export const api = {
   deleteGithubConfig: () => req<void>('DELETE', '/integrations/github'),
   createGithubIssue: (issueId: string) =>
     req<{ github_url: string }>('POST', `/issues/${issueId}/github`),
+
+  auditLog: () => req<AuditEntry[]>('GET', '/audit-log'),
+  exportData: () => req<Record<string, unknown>>('GET', '/export'),
+  deleteOrg: () => req<void>('DELETE', '/org'),
 
   members: () => req<Member[]>('GET', '/members'),
   updateMemberRole: (userId: string, role: string) =>

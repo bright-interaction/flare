@@ -44,6 +44,17 @@ func (q *Queries) CreateOrg(ctx context.Context, arg CreateOrgParams) (*Org, err
 	return &i, err
 }
 
+const deleteOrg = `-- name: DeleteOrg :exec
+DELETE FROM orgs WHERE id = $1
+`
+
+// Right-to-erasure: cascades to users, projects (and their telemetry),
+// channels, keys, invites, github_config and audit_log via ON DELETE CASCADE.
+func (q *Queries) DeleteOrg(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, deleteOrg, id)
+	return err
+}
+
 const getOrgByID = `-- name: GetOrgByID :one
 SELECT id, name, slug, created_at FROM orgs WHERE id = $1
 `

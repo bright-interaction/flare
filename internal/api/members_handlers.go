@@ -91,6 +91,7 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		slogError(w, "update member role", err)
 		return
 	}
+	s.audit(ctx, "member.role", target.Email+" -> "+req.Role)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -124,6 +125,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "member not found")
 		return
 	}
+	s.audit(ctx, "member.remove", target.Email)
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
@@ -182,6 +184,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.audit(ctx, "member.invite", req.Email+" as "+req.Role)
 	link := strings.TrimRight(s.cfg.BaseURL, "/") + "/accept-invite?token=" + token
 	emailed := false
 	if s.mailer.Enabled() {

@@ -59,6 +59,7 @@ func (s *Server) handleSetGithubConfig(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "save github config", err)
 		return
 	}
+	s.audit(r.Context(), "github.connect", req.Repo)
 	writeJSON(w, http.StatusOK, githubConfigResponse{Configured: true, Repo: req.Repo})
 }
 
@@ -67,6 +68,7 @@ func (s *Server) handleDeleteGithubConfig(w http.ResponseWriter, r *http.Request
 		slogError(w, "delete github config", err)
 		return
 	}
+	s.audit(r.Context(), "github.disconnect", "")
 	writeJSON(w, http.StatusNoContent, nil)
 }
 

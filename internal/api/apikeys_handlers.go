@@ -55,6 +55,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "create api key", err)
 		return
 	}
+	s.audit(r.Context(), "apikey.create", k.Name)
 	// key (plaintext) is shown once and never again.
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": k.ID, "name": k.Name, "prefix": k.KeyPrefix, "key": plaintext,
@@ -95,5 +96,6 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "api key not found")
 		return
 	}
+	s.audit(r.Context(), "apikey.revoke", chi.URLParam(r, "id"))
 	writeJSON(w, http.StatusNoContent, nil)
 }
