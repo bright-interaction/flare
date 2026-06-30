@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/bright-interaction/flare/internal/auth"
@@ -78,4 +79,21 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleDeleteAPIKey revokes an org-scoped API key immediately.
+func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.q.DeleteAPIKey(r.Context(), generated.DeleteAPIKeyParams{
+		ID:    chi.URLParam(r, "id"),
+		OrgID: orgIDFrom(r.Context()),
+	})
+	if err != nil {
+		slogError(w, "delete api key", err)
+		return
+	}
+	if rows == 0 {
+		writeErr(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
 }

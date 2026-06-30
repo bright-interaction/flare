@@ -65,6 +65,26 @@
       busy = false;
     }
   }
+
+  async function removeChannel(chId: string) {
+    if (!confirm('Remove this alert channel? Rules pointing at it will stop delivering.')) return;
+    try {
+      await api.deleteChannel(chId);
+      channels = (channels ?? []).filter((c) => c.id !== chId);
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to remove channel';
+    }
+  }
+
+  async function revokeKey(keyId: string) {
+    if (!confirm('Revoke this API key? Anything using it stops working immediately.')) return;
+    try {
+      await api.deleteApiKey(keyId);
+      apiKeys = (apiKeys ?? []).filter((k) => k.id !== keyId);
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to revoke key';
+    }
+  }
 </script>
 
 <h1 class="text-xl font-semibold tracking-tight">Alert channels</h1>
@@ -127,6 +147,12 @@
         <span class="inline-block h-1.5 w-1.5 rounded-full {ch.enabled ? 'bg-emerald-400' : 'bg-zinc-600'}"></span>
         <span class="text-sm font-medium capitalize text-zinc-200">{ch.type}</span>
         {#if ch.config?.url}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.url)}</span>{/if}
+        <button
+          onclick={() => removeChannel(ch.id)}
+          class="ml-auto shrink-0 text-xs text-zinc-600 transition-colors hover:text-rose-400"
+        >
+          Remove
+        </button>
       </li>
     {/each}
   </ul>
@@ -173,6 +199,12 @@
         <span class="ml-auto text-xs text-zinc-600">
           {k.last_used_at ? 'used' : 'never used'}
         </span>
+        <button
+          onclick={() => revokeKey(k.id)}
+          class="shrink-0 text-xs text-zinc-600 transition-colors hover:text-rose-400"
+        >
+          Revoke
+        </button>
       </li>
     {/each}
   </ul>

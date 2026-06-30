@@ -48,6 +48,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Post("/projects/provision", s.handleProvisionProject)
 				r.Get("/projects", s.handleListProjects)
 				r.Get("/projects/{id}", s.handleGetProject)
+				r.Delete("/projects/{id}", s.handleDeleteProject)
 				r.Get("/projects/{id}/issues", s.handleListIssues)
 				r.Get("/projects/{id}/logs", s.handleSearchLogs)
 				r.Get("/projects/{id}/traces", s.handleListTraces)
@@ -56,6 +57,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects/{id}/analytics/span-latency", s.handleSpanLatency)
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
 				r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
+				r.Delete("/projects/{id}/alert-rules/{ruleID}", s.handleDeleteAlertRule)
 
 				r.Get("/issues/{id}", s.handleGetIssue)
 				r.Get("/issues/{id}/events", s.handleListIssueEvents)
@@ -63,9 +65,11 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 
 				r.Get("/channels", s.handleListChannels)
 				r.Post("/channels", s.handleCreateChannel)
+				r.Delete("/channels/{id}", s.handleDeleteChannel)
 
 				r.Get("/keys", s.handleListAPIKeys)
 				r.Post("/keys", s.handleCreateAPIKey)
+				r.Delete("/keys/{id}", s.handleDeleteAPIKey)
 			})
 		})
 	})

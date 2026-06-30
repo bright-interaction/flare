@@ -84,6 +84,41 @@ func (q *Queries) CreateNotificationChannel(ctx context.Context, arg CreateNotif
 	return &i, err
 }
 
+const deleteAlertRule = `-- name: DeleteAlertRule :execrows
+DELETE FROM alert_rules WHERE id = $1 AND project_id = $2 AND org_id = $3
+`
+
+type DeleteAlertRuleParams struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+func (q *Queries) DeleteAlertRule(ctx context.Context, arg DeleteAlertRuleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAlertRule, arg.ID, arg.ProjectID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteNotificationChannel = `-- name: DeleteNotificationChannel :execrows
+DELETE FROM notification_channels WHERE id = $1 AND org_id = $2
+`
+
+type DeleteNotificationChannelParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+func (q *Queries) DeleteNotificationChannel(ctx context.Context, arg DeleteNotificationChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteNotificationChannel, arg.ID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listAlertRulesByProject = `-- name: ListAlertRulesByProject :many
 SELECT id, project_id, org_id, name, type, threshold, enabled, created_at FROM alert_rules WHERE project_id = $1 AND org_id = $2 ORDER BY created_at DESC
 `

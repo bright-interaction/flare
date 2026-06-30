@@ -49,12 +49,73 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (*
 	return &i, err
 }
 
+const deleteProject = `-- name: DeleteProject :execrows
+DELETE FROM projects WHERE id = $1 AND org_id = $2
+`
+
+type DeleteProjectParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+// Cascades to issues + alert_rules via ON DELETE CASCADE. events/logs/spans
+// have no FK (partitioned hot tables), so the handler deletes those explicitly
+// in the same transaction first.
+func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProject, arg.ID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteProjectEvents = `-- name: DeleteProjectEvents :exec
+DELETE FROM events WHERE project_id = $1 AND org_id = $2
+`
+
+type DeleteProjectEventsParams struct {
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+func (q *Queries) DeleteProjectEvents(ctx context.Context, arg DeleteProjectEventsParams) error {
+	_, err := q.db.Exec(ctx, deleteProjectEvents, arg.ProjectID, arg.OrgID)
+	return err
+}
+
+const deleteProjectLogs = `-- name: DeleteProjectLogs :exec
+DELETE FROM logs WHERE project_id = $1 AND org_id = $2
+`
+
+type DeleteProjectLogsParams struct {
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+func (q *Queries) DeleteProjectLogs(ctx context.Context, arg DeleteProjectLogsParams) error {
+	_, err := q.db.Exec(ctx, deleteProjectLogs, arg.ProjectID, arg.OrgID)
+	return err
+}
+
+const deleteProjectSpans = `-- name: DeleteProjectSpans :exec
+DELETE FROM spans WHERE project_id = $1 AND org_id = $2
+`
+
+type DeleteProjectSpansParams struct {
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+func (q *Queries) DeleteProjectSpans(ctx context.Context, arg DeleteProjectSpansParams) error {
+	_, err := q.db.Exec(ctx, deleteProjectSpans, arg.ProjectID, arg.OrgID)
+	return err
+}
+
 const getProjectByDsnID = `-- name: GetProjectByDsnID :one
 SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects WHERE dsn_id = $1
 `
 
-// ciguard:allow-unscoped resolves the numeric DSN id to the project for the
-// /go/{dsnID} dashboard redirect; the redirect target itself requires a session.
+// ciguard:allow-unscoped /go/{dsnID} redirect resolves numeric dsn_id; target page requires a session
 func (q *Queries) GetProjectByDsnID(ctx context.Context, dsnID string) (*Project, error) {
 	row := q.db.QueryRow(ctx, getProjectByDsnID, dsnID)
 	var i Project

@@ -116,6 +116,39 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleDeleteAlertRule(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.q.DeleteAlertRule(r.Context(), generated.DeleteAlertRuleParams{
+		ID:        chi.URLParam(r, "ruleID"),
+		ProjectID: chi.URLParam(r, "id"),
+		OrgID:     orgIDFrom(r.Context()),
+	})
+	if err != nil {
+		slogError(w, "delete alert rule", err)
+		return
+	}
+	if rows == 0 {
+		writeErr(w, http.StatusNotFound, "alert rule not found")
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.q.DeleteNotificationChannel(r.Context(), generated.DeleteNotificationChannelParams{
+		ID:    chi.URLParam(r, "id"),
+		OrgID: orgIDFrom(r.Context()),
+	})
+	if err != nil {
+		slogError(w, "delete channel", err)
+		return
+	}
+	if rows == 0 {
+		writeErr(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
 func (s *Server) handleListAlertRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := s.q.ListAlertRulesByProject(r.Context(), generated.ListAlertRulesByProjectParams{
 		ProjectID: chi.URLParam(r, "id"), OrgID: orgIDFrom(r.Context()),

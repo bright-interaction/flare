@@ -49,6 +49,23 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*Ap
 	return &i, err
 }
 
+const deleteAPIKey = `-- name: DeleteAPIKey :execrows
+DELETE FROM api_keys WHERE id = $1 AND org_id = $2
+`
+
+type DeleteAPIKeyParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+func (q *Queries) DeleteAPIKey(ctx context.Context, arg DeleteAPIKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAPIKey, arg.ID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
 SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at FROM api_keys WHERE key_hash = $1
 `

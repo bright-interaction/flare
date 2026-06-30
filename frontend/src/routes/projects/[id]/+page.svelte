@@ -18,6 +18,8 @@
 
   let rules = $state<AlertRule[]>([]);
   let ruleName = $state('');
+  let confirmName = $state('');
+  let deleting = $state(false);
 
   const filters = ['unresolved', 'resolved', 'ignored', 'all'];
 
@@ -61,6 +63,28 @@
       ruleName = '';
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to create rule';
+    }
+  }
+
+  async function removeRule(ruleId: string) {
+    try {
+      await api.deleteAlertRule(id, ruleId);
+      rules = rules.filter((r) => r.id !== ruleId);
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to remove rule';
+    }
+  }
+
+  async function deleteProject() {
+    if (!project || confirmName !== project.name) return;
+    deleting = true;
+    error = null;
+    try {
+      await api.deleteProject(id);
+      goto('/projects');
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to delete project';
+      deleting = false;
     }
   }
 
@@ -122,11 +146,39 @@
               <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
               {r.name}
               <span class="font-mono text-xs text-zinc-500">{r.type}</span>
+              <button
+                onclick={() => removeRule(r.id)}
+                title="Remove rule"
+                class="ml-auto text-xs text-zinc-600 transition-colors hover:text-rose-400"
+              >
+                Remove
+              </button>
             </li>
           {:else}
             <li class="text-xs text-zinc-500">No rules yet.</li>
           {/each}
         </ul>
+      </div>
+    </div>
+
+    <div class="mb-8 rounded-lg border border-rose-900/50 bg-rose-950/20 p-5">
+      <h3 class="text-sm font-medium text-rose-300">Danger zone</h3>
+      <p class="mt-1 max-w-2xl text-xs text-zinc-500">
+        Deleting <span class="font-medium text-zinc-300">{project.name}</span> permanently removes the project, its DSN, and every issue, log, and trace it holds. This cannot be undone.
+      </p>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          bind:value={confirmName}
+          placeholder="Type {project.name} to confirm"
+          class="min-w-[14rem] flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-rose-500/60"
+        />
+        <button
+          onclick={deleteProject}
+          disabled={confirmName !== project.name || deleting}
+          class="rounded-md border border-rose-700/70 bg-rose-600/10 px-3 py-1.5 text-sm text-rose-300 transition-colors hover:bg-rose-600/20 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {deleting ? 'Deleting...' : 'Delete project'}
+        </button>
       </div>
     </div>
   {/if}

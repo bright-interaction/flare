@@ -13,3 +13,6 @@ UPDATE api_keys SET last_used_at = now() WHERE id = $1;
 
 -- name: ListAPIKeysByOrg :many
 SELECT * FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC;
+
+-- name: DeleteAPIKey :execrows
+DELETE FROM api_keys WHERE id = $1 AND org_id = $2;

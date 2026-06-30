@@ -23,3 +23,18 @@ SELECT * FROM projects WHERE org_id = $1 AND slug = $2;
 -- ciguard:allow-unscoped /go/{dsnID} redirect resolves numeric dsn_id; target page requires a session
 -- name: GetProjectByDsnID :one
 SELECT * FROM projects WHERE dsn_id = $1;
+
+-- name: DeleteProject :execrows
+-- Cascades to issues + alert_rules via ON DELETE CASCADE. events/logs/spans
+-- have no FK (partitioned hot tables), so the handler deletes those explicitly
+-- in the same transaction first.
+DELETE FROM projects WHERE id = $1 AND org_id = $2;
+
+-- name: DeleteProjectEvents :exec
+DELETE FROM events WHERE project_id = $1 AND org_id = $2;
+
+-- name: DeleteProjectLogs :exec
+DELETE FROM logs WHERE project_id = $1 AND org_id = $2;
+
+-- name: DeleteProjectSpans :exec
+DELETE FROM spans WHERE project_id = $1 AND org_id = $2;

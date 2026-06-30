@@ -67,6 +67,7 @@ export const api = {
   createProject: (name: string, platform: string) =>
     req<Project>('POST', '/projects', { name, platform }),
   project: (id: string) => req<Project>('GET', `/projects/${id}`),
+  deleteProject: (id: string) => req<void>('DELETE', `/projects/${id}`),
 
   issues: (pid: string, status?: string) =>
     req<{ issues: Issue[]; total: number }>(
@@ -93,12 +94,16 @@ export const api = {
 
   apiKeys: () => req<ApiKey[]>('GET', '/keys'),
   createApiKey: (name: string) => req<ApiKeyCreated>('POST', '/keys', { name }),
+  deleteApiKey: (id: string) => req<void>('DELETE', `/keys/${id}`),
 
   channels: () => req<Channel[]>('GET', '/channels'),
   createChannel: (type: string, config: Record<string, unknown>) =>
     req<Channel>('POST', '/channels', { type, config }),
+  deleteChannel: (id: string) => req<void>('DELETE', `/channels/${id}`),
 
   alertRules: (pid: string) => req<AlertRule[]>('GET', `/projects/${pid}/alert-rules`),
   createAlertRule: (pid: string, name: string) =>
-    req<AlertRule>('POST', `/projects/${pid}/alert-rules`, { name })
+    req<AlertRule>('POST', `/projects/${pid}/alert-rules`, { name }),
+  deleteAlertRule: (pid: string, ruleId: string) =>
+    req<void>('DELETE', `/projects/${pid}/alert-rules/${ruleId}`)
 };

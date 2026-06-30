@@ -123,6 +123,50 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.toProjectResponse(p))
 }
 
+// handleDeleteProject permanently removes a project and all of its telemetry.
+// issues + alert_rules cascade via FK; the partitioned hot tables (events,
+// logs, spans) have no FK to projects, so they are deleted explicitly in the
+// same transaction so no tenant data is left orphaned.
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	pid := chi.URLParam(r, "id")
+	org := orgIDFrom(r.Context())
+
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		slogError(w, "delete project: begin tx", err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := s.q.WithTx(tx)
+
+	if err := qtx.DeleteProjectEvents(r.Context(), generated.DeleteProjectEventsParams{ProjectID: pid, OrgID: org}); err != nil {
+		slogError(w, "delete project events", err)
+		return
+	}
+	if err := qtx.DeleteProjectLogs(r.Context(), generated.DeleteProjectLogsParams{ProjectID: pid, OrgID: org}); err != nil {
+		slogError(w, "delete project logs", err)
+		return
+	}
+	if err := qtx.DeleteProjectSpans(r.Context(), generated.DeleteProjectSpansParams{ProjectID: pid, OrgID: org}); err != nil {
+		slogError(w, "delete project spans", err)
+		return
+	}
+	rows, err := qtx.DeleteProject(r.Context(), generated.DeleteProjectParams{ID: pid, OrgID: org})
+	if err != nil {
+		slogError(w, "delete project", err)
+		return
+	}
+	if rows == 0 {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slogError(w, "delete project: commit", err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
 type provisionRequest struct {
 	Name     string `json:"name"`
 	Slug     string `json:"slug"`

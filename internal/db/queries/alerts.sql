@@ -19,3 +19,9 @@ SELECT * FROM notification_channels WHERE org_id = $1 ORDER BY created_at DESC;
 
 -- name: ListEnabledNotificationChannelsByOrg :many
 SELECT * FROM notification_channels WHERE org_id = $1 AND enabled = true;
+
+-- name: DeleteAlertRule :execrows
+DELETE FROM alert_rules WHERE id = $1 AND project_id = $2 AND org_id = $3;
+
+-- name: DeleteNotificationChannel :execrows
+DELETE FROM notification_channels WHERE id = $1 AND org_id = $2;
