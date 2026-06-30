@@ -47,7 +47,7 @@ func (q *Queries) CountIssues(ctx context.Context, arg CountIssuesParams) (int64
 }
 
 const getIssue = `-- name: GetIssue :one
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at FROM issues WHERE id = $1 AND org_id = $2
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url FROM issues WHERE id = $1 AND org_id = $2
 `
 
 type GetIssueParams struct {
@@ -73,6 +73,7 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (*Issue, err
 		&i.LastSeen,
 		&i.EventCount,
 		&i.LastSpikeAt,
+		&i.GithubUrl,
 	)
 	return &i, err
 }
@@ -196,7 +197,7 @@ func (q *Queries) ListEventsByIssue(ctx context.Context, arg ListEventsByIssuePa
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at FROM issues
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
@@ -241,6 +242,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 			&i.LastSeen,
 			&i.EventCount,
 			&i.LastSpikeAt,
+			&i.GithubUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -291,7 +293,7 @@ func (q *Queries) TrySetIssueSpike(ctx context.Context, arg TrySetIssueSpikePara
 }
 
 const updateIssueStatus = `-- name: UpdateIssueStatus :one
-UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at
+UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url
 `
 
 type UpdateIssueStatusParams struct {
@@ -318,6 +320,7 @@ func (q *Queries) UpdateIssueStatus(ctx context.Context, arg UpdateIssueStatusPa
 		&i.LastSeen,
 		&i.EventCount,
 		&i.LastSpikeAt,
+		&i.GithubUrl,
 	)
 	return &i, err
 }

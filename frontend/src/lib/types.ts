@@ -24,6 +24,12 @@ export interface Issue {
   first_seen: string;
   last_seen: string;
   event_count: number;
+  github_url: string;
+}
+
+export interface GithubConfig {
+  configured: boolean;
+  repo: string;
 }
 
 export interface Frame {

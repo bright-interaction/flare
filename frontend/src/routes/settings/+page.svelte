@@ -3,19 +3,26 @@
   import { goto } from '$app/navigation';
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
-  import type { ApiKey, Channel } from '$lib/types';
+  import type { ApiKey, Channel, GithubConfig } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
   let error = $state<string | null>(null);
   let type = $state('log');
   let url = $state('');
   let emailTo = $state('');
+  let slackUrl = $state('');
   let busy = $state(false);
 
   let apiKeys = $state<ApiKey[] | null>(null);
   let keyName = $state('');
   let newKey = $state<string | null>(null);
   let keyBusy = $state(false);
+
+  let github = $state<GithubConfig | null>(null);
+  let ghRepo = $state('');
+  let ghToken = $state('');
+  let ghBusy = $state(false);
+  const isAdmin = $derived(session.user?.role === 'admin' || session.user?.role === 'owner');
 
   $effect(() => {
     if (session.loaded && !session.user) goto('/login', { replaceState: true });
@@ -27,8 +34,38 @@
     try {
       channels = await api.channels();
       apiKeys = await api.apiKeys();
+      if (isAdmin) {
+        github = await api.githubConfig();
+        ghRepo = github.repo;
+      }
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load settings';
+    }
+  }
+
+  async function saveGithub(e: SubmitEvent) {
+    e.preventDefault();
+    if (!ghRepo.trim() || !ghToken.trim()) return;
+    ghBusy = true;
+    error = null;
+    try {
+      github = await api.setGithubConfig(ghRepo.trim(), ghToken.trim());
+      ghToken = '';
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to save GitHub config';
+    } finally {
+      ghBusy = false;
+    }
+  }
+
+  async function clearGithub() {
+    if (!confirm('Disconnect GitHub?')) return;
+    try {
+      await api.deleteGithubConfig();
+      github = { configured: false, repo: '' };
+      ghRepo = '';
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to disconnect GitHub';
     }
   }
 
@@ -57,11 +94,18 @@
     error = null;
     try {
       const config =
-        type === 'webhook' ? { url } : type === 'email' ? { to: emailTo } : {};
+        type === 'webhook'
+          ? { url }
+          : type === 'email'
+            ? { to: emailTo }
+            : type === 'slack'
+              ? { webhook_url: slackUrl }
+              : {};
       const ch = await api.createChannel(type, config);
       channels = [ch, ...(channels ?? [])];
       url = '';
       emailTo = '';
+      slackUrl = '';
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to create channel';
     } finally {
@@ -105,10 +149,22 @@
     >
       <option value="log">Server log</option>
       <option value="email">Email</option>
+      <option value="slack">Slack</option>
       <option value="webhook">Webhook</option>
     </select>
   </div>
-  {#if type === 'webhook'}
+  {#if type === 'slack'}
+    <div class="flex flex-1 flex-col gap-1.5">
+      <label for="slackurl" class="text-xs font-medium text-zinc-400">Slack incoming webhook URL</label>
+      <input
+        id="slackurl"
+        bind:value={slackUrl}
+        placeholder="https://hooks.slack.com/services/..."
+        class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+      />
+      <span class="text-xs text-zinc-600">Create one under Slack apps &rarr; Incoming Webhooks.</span>
+    </div>
+  {:else if type === 'webhook'}
     <div class="flex flex-1 flex-col gap-1.5">
       <label for="url" class="text-xs font-medium text-zinc-400">Webhook URL</label>
       <input
@@ -164,6 +220,7 @@
         <span class="text-sm font-medium capitalize text-zinc-200">{ch.type}</span>
         {#if ch.config?.url}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.url)}</span>{/if}
         {#if ch.config?.to}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.to)}</span>{/if}
+        {#if ch.config?.webhook_url}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.webhook_url)}</span>{/if}
         <button
           onclick={() => removeChannel(ch.id)}
           class="ml-auto shrink-0 text-xs text-zinc-600 transition-colors hover:text-rose-400"
@@ -227,4 +284,49 @@
   </ul>
 {:else if apiKeys}
   <p class="text-sm text-zinc-500">No keys yet.</p>
+{/if}
+
+{#if isAdmin}
+  <h2 class="mt-14 text-xl font-semibold tracking-tight">GitHub</h2>
+  <p class="mt-1 mb-6 text-sm text-zinc-500">
+    Connect a repo to open a GitHub issue straight from any Flare issue. The token is stored for this
+    workspace and never shown again. A fine-grained token with <code class="font-mono">Issues: write</code> is enough.
+  </p>
+
+  {#if github?.configured}
+    <div class="mb-4 flex items-center gap-3 rounded-md border border-zinc-800/80 bg-zinc-900/40 px-4 py-3">
+      <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+      <span class="text-sm text-zinc-200">Connected to <span class="font-mono">{github.repo}</span></span>
+      <button onclick={clearGithub} class="ml-auto text-xs text-zinc-600 transition-colors hover:text-rose-400">Disconnect</button>
+    </div>
+  {/if}
+
+  <form onsubmit={saveGithub} class="flex flex-wrap items-end gap-3">
+    <div class="flex flex-col gap-1.5">
+      <label for="ghrepo" class="text-xs font-medium text-zinc-400">Repository</label>
+      <input
+        id="ghrepo"
+        bind:value={ghRepo}
+        placeholder="owner/repo"
+        class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+      />
+    </div>
+    <div class="flex flex-1 flex-col gap-1.5">
+      <label for="ghtoken" class="text-xs font-medium text-zinc-400">{github?.configured ? 'Replace token' : 'Token'}</label>
+      <input
+        id="ghtoken"
+        type="password"
+        bind:value={ghToken}
+        placeholder="ghp_..."
+        class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+      />
+    </div>
+    <button
+      type="submit"
+      disabled={ghBusy}
+      class="rounded-md bg-amber-400 px-3.5 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-amber-300 active:translate-y-px disabled:opacity-60"
+    >
+      {ghBusy ? 'Saving...' : github?.configured ? 'Update' : 'Connect'}
+    </button>
+  </form>
 {/if}

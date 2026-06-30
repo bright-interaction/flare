@@ -74,6 +74,13 @@ type ExportLog struct {
 	RowCount   int64              `json:"row_count"`
 }
 
+type GithubConfig struct {
+	OrgID     string             `json:"org_id"`
+	Repo      string             `json:"repo"`
+	Token     string             `json:"token"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Invitation struct {
 	ID         string             `json:"id"`
 	OrgID      string             `json:"org_id"`
@@ -100,6 +107,7 @@ type Issue struct {
 	LastSeen    pgtype.Timestamptz `json:"last_seen"`
 	EventCount  int64              `json:"event_count"`
 	LastSpikeAt pgtype.Timestamptz `json:"last_spike_at"`
+	GithubUrl   string             `json:"github_url"`
 }
 
 type Log struct {

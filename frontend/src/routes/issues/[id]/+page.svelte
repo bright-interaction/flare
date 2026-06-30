@@ -35,6 +35,22 @@
       error = err instanceof ApiError ? err.message : 'Failed to update status';
     }
   }
+
+  let ghBusy = $state(false);
+  const canWrite = $derived(session.user?.role !== 'viewer');
+
+  async function makeGithubIssue() {
+    ghBusy = true;
+    error = null;
+    try {
+      const r = await api.createGithubIssue(id);
+      if (issue) issue = { ...issue, github_url: r.github_url };
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to create GitHub issue';
+    } finally {
+      ghBusy = false;
+    }
+  }
 </script>
 
 {#if issue}
@@ -53,7 +69,12 @@
       <h1 class="mt-2 text-lg font-semibold tracking-tight break-words">{issue.title}</h1>
       {#if issue.culprit}<p class="mt-1 font-mono text-sm text-zinc-500">{issue.culprit}</p>{/if}
     </div>
-    <div class="flex gap-2">
+    <div class="flex flex-wrap gap-2">
+      {#if issue.github_url}
+        <a href={issue.github_url} target="_blank" rel="noopener" class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 active:translate-y-px">GitHub issue &#8599;</a>
+      {:else if canWrite}
+        <button onclick={makeGithubIssue} disabled={ghBusy} class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 active:translate-y-px disabled:opacity-60">{ghBusy ? 'Creating...' : 'Create GitHub issue'}</button>
+      {/if}
       {#if issue.status !== 'resolved'}
         <button onclick={() => setStatus('resolved')} class="rounded-md border border-emerald-500/40 px-3 py-1.5 text-sm text-emerald-300 transition-colors hover:bg-emerald-500/10 active:translate-y-px">Resolve</button>
       {/if}

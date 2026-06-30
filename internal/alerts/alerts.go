@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +83,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, channels []Channel, n Notific
 		switch ch.Type {
 		case "webhook":
 			d.webhook(ctx, ch.Config, n)
+		case "slack":
+			d.slack(ctx, ch.Config, n)
 		case "email":
 			d.emailAlert(ch.Config, n)
 		case "log":
@@ -90,6 +93,62 @@ func (d *Dispatcher) Dispatch(ctx context.Context, channels []Channel, n Notific
 			slog.Warn("alert channel type not supported", "type", ch.Type)
 		}
 	}
+}
+
+// slack posts a Block Kit message to an incoming-webhook URL. Reuses the
+// SSRF-guarded client (hooks.slack.com is public, loopback/private blocked).
+func (d *Dispatcher) slack(ctx context.Context, cfgRaw json.RawMessage, n Notification) {
+	var cfg struct {
+		WebhookURL string `json:"webhook_url"`
+	}
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil || cfg.WebhookURL == "" {
+		slog.Warn("slack channel misconfigured")
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.WebhookURL, bytes.NewReader(slackPayload(n)))
+	if err != nil {
+		slog.Warn("slack build request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := d.client.Do(req)
+	if err != nil {
+		slog.Warn("slack delivery failed", "error", err)
+		return
+	}
+	_ = resp.Body.Close()
+}
+
+// slackPayload renders the notification as a Slack Block Kit message.
+func slackPayload(n Notification) []byte {
+	reason := n.Reason
+	if reason == "" {
+		reason = "Alert"
+	}
+	meta := fmt.Sprintf("%s · %d event(s)", n.Level, n.EventCount)
+	if n.Culprit != "" {
+		meta += " · " + n.Culprit
+	}
+	blocks := []map[string]any{
+		{"type": "section", "text": map[string]any{
+			"type": "mrkdwn",
+			"text": fmt.Sprintf("*%s* in *%s*\n<%s|%s>", slackEsc(reason), slackEsc(n.ProjectName), n.URL, slackEsc(n.Title)),
+		}},
+		{"type": "context", "elements": []map[string]any{
+			{"type": "mrkdwn", "text": slackEsc(meta)},
+		}},
+	}
+	b, _ := json.Marshal(map[string]any{
+		"text":   fmt.Sprintf("[Flare] %s: %s", reason, n.Title),
+		"blocks": blocks,
+	})
+	return b
+}
+
+func slackEsc(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	return strings.ReplaceAll(s, ">", "&gt;")
 }
 
 // emailAlert renders and sends a new-issue notification to an email channel's

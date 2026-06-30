@@ -22,6 +22,7 @@ type Issue struct {
 	FirstSeen   time.Time
 	LastSeen    time.Time
 	EventCount  int64
+	GithubURL   string
 }
 
 type Event struct {

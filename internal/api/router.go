@@ -63,6 +63,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/channels", s.handleListChannels)
 				r.Get("/keys", s.handleListAPIKeys)
 				r.Get("/members", s.handleListMembers)
+				r.Get("/integrations/github", s.handleGetGithubConfig)
 
 				// Writes: member+ (viewers are read-only). API keys act here.
 				r.Group(func(r chi.Router) {
@@ -80,9 +81,10 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Delete("/channels/{id}", s.handleDeleteChannel)
 					r.Post("/keys", s.handleCreateAPIKey)
 					r.Delete("/keys/{id}", s.handleDeleteAPIKey)
+					r.Post("/issues/{id}/github", s.handleCreateGithubIssue)
 				})
 
-				// Team management: admin+.
+				// Team management + integration secrets: admin+.
 				r.Group(func(r chi.Router) {
 					r.Use(s.requireRole("admin"))
 
@@ -91,6 +93,8 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Get("/invites", s.handleListInvites)
 					r.Post("/invites", s.handleInviteMember)
 					r.Delete("/invites/{inviteID}", s.handleRevokeInvite)
+					r.Put("/integrations/github", s.handleSetGithubConfig)
+					r.Delete("/integrations/github", s.handleDeleteGithubConfig)
 				})
 			})
 		})

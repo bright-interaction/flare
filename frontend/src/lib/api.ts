@@ -4,6 +4,7 @@ import type {
   ApiKeyCreated,
   Artifact,
   Channel,
+  GithubConfig,
   Invite,
   Member,
   Issue,
@@ -70,6 +71,13 @@ export const api = {
     req<void>('POST', '/auth/reset-password', { token, password }),
   acceptInvite: (token: string, password: string) =>
     req<User>('POST', '/auth/accept-invite', { token, password }),
+
+  githubConfig: () => req<GithubConfig>('GET', '/integrations/github'),
+  setGithubConfig: (repo: string, token: string) =>
+    req<GithubConfig>('PUT', '/integrations/github', { repo, token }),
+  deleteGithubConfig: () => req<void>('DELETE', '/integrations/github'),
+  createGithubIssue: (issueId: string) =>
+    req<{ github_url: string }>('POST', `/issues/${issueId}/github`),
 
   members: () => req<Member[]>('GET', '/members'),
   updateMemberRole: (userId: string, role: string) =>

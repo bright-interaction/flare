@@ -40,6 +40,14 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "webhook channel requires config.url (http/https)")
 			return
 		}
+	case "slack":
+		var cfg struct {
+			WebhookURL string `json:"webhook_url"`
+		}
+		if json.Unmarshal(req.Config, &cfg) != nil || !strings.HasPrefix(cfg.WebhookURL, "https://") {
+			writeErr(w, http.StatusBadRequest, "slack channel requires config.webhook_url (https incoming webhook)")
+			return
+		}
 	case "email":
 		var cfg struct {
 			To string `json:"to"`
@@ -53,7 +61,7 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		writeErr(w, http.StatusBadRequest, "type must be email, webhook, or log")
+		writeErr(w, http.StatusBadRequest, "type must be email, slack, webhook, or log")
 		return
 	}
 
