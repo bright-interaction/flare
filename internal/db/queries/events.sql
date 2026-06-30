@@ -1,7 +1,8 @@
 -- name: UpsertIssue :one
 -- Groups an incoming event into its issue. is_new distinguishes a freshly
--- created issue (first_seen == last_seen on insert) from a recurrence, so the
--- caller can fire a new-issue alert. A resolved issue that recurs reopens.
+-- created issue (first_seen == last_seen on insert) from a recurrence. Status
+-- is intentionally left untouched on conflict so RETURNING exposes the PRIOR
+-- status: the caller reopens a 'resolved' issue and fires a regression alert.
 INSERT INTO issues (id, project_id, org_id, fingerprint, title, culprit, level, platform, first_seen, last_seen, event_count)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), 1)
 ON CONFLICT (project_id, fingerprint) DO UPDATE
@@ -9,10 +10,25 @@ SET last_seen    = now(),
     event_count  = issues.event_count + 1,
     level        = EXCLUDED.level,
     title        = EXCLUDED.title,
-    culprit      = EXCLUDED.culprit,
-    status       = CASE WHEN issues.status = 'resolved' THEN 'unresolved' ELSE issues.status END
+    culprit      = EXCLUDED.culprit
 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform,
           first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new;
+
+-- ciguard:allow-no-project reopen by project-unique issue id
+-- name: ReopenIssue :exec
+UPDATE issues SET status = 'unresolved' WHERE id = $1 AND org_id = $2;
+
+-- ciguard:allow-no-project count by project-unique issue id (spike rule window)
+-- name: CountEventsForIssueSince :one
+SELECT count(*) FROM events WHERE issue_id = $1 AND org_id = $2 AND received_at >= $3;
+
+-- ciguard:allow-no-project atomic spike dedup by project-unique issue id
+-- name: TrySetIssueSpike :execrows
+-- Test-and-set: claims the spike alert for this issue only when the last one is
+-- older than the window cutoff ($3). Returns 1 row when claimed, 0 when another
+-- event already fired within the window.
+UPDATE issues SET last_spike_at = now()
+WHERE id = $1 AND org_id = $2 AND (last_spike_at IS NULL OR last_spike_at < $3);
 
 -- name: InsertEvent :exec
 INSERT INTO events (id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at)

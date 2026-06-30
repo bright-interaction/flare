@@ -11,14 +11,15 @@ import (
 )
 
 type AlertRule struct {
-	ID        string             `json:"id"`
-	ProjectID string             `json:"project_id"`
-	OrgID     string             `json:"org_id"`
-	Name      string             `json:"name"`
-	Type      string             `json:"type"`
-	Threshold int32              `json:"threshold"`
-	Enabled   bool               `json:"enabled"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            string             `json:"id"`
+	ProjectID     string             `json:"project_id"`
+	OrgID         string             `json:"org_id"`
+	Name          string             `json:"name"`
+	Type          string             `json:"type"`
+	Threshold     int32              `json:"threshold"`
+	Enabled       bool               `json:"enabled"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	WindowMinutes int32              `json:"window_minutes"`
 }
 
 type ApiKey struct {
@@ -98,6 +99,7 @@ type Issue struct {
 	FirstSeen   pgtype.Timestamptz `json:"first_seen"`
 	LastSeen    pgtype.Timestamptz `json:"last_seen"`
 	EventCount  int64              `json:"event_count"`
+	LastSpikeAt pgtype.Timestamptz `json:"last_spike_at"`
 }
 
 type Log struct {

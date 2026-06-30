@@ -81,18 +81,20 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 type alertRuleResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Threshold int32  `json:"threshold"`
-	Enabled   bool   `json:"enabled"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Threshold     int32  `json:"threshold"`
+	WindowMinutes int32  `json:"window_minutes"`
+	Enabled       bool   `json:"enabled"`
 }
 
 func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string `json:"name"`
-		Type      string `json:"type"`
-		Threshold int32  `json:"threshold"`
+		Name          string `json:"name"`
+		Type          string `json:"type"`
+		Threshold     int32  `json:"threshold"`
+		WindowMinutes int32  `json:"window_minutes"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -105,26 +107,35 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "" {
 		req.Type = "new_issue"
 	}
-	if req.Type != "new_issue" {
-		writeErr(w, http.StatusBadRequest, "only new_issue rules are supported in this version")
+	switch req.Type {
+	case "new_issue", "regression":
+		req.Threshold, req.WindowMinutes = 0, 0
+	case "spike":
+		if req.Threshold < 1 || req.WindowMinutes < 1 {
+			writeErr(w, http.StatusBadRequest, "spike rules need a threshold (events) and window (minutes) of at least 1")
+			return
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "type must be new_issue, regression or spike")
 		return
 	}
 
 	rule, err := s.q.CreateAlertRule(r.Context(), generated.CreateAlertRuleParams{
-		ID:        id.New(),
-		ProjectID: chi.URLParam(r, "id"),
-		OrgID:     orgIDFrom(r.Context()),
-		Name:      req.Name,
-		Type:      req.Type,
-		Threshold: req.Threshold,
-		Enabled:   true,
+		ID:            id.New(),
+		ProjectID:     chi.URLParam(r, "id"),
+		OrgID:         orgIDFrom(r.Context()),
+		Name:          req.Name,
+		Type:          req.Type,
+		Threshold:     req.Threshold,
+		WindowMinutes: req.WindowMinutes,
+		Enabled:       true,
 	})
 	if err != nil {
 		slogError(w, "create alert rule", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, alertRuleResponse{
-		ID: rule.ID, Name: rule.Name, Type: rule.Type, Threshold: rule.Threshold, Enabled: rule.Enabled,
+		ID: rule.ID, Name: rule.Name, Type: rule.Type, Threshold: rule.Threshold, WindowMinutes: rule.WindowMinutes, Enabled: rule.Enabled,
 	})
 }
 
@@ -172,7 +183,7 @@ func (s *Server) handleListAlertRules(w http.ResponseWriter, r *http.Request) {
 	out := make([]alertRuleResponse, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, alertRuleResponse{
-			ID: rule.ID, Name: rule.Name, Type: rule.Type, Threshold: rule.Threshold, Enabled: rule.Enabled,
+			ID: rule.ID, Name: rule.Name, Type: rule.Type, Threshold: rule.Threshold, WindowMinutes: rule.WindowMinutes, Enabled: rule.Enabled,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

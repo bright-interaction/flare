@@ -118,8 +118,10 @@ export const api = {
   deleteChannel: (id: string) => req<void>('DELETE', `/channels/${id}`),
 
   alertRules: (pid: string) => req<AlertRule[]>('GET', `/projects/${pid}/alert-rules`),
-  createAlertRule: (pid: string, name: string) =>
-    req<AlertRule>('POST', `/projects/${pid}/alert-rules`, { name }),
+  createAlertRule: (
+    pid: string,
+    rule: { name: string; type: string; threshold?: number; window_minutes?: number }
+  ) => req<AlertRule>('POST', `/projects/${pid}/alert-rules`, rule),
   deleteAlertRule: (pid: string, ruleId: string) =>
     req<void>('DELETE', `/projects/${pid}/alert-rules/${ruleId}`),
 

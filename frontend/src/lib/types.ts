@@ -141,5 +141,6 @@ export interface AlertRule {
   name: string;
   type: string;
   threshold: number;
+  window_minutes: number;
   enabled: boolean;
 }

@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/db/generated"
@@ -91,6 +93,15 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		return "", err
 	}
 
+	// UpsertIssue leaves status untouched, so issue.Status is the PRIOR status.
+	// A resolved issue that recurs is a regression: reopen it here.
+	reopened := false
+	if !issue.IsNew && issue.Status == "resolved" {
+		if err := s.q.ReopenIssue(ctx, generated.ReopenIssueParams{ID: issue.ID, OrgID: project.OrgID}); err == nil {
+			reopened = true
+		}
+	}
+
 	if err := s.q.InsertEvent(ctx, generated.InsertEventParams{
 		ID:             id.New(),
 		ProjectID:      project.ID,
@@ -109,15 +120,15 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		return "", err
 	}
 
-	if issue.IsNew {
-		s.fireNewIssueAlert(project, issue)
-	}
+	s.evaluateAlerts(project, issue, issue.IsNew, reopened)
 	return eventID, nil
 }
 
-// fireNewIssueAlert dispatches in the background with a detached context so it
-// never blocks or fails the ingest request.
-func (s *Server) fireNewIssueAlert(project *generated.Project, issue *generated.UpsertIssueRow) {
+// evaluateAlerts matches an ingested event against the project's enabled alert
+// rules and dispatches at most one notification (the most actionable reason
+// wins: regression > spike > new issue). Runs in the background with a detached
+// context so it never blocks or fails ingest.
+func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.UpsertIssueRow, isNew, reopened bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -125,11 +136,29 @@ func (s *Server) fireNewIssueAlert(project *generated.Project, issue *generated.
 		rules, err := s.q.ListEnabledAlertRulesByProject(ctx, generated.ListEnabledAlertRulesByProjectParams{
 			ProjectID: project.ID,
 			OrgID:     project.OrgID,
-			Type:      "new_issue",
 		})
 		if err != nil || len(rules) == 0 {
 			return
 		}
+		byType := make(map[string]*generated.AlertRule, len(rules))
+		for _, r := range rules {
+			byType[r.Type] = r
+		}
+
+		var reason string
+		switch {
+		case reopened && byType["regression"] != nil:
+			reason = "Regression"
+		case byType["spike"] != nil:
+			reason = s.spikeReason(ctx, issue, project.OrgID, byType["spike"])
+		}
+		if reason == "" && isNew && byType["new_issue"] != nil {
+			reason = "New issue"
+		}
+		if reason == "" {
+			return
+		}
+
 		chans, err := s.q.ListEnabledNotificationChannelsByOrg(ctx, project.OrgID)
 		if err != nil || len(chans) == 0 {
 			return
@@ -145,9 +174,33 @@ func (s *Server) fireNewIssueAlert(project *generated.Project, issue *generated.
 			Level:       issue.Level,
 			Culprit:     issue.Culprit,
 			EventCount:  issue.EventCount,
+			Reason:      reason,
 			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/issues/" + issue.ID,
 		})
 	}()
+}
+
+// spikeReason returns a non-empty reason when the issue has crossed the rule's
+// threshold within its window AND this is the first spike alert for the issue
+// in that window (atomic test-and-set dedup). Empty otherwise.
+func (s *Server) spikeReason(ctx context.Context, issue *generated.UpsertIssueRow, org string, rule *generated.AlertRule) string {
+	if rule.Threshold < 1 || rule.WindowMinutes < 1 {
+		return ""
+	}
+	cutoff := pgtype.Timestamptz{Time: time.Now().Add(-time.Duration(rule.WindowMinutes) * time.Minute), Valid: true}
+	cnt, err := s.q.CountEventsForIssueSince(ctx, generated.CountEventsForIssueSinceParams{
+		IssueID: pgText(issue.ID), OrgID: org, ReceivedAt: cutoff,
+	})
+	if err != nil || cnt < int64(rule.Threshold) {
+		return ""
+	}
+	rows, err := s.q.TrySetIssueSpike(ctx, generated.TrySetIssueSpikeParams{
+		ID: issue.ID, OrgID: org, LastSpikeAt: cutoff,
+	})
+	if err != nil || rows == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Spike: %d events in %dm", cnt, rule.WindowMinutes)
 }
 
 // authIngest resolves the project from the DSN public key (the ingest secret)

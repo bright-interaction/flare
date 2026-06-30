@@ -18,6 +18,9 @@
 
   let rules = $state<AlertRule[]>([]);
   let ruleName = $state('');
+  let ruleType = $state('new_issue');
+  let ruleThreshold = $state(10);
+  let ruleWindow = $state(5);
   let confirmName = $state('');
   let deleting = $state(false);
 
@@ -65,12 +68,23 @@
     e.preventDefault();
     if (!ruleName.trim()) return;
     try {
-      const r = await api.createAlertRule(id, ruleName);
+      const r = await api.createAlertRule(id, {
+        name: ruleName,
+        type: ruleType,
+        threshold: ruleType === 'spike' ? ruleThreshold : 0,
+        window_minutes: ruleType === 'spike' ? ruleWindow : 0
+      });
       rules = [r, ...rules];
       ruleName = '';
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to create rule';
     }
+  }
+
+  function ruleSummary(r: AlertRule) {
+    if (r.type === 'spike') return `spike: ${r.threshold} events / ${r.window_minutes}m`;
+    if (r.type === 'regression') return 'regression';
+    return 'new issue';
   }
 
   async function removeRule(ruleId: string) {
@@ -173,23 +187,52 @@
       <div>
         <h3 class="text-sm font-medium">Alert rules</h3>
         <p class="mt-1 text-xs text-zinc-500">
-          Fire when a new issue first appears. Delivery goes to channels you add under
+          New issue, regression (a resolved issue recurs), or a spike (N events in M minutes). Delivery goes to channels you add under
           <a href="/settings" class="text-amber-400 hover:text-amber-300">Alerts</a>.
         </p>
-        <form onsubmit={addRule} class="mt-3 flex gap-2">
-          <input
-            bind:value={ruleName}
-            placeholder="Notify on new issues"
-            class="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-amber-400/60"
-          />
-          <button class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px">Add</button>
+        <form onsubmit={addRule} class="mt-3 space-y-2">
+          <div class="flex gap-2">
+            <input
+              bind:value={ruleName}
+              placeholder="Rule name"
+              class="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-amber-400/60"
+            />
+            <select
+              bind:value={ruleType}
+              class="rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm outline-none focus:border-amber-400/60"
+            >
+              <option value="new_issue">New issue</option>
+              <option value="regression">Regression</option>
+              <option value="spike">Spike</option>
+            </select>
+          </div>
+          {#if ruleType === 'spike'}
+            <div class="flex items-center gap-2 text-xs text-zinc-500">
+              <span>when</span>
+              <input
+                type="number"
+                min="1"
+                bind:value={ruleThreshold}
+                class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+              />
+              <span>events in</span>
+              <input
+                type="number"
+                min="1"
+                bind:value={ruleWindow}
+                class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+              />
+              <span>minutes</span>
+            </div>
+          {/if}
+          <button class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px">Add rule</button>
         </form>
         <ul class="mt-3 space-y-1.5">
           {#each rules as r (r.id)}
             <li class="flex items-center gap-2 text-sm text-zinc-300">
               <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
               {r.name}
-              <span class="font-mono text-xs text-zinc-500">{r.type}</span>
+              <span class="font-mono text-xs text-zinc-500">{ruleSummary(r)}</span>
               <button
                 onclick={() => removeRule(r.id)}
                 title="Remove rule"

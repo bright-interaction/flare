@@ -1,13 +1,13 @@
 -- name: CreateAlertRule :one
-INSERT INTO alert_rules (id, project_id, org_id, name, type, threshold, enabled)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO alert_rules (id, project_id, org_id, name, type, threshold, window_minutes, enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: ListAlertRulesByProject :many
 SELECT * FROM alert_rules WHERE project_id = $1 AND org_id = $2 ORDER BY created_at DESC;
 
 -- name: ListEnabledAlertRulesByProject :many
-SELECT * FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true AND type = $3;
+SELECT * FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true;
 
 -- name: CreateNotificationChannel :one
 INSERT INTO notification_channels (id, org_id, type, config, enabled)

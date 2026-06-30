@@ -12,6 +12,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countEventsForIssueSince = `-- name: CountEventsForIssueSince :one
+SELECT count(*) FROM events WHERE issue_id = $1 AND org_id = $2 AND received_at >= $3
+`
+
+type CountEventsForIssueSinceParams struct {
+	IssueID    pgtype.Text        `json:"issue_id"`
+	OrgID      string             `json:"org_id"`
+	ReceivedAt pgtype.Timestamptz `json:"received_at"`
+}
+
+// ciguard:allow-no-project count by project-unique issue id (spike rule window)
+func (q *Queries) CountEventsForIssueSince(ctx context.Context, arg CountEventsForIssueSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countEventsForIssueSince, arg.IssueID, arg.OrgID, arg.ReceivedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countIssues = `-- name: CountIssues :one
 SELECT count(*) FROM issues WHERE project_id = $1 AND org_id = $2
 `
@@ -29,7 +47,7 @@ func (q *Queries) CountIssues(ctx context.Context, arg CountIssuesParams) (int64
 }
 
 const getIssue = `-- name: GetIssue :one
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count FROM issues WHERE id = $1 AND org_id = $2
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at FROM issues WHERE id = $1 AND org_id = $2
 `
 
 type GetIssueParams struct {
@@ -54,6 +72,7 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (*Issue, err
 		&i.FirstSeen,
 		&i.LastSeen,
 		&i.EventCount,
+		&i.LastSpikeAt,
 	)
 	return &i, err
 }
@@ -177,7 +196,7 @@ func (q *Queries) ListEventsByIssue(ctx context.Context, arg ListEventsByIssuePa
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count FROM issues
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
@@ -221,6 +240,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 			&i.FirstSeen,
 			&i.LastSeen,
 			&i.EventCount,
+			&i.LastSpikeAt,
 		); err != nil {
 			return nil, err
 		}
@@ -232,8 +252,46 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 	return items, nil
 }
 
+const reopenIssue = `-- name: ReopenIssue :exec
+UPDATE issues SET status = 'unresolved' WHERE id = $1 AND org_id = $2
+`
+
+type ReopenIssueParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+// ciguard:allow-no-project reopen by project-unique issue id
+func (q *Queries) ReopenIssue(ctx context.Context, arg ReopenIssueParams) error {
+	_, err := q.db.Exec(ctx, reopenIssue, arg.ID, arg.OrgID)
+	return err
+}
+
+const trySetIssueSpike = `-- name: TrySetIssueSpike :execrows
+UPDATE issues SET last_spike_at = now()
+WHERE id = $1 AND org_id = $2 AND (last_spike_at IS NULL OR last_spike_at < $3)
+`
+
+type TrySetIssueSpikeParams struct {
+	ID          string             `json:"id"`
+	OrgID       string             `json:"org_id"`
+	LastSpikeAt pgtype.Timestamptz `json:"last_spike_at"`
+}
+
+// ciguard:allow-no-project atomic spike dedup by project-unique issue id
+// Test-and-set: claims the spike alert for this issue only when the last one is
+// older than the window cutoff ($3). Returns 1 row when claimed, 0 when another
+// event already fired within the window.
+func (q *Queries) TrySetIssueSpike(ctx context.Context, arg TrySetIssueSpikeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, trySetIssueSpike, arg.ID, arg.OrgID, arg.LastSpikeAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateIssueStatus = `-- name: UpdateIssueStatus :one
-UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count
+UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at
 `
 
 type UpdateIssueStatusParams struct {
@@ -259,6 +317,7 @@ func (q *Queries) UpdateIssueStatus(ctx context.Context, arg UpdateIssueStatusPa
 		&i.FirstSeen,
 		&i.LastSeen,
 		&i.EventCount,
+		&i.LastSpikeAt,
 	)
 	return &i, err
 }
@@ -271,8 +330,7 @@ SET last_seen    = now(),
     event_count  = issues.event_count + 1,
     level        = EXCLUDED.level,
     title        = EXCLUDED.title,
-    culprit      = EXCLUDED.culprit,
-    status       = CASE WHEN issues.status = 'resolved' THEN 'unresolved' ELSE issues.status END
+    culprit      = EXCLUDED.culprit
 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform,
           first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new
 `
@@ -305,8 +363,9 @@ type UpsertIssueRow struct {
 }
 
 // Groups an incoming event into its issue. is_new distinguishes a freshly
-// created issue (first_seen == last_seen on insert) from a recurrence, so the
-// caller can fire a new-issue alert. A resolved issue that recurs reopens.
+// created issue (first_seen == last_seen on insert) from a recurrence. Status
+// is intentionally left untouched on conflict so RETURNING exposes the PRIOR
+// status: the caller reopens a 'resolved' issue and fires a regression alert.
 func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (*UpsertIssueRow, error) {
 	row := q.db.QueryRow(ctx, upsertIssue,
 		arg.ID,

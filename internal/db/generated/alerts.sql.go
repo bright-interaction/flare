@@ -11,19 +11,20 @@ import (
 )
 
 const createAlertRule = `-- name: CreateAlertRule :one
-INSERT INTO alert_rules (id, project_id, org_id, name, type, threshold, enabled)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, project_id, org_id, name, type, threshold, enabled, created_at
+INSERT INTO alert_rules (id, project_id, org_id, name, type, threshold, window_minutes, enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes
 `
 
 type CreateAlertRuleParams struct {
-	ID        string `json:"id"`
-	ProjectID string `json:"project_id"`
-	OrgID     string `json:"org_id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Threshold int32  `json:"threshold"`
-	Enabled   bool   `json:"enabled"`
+	ID            string `json:"id"`
+	ProjectID     string `json:"project_id"`
+	OrgID         string `json:"org_id"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Threshold     int32  `json:"threshold"`
+	WindowMinutes int32  `json:"window_minutes"`
+	Enabled       bool   `json:"enabled"`
 }
 
 func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams) (*AlertRule, error) {
@@ -34,6 +35,7 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		arg.Name,
 		arg.Type,
 		arg.Threshold,
+		arg.WindowMinutes,
 		arg.Enabled,
 	)
 	var i AlertRule
@@ -46,6 +48,7 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		&i.Threshold,
 		&i.Enabled,
 		&i.CreatedAt,
+		&i.WindowMinutes,
 	)
 	return &i, err
 }
@@ -120,7 +123,7 @@ func (q *Queries) DeleteNotificationChannel(ctx context.Context, arg DeleteNotif
 }
 
 const listAlertRulesByProject = `-- name: ListAlertRulesByProject :many
-SELECT id, project_id, org_id, name, type, threshold, enabled, created_at FROM alert_rules WHERE project_id = $1 AND org_id = $2 ORDER BY created_at DESC
+SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes FROM alert_rules WHERE project_id = $1 AND org_id = $2 ORDER BY created_at DESC
 `
 
 type ListAlertRulesByProjectParams struct {
@@ -146,6 +149,7 @@ func (q *Queries) ListAlertRulesByProject(ctx context.Context, arg ListAlertRule
 			&i.Threshold,
 			&i.Enabled,
 			&i.CreatedAt,
+			&i.WindowMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -158,17 +162,16 @@ func (q *Queries) ListAlertRulesByProject(ctx context.Context, arg ListAlertRule
 }
 
 const listEnabledAlertRulesByProject = `-- name: ListEnabledAlertRulesByProject :many
-SELECT id, project_id, org_id, name, type, threshold, enabled, created_at FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true AND type = $3
+SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true
 `
 
 type ListEnabledAlertRulesByProjectParams struct {
 	ProjectID string `json:"project_id"`
 	OrgID     string `json:"org_id"`
-	Type      string `json:"type"`
 }
 
 func (q *Queries) ListEnabledAlertRulesByProject(ctx context.Context, arg ListEnabledAlertRulesByProjectParams) ([]*AlertRule, error) {
-	rows, err := q.db.Query(ctx, listEnabledAlertRulesByProject, arg.ProjectID, arg.OrgID, arg.Type)
+	rows, err := q.db.Query(ctx, listEnabledAlertRulesByProject, arg.ProjectID, arg.OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +188,7 @@ func (q *Queries) ListEnabledAlertRulesByProject(ctx context.Context, arg ListEn
 			&i.Threshold,
 			&i.Enabled,
 			&i.CreatedAt,
+			&i.WindowMinutes,
 		); err != nil {
 			return nil, err
 		}
