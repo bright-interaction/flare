@@ -34,6 +34,17 @@ export interface Frame {
   colno?: number;
   in_app?: boolean;
   context_line?: string;
+  pre_context?: string[];
+  post_context?: string[];
+  symbolicated?: boolean;
+}
+
+export interface Artifact {
+  id: string;
+  release: string;
+  name: string;
+  size: number;
+  created_at: string;
 }
 
 export interface IssueEvent {

@@ -5,7 +5,7 @@
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
   import { relativeTime, levelColor } from '$lib/format';
-  import type { AlertRule, Issue, Project } from '$lib/types';
+  import type { AlertRule, Artifact, Issue, Project } from '$lib/types';
 
   const id = $derived(page.params.id ?? '');
 
@@ -21,6 +21,12 @@
   let confirmName = $state('');
   let deleting = $state(false);
 
+  let artifacts = $state<Artifact[]>([]);
+  let smRelease = $state('');
+  let smName = $state('');
+  let smFile = $state<File | null>(null);
+  let smBusy = $state(false);
+
   const filters = ['unresolved', 'resolved', 'ignored', 'all'];
 
   $effect(() => {
@@ -31,6 +37,7 @@
     try {
       project = await api.project(id);
       rules = await api.alertRules(id);
+      artifacts = await api.artifacts(id);
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load project';
     }
@@ -86,6 +93,43 @@
       error = err instanceof ApiError ? err.message : 'Failed to delete project';
       deleting = false;
     }
+  }
+
+  function onSmFile(e: Event) {
+    const f = (e.target as HTMLInputElement).files?.[0] ?? null;
+    smFile = f;
+    if (f && !smName) smName = f.name.replace(/\.map$/, '');
+  }
+
+  async function uploadSourceMap(e: SubmitEvent) {
+    e.preventDefault();
+    if (!smFile || !smRelease.trim() || !smName.trim()) return;
+    smBusy = true;
+    error = null;
+    try {
+      const content = await smFile.text();
+      const a = await api.uploadSourceMap(id, smRelease.trim(), smName.trim(), content);
+      artifacts = [a, ...artifacts.filter((x) => x.id !== a.id)];
+      smFile = null;
+      smName = '';
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to upload source map';
+    } finally {
+      smBusy = false;
+    }
+  }
+
+  async function removeArtifact(artifactId: string) {
+    try {
+      await api.deleteArtifact(id, artifactId);
+      artifacts = artifacts.filter((a) => a.id !== artifactId);
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to remove source map';
+    }
+  }
+
+  function fmtSize(n: number) {
+    return n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
   }
 
   const snippet = $derived(
@@ -159,6 +203,68 @@
           {/each}
         </ul>
       </div>
+    </div>
+
+    <div class="mb-8 rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-5">
+      <h3 class="text-sm font-medium">Source maps</h3>
+      <p class="mt-1 max-w-2xl text-xs text-zinc-500">
+        Upload a <code class="font-mono text-zinc-400">.map</code> for each minified file in a release. Stack traces on matching errors are then resolved back to your original source, with context. Match by file name (e.g. <code class="font-mono text-zinc-400">app.min.js</code>) and the release your SDK reports.
+      </p>
+      <form onsubmit={uploadSourceMap} class="mt-3 flex flex-wrap items-end gap-2">
+        <div class="flex flex-col gap-1.5">
+          <label for="smrel" class="text-xs font-medium text-zinc-400">Release</label>
+          <input
+            id="smrel"
+            bind:value={smRelease}
+            placeholder="1.4.2"
+            class="w-32 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-amber-400/60"
+          />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="smname" class="text-xs font-medium text-zinc-400">Minified file</label>
+          <input
+            id="smname"
+            bind:value={smName}
+            placeholder="app.min.js"
+            class="w-40 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-amber-400/60"
+          />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="smfile" class="text-xs font-medium text-zinc-400">.map file</label>
+          <input
+            id="smfile"
+            type="file"
+            accept=".map,.json,application/json"
+            onchange={onSmFile}
+            class="w-56 text-xs text-zinc-400 file:mr-2 file:rounded-md file:border-0 file:bg-zinc-800 file:px-2.5 file:py-1.5 file:text-xs file:text-zinc-200 hover:file:bg-zinc-700"
+          />
+        </div>
+        <button
+          disabled={smBusy || !smFile}
+          class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px disabled:opacity-40"
+        >
+          {smBusy ? 'Uploading...' : 'Upload'}
+        </button>
+      </form>
+      {#if artifacts.length}
+        <ul class="mt-4 divide-y divide-zinc-800/60 text-sm">
+          {#each artifacts as a (a.id)}
+            <li class="flex items-center gap-3 py-2">
+              <span class="rounded bg-zinc-800/80 px-1.5 py-0.5 font-mono text-[11px] text-zinc-400">{a.release}</span>
+              <span class="truncate font-mono text-[13px] text-zinc-200">{a.name}</span>
+              <span class="text-xs text-zinc-600">{fmtSize(a.size)}</span>
+              <button
+                onclick={() => removeArtifact(a.id)}
+                class="ml-auto shrink-0 text-xs text-zinc-600 transition-colors hover:text-rose-400"
+              >
+                Remove
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="mt-3 text-xs text-zinc-600">No source maps uploaded yet.</p>
+      {/if}
     </div>
 
     <div class="mb-8 rounded-lg border border-rose-900/50 bg-rose-950/20 p-5">

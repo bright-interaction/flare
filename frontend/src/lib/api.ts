@@ -2,6 +2,7 @@ import type {
   AlertRule,
   ApiKey,
   ApiKeyCreated,
+  Artifact,
   Channel,
   Issue,
   IssueEvent,
@@ -108,5 +109,11 @@ export const api = {
   createAlertRule: (pid: string, name: string) =>
     req<AlertRule>('POST', `/projects/${pid}/alert-rules`, { name }),
   deleteAlertRule: (pid: string, ruleId: string) =>
-    req<void>('DELETE', `/projects/${pid}/alert-rules/${ruleId}`)
+    req<void>('DELETE', `/projects/${pid}/alert-rules/${ruleId}`),
+
+  artifacts: (pid: string) => req<Artifact[]>('GET', `/projects/${pid}/artifacts`),
+  uploadSourceMap: (pid: string, release: string, name: string, content: string) =>
+    req<Artifact>('POST', `/projects/${pid}/artifacts`, { release, name, content }),
+  deleteArtifact: (pid: string, artifactId: string) =>
+    req<void>('DELETE', `/projects/${pid}/artifacts/${artifactId}`)
 };

@@ -60,6 +60,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
 				r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
 				r.Delete("/projects/{id}/alert-rules/{ruleID}", s.handleDeleteAlertRule)
+				r.Get("/projects/{id}/artifacts", s.handleListSourceMaps)
+				r.Post("/projects/{id}/artifacts", s.handleUploadSourceMap)
+				r.Delete("/projects/{id}/artifacts/{artifactID}", s.handleDeleteSourceMap)
 
 				r.Get("/issues/{id}", s.handleGetIssue)
 				r.Get("/issues/{id}/events", s.handleListIssueEvents)

@@ -154,6 +154,16 @@ type Session struct {
 	Expiry pgtype.Timestamptz `json:"expiry"`
 }
 
+type SourceMapArtifact struct {
+	ID        string             `json:"id"`
+	ProjectID string             `json:"project_id"`
+	OrgID     string             `json:"org_id"`
+	Release   string             `json:"release"`
+	Name      string             `json:"name"`
+	Content   string             `json:"content"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Span struct {
 	TraceID      string             `json:"trace_id"`
 	SpanID       string             `json:"span_id"`

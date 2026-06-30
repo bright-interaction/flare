@@ -85,15 +85,34 @@
 
     {#if latest.stacktrace && latest.stacktrace.frames.length}
       <div class="overflow-hidden rounded-lg border border-zinc-800/80">
-        <div class="border-b border-zinc-800/80 bg-zinc-900/40 px-4 py-2 text-xs font-medium text-zinc-400">Stack trace</div>
+        <div class="flex items-center gap-2 border-b border-zinc-800/80 bg-zinc-900/40 px-4 py-2 text-xs font-medium text-zinc-400">
+          Stack trace
+          {#if latest.stacktrace.frames.some((f) => f.symbolicated)}
+            <span class="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-400">source-mapped</span>
+          {/if}
+        </div>
         <ul class="divide-y divide-zinc-800/60 font-mono text-[13px]">
           {#each [...latest.stacktrace.frames].reverse() as f, i (i)}
-            <li class="flex items-baseline gap-3 px-4 py-2 {f.in_app === false ? 'opacity-50' : ''}">
-              <span class="text-amber-300">{f.function || '?'}</span>
-              <span class="truncate text-zinc-500">
-                {f.module || f.filename || ''}{f.lineno ? `:${f.lineno}` : ''}
-              </span>
-              {#if f.in_app !== false}<span class="ml-auto shrink-0 text-[10px] uppercase text-zinc-600">in app</span>{/if}
+            <li class="px-4 py-2 {f.in_app === false ? 'opacity-50' : ''}">
+              <div class="flex items-baseline gap-3">
+                <span class="text-amber-300">{f.function || '?'}</span>
+                <span class="truncate text-zinc-500">
+                  {f.filename || f.module || ''}{f.lineno ? `:${f.lineno}` : ''}{f.symbolicated && f.colno ? `:${f.colno}` : ''}
+                </span>
+                {#if f.symbolicated}<span class="shrink-0 text-[10px] uppercase text-emerald-500/70">mapped</span>{/if}
+                {#if f.in_app !== false}<span class="ml-auto shrink-0 text-[10px] uppercase text-zinc-600">in app</span>{/if}
+              </div>
+              {#if f.context_line}
+                <div class="mt-1.5 overflow-x-auto rounded border border-zinc-800/80 bg-zinc-950 text-[12px] leading-relaxed">
+                  {#each f.pre_context ?? [] as ln}
+                    <div class="whitespace-pre px-3 text-zinc-600">{ln}</div>
+                  {/each}
+                  <div class="whitespace-pre border-l-2 border-amber-400 bg-amber-400/5 px-3 text-zinc-200">{f.context_line}</div>
+                  {#each f.post_context ?? [] as ln}
+                    <div class="whitespace-pre px-3 text-zinc-600">{ln}</div>
+                  {/each}
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -100,21 +101,68 @@ func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.store.ListEventsByIssue(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), 50)
+	ctx := r.Context()
+	org := orgIDFrom(ctx)
+	issueID := chi.URLParam(r, "id")
+	events, err := s.store.ListEventsByIssue(ctx, issueID, org, 50)
 	if err != nil {
 		slogError(w, "list issue events", err)
 		return
 	}
+
+	// Symbolicate minified frames using any source maps uploaded for the
+	// event's release. Best-effort: resolve the issue's project once, load each
+	// distinct release's maps once, and leave frames untouched on any miss.
+	releaseMaps := s.releaseSourceMaps(ctx, issueID, org, events)
+
 	out := make([]eventResponse, 0, len(events))
 	for _, e := range events {
+		stack := e.Stacktrace
+		if maps := releaseMaps[e.Release]; len(maps) > 0 {
+			stack = s.symbolicator.Symbolicate(stack, maps)
+		}
 		out = append(out, eventResponse{
 			ID: e.ID, Level: e.Level, Message: e.Message,
 			ExceptionType: e.ExceptionType, ExceptionValue: e.ExceptionValue,
 			Platform: e.Platform, Environment: e.Environment, Release: e.Release,
-			Stacktrace: e.Stacktrace, ReceivedAt: e.ReceivedAt,
+			Stacktrace: stack, ReceivedAt: e.ReceivedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// releaseSourceMaps loads the source maps (name -> content) for each distinct
+// release across the issue's events, keyed by release. Returns an empty map on
+// any error so symbolication simply no-ops.
+func (s *Server) releaseSourceMaps(ctx context.Context, issueID, org string, events []telemetry.Event) map[string]map[string]string {
+	releases := map[string]bool{}
+	for _, e := range events {
+		if e.Release != "" {
+			releases[e.Release] = true
+		}
+	}
+	if len(releases) == 0 {
+		return nil
+	}
+	issue, err := s.store.GetIssue(ctx, issueID, org)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]map[string]string, len(releases))
+	for rel := range releases {
+		rows, err := s.q.GetSourceMapsForRelease(ctx, generated.GetSourceMapsForReleaseParams{
+			ProjectID: issue.ProjectID, OrgID: org, Release: rel,
+		})
+		if err != nil || len(rows) == 0 {
+			continue
+		}
+		m := make(map[string]string, len(rows))
+		for _, row := range rows {
+			m[row.Name] = row.Content
+		}
+		out[rel] = m
+	}
+	return out
 }
 
 func (s *Server) handleUpdateIssueStatus(w http.ResponseWriter, r *http.Request) {
