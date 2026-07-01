@@ -1,0 +1,18 @@
+Flare is deploying.
+
+1. Wait for the pod to be ready:
+     kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+2. Reach it:
+{{- if .Values.ingress.enabled }}
+     http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+     kubectl port-forward svc/{{ include "flare.fullname" . }} 8080:{{ .Values.service.port }}
+     open http://localhost:8080
+{{- end }}
+
+3. Register the first user in the UI - they become the workspace owner.
+   Create a project to get a DSN, then point any Sentry SDK (or OTLP) at it.
+
+BASE_URL is {{ .Values.baseURL }} - make sure it matches how Flare is actually
+reached, or DSNs and email links will be wrong.

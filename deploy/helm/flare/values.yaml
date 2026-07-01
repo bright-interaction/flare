@@ -1,0 +1,63 @@
+image:
+  repository: flare
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Public URL Flare is reached at (used in DSNs + email links).
+baseURL: https://flare.example.com
+
+# Days telemetry is kept in Postgres before export-to-Parquet + drop.
+retentionDays: 30
+
+secrets:
+  # 32+ bytes. Generate: openssl rand -base64 32
+  sessionKey: ""
+  # EXACTLY 32 bytes. Generate: openssl rand -hex 16
+  csrfKey: ""
+  # Provide a pre-created Secret instead of the values above. It must hold
+  # keys: session-key, csrf-key, database-url (and optionally smtp-password).
+  existingSecret: ""
+
+postgres:
+  # Deploy a single Postgres in-cluster. Set false to use an external DB.
+  bundled: true
+  image: postgres:16-alpine
+  password: change-me-to-a-strong-password
+  storage: 10Gi
+  # Used only when bundled=false:
+  externalUrl: ""  # postgres://user:pass@host:5432/flare?sslmode=require
+
+# Optional email (alerts + password reset). Leave host/from blank to disable.
+smtp:
+  host: ""
+  port: 587
+  user: ""
+  password: ""
+  from: ""
+  fromName: Flare
+  tls: starttls  # tls | starttls | none
+
+# PVC for the Parquet cold tier (aged telemetry).
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  host: flare.example.com
+  annotations: {}
+  tls: false
+  tlsSecretName: flare-tls
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

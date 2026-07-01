@@ -1,0 +1,90 @@
+# Self-hosting Flare
+
+Flare is a sovereign, self-hostable observability backend (errors + logs +
+traces). It runs on one Postgres and grows with you - no ClickHouse, no Kafka,
+no external services required.
+
+Two ways to run it: Docker Compose (single box) or Helm (Kubernetes).
+
+## Docker Compose
+
+```bash
+cd deploy
+cp .env.example .env
+# Fill in the secrets in .env:
+#   SESSION_KEY        openssl rand -base64 32
+#   CSRF_KEY           openssl rand -hex 16      (exactly 32 chars)
+#   FLARE_DB_PASSWORD  any strong string
+#   FLARE_BASE_URL     the URL Flare is reached at
+docker compose up -d --build
+```
+
+Open `FLARE_BASE_URL`. The first account you register becomes the workspace
+**owner**. Create a project to get a DSN, then point any `@sentry/*` SDK (just
+change the DSN) or an OTLP exporter at it.
+
+Put a TLS terminator (Caddy, nginx, Traefik) in front for production and set
+`FLARE_BASE_URL` to the public `https://` URL.
+
+## Kubernetes (Helm)
+
+```bash
+helm install flare ./deploy/helm/flare \
+  --set baseURL=https://flare.example.com \
+  --set secrets.sessionKey=$(openssl rand -base64 32) \
+  --set secrets.csrfKey=$(openssl rand -hex 16) \
+  --set postgres.password=$(openssl rand -hex 16) \
+  --set ingress.enabled=true \
+  --set ingress.host=flare.example.com \
+  --set ingress.className=nginx
+```
+
+The chart bundles a single Postgres (`postgres.bundled=true`) with its own PVC.
+To use an existing database instead:
+
+```bash
+helm install flare ./deploy/helm/flare \
+  --set postgres.bundled=false \
+  --set postgres.externalUrl='postgres://user:pass@host:5432/flare?sslmode=require' \
+  ... (baseURL + secrets as above)
+```
+
+You can also supply all secrets via a pre-created `Secret` (keys `session-key`,
+`csrf-key`, `database-url`, optional `smtp-password`) with
+`--set secrets.existingSecret=my-secret`.
+
+## Configuration
+
+| Setting | Compose (`.env`) | Helm (`values.yaml`) | Notes |
+|---|---|---|---|
+| Public URL | `FLARE_BASE_URL` | `baseURL` | Used in DSNs + email links; must match how Flare is reached |
+| Session secret | `SESSION_KEY` | `secrets.sessionKey` | 32+ bytes, required |
+| CSRF secret | `CSRF_KEY` | `secrets.csrfKey` | exactly 32 bytes, required |
+| DB password | `FLARE_DB_PASSWORD` | `postgres.password` | for the bundled Postgres |
+| External DB | `DATABASE_URL` | `postgres.externalUrl` (+ `bundled=false`) | point at your own Postgres |
+| Retention (days) | `FLARE_RETENTION_DAYS` | `retentionDays` | before export-to-Parquet + drop |
+| Email | `SMTP_*` | `smtp.*` | optional: alert emails + password reset |
+
+### Email (optional)
+
+Enables alert delivery and password reset. Works with any SMTP server. Set
+`SMTP_HOST`, `SMTP_FROM`, credentials, and `SMTP_TLS` (`tls` for port 465,
+`starttls` for 587, `none` for dev). Leave `SMTP_HOST` blank to run without
+email - those features simply no-op.
+
+### Single sign-on (optional)
+
+Configure OIDC per workspace in **Settings -> Single sign-on** (admin). Register
+an OIDC app in your IdP (Zitadel/Okta/Auth0/Keycloak/Entra) with the redirect
+URI shown there, then paste the client id + secret.
+
+## Backups
+
+Back up the Postgres volume (`flare-data` / the DB PVC) and the Parquet volume
+(`flare-app-data` / the data PVC). Postgres holds the hot tier; Parquet holds
+aged telemetry.
+
+## Upgrading
+
+Pull the new image and `docker compose up -d` (or `helm upgrade`). Schema
+migrations run automatically at startup.

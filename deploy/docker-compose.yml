@@ -1,0 +1,53 @@
+# Self-host Flare with Docker Compose.
+#
+#   cp .env.example .env      # then fill in the secrets (see comments there)
+#   docker compose up -d --build
+#   open $FLARE_BASE_URL      # register the first user (becomes the owner)
+#
+# One Postgres, one Flare container, two named volumes. No external services.
+name: flare
+
+services:
+  flare:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: flare:latest
+    container_name: flare
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ENVIRONMENT: production
+      PORT: "8080"
+      BASE_URL: "${FLARE_BASE_URL:?set FLARE_BASE_URL in .env}"
+      DATABASE_URL: "postgres://flare:${FLARE_DB_PASSWORD:?set FLARE_DB_PASSWORD in .env}@flare-db:5432/flare?sslmode=disable"
+      RETENTION_DAYS: "${FLARE_RETENTION_DAYS:-30}"
+      FLARE_PARQUET_DIR: /app/data/parquet
+    depends_on:
+      flare-db:
+        condition: service_healthy
+    ports:
+      - "${FLARE_PORT:-8080}:8080"
+    volumes:
+      # Parquet cold tier (aged telemetry). Keep this to retain history.
+      - flare-app-data:/app/data
+
+  flare-db:
+    image: postgres:16-alpine
+    container_name: flare-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: flare
+      POSTGRES_PASSWORD: "${FLARE_DB_PASSWORD:?set FLARE_DB_PASSWORD in .env}"
+      POSTGRES_DB: flare
+    volumes:
+      - flare-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flare"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  flare-data:
+  flare-app-data:
