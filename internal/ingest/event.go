@@ -4,6 +4,7 @@
 package ingest
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -53,15 +54,37 @@ type sentryEvent struct {
 		Formatted string `json:"formatted"`
 		Message   string `json:"message"`
 	} `json:"logentry"`
-	Exception *struct {
-		Values []struct {
-			Type       string `json:"type"`
-			Value      string `json:"value"`
-			Stacktrace *struct {
-				Frames []Frame `json:"frames"`
-			} `json:"stacktrace"`
-		} `json:"values"`
-	} `json:"exception"`
+	Exception *exceptionField `json:"exception"`
+}
+
+type exceptionValue struct {
+	Type       string `json:"type"`
+	Value      string `json:"value"`
+	Stacktrace *struct {
+		Frames []Frame `json:"frames"`
+	} `json:"stacktrace"`
+}
+
+// exceptionField accepts BOTH Sentry wire shapes for "exception": the object
+// form {"values":[...]} (@sentry/js, sentry-python) and the bare array form
+// [...] (sentry-go). Handling only the object form made every sentry-go event
+// fail unmarshal, so ingest returned 200 with id "" and dropped the event.
+type exceptionField struct {
+	Values []exceptionValue `json:"values"`
+}
+
+func (e *exceptionField) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return json.Unmarshal(trimmed, &e.Values)
+	}
+	type objectForm exceptionField
+	var obj objectForm
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return err
+	}
+	e.Values = obj.Values
+	return nil
 }
 
 // ParseEvent decodes a single event payload and normalizes it.
