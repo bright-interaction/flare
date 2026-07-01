@@ -6,6 +6,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+
+	"github.com/bright-interaction/flare/internal/flarereport"
 )
 
 // Routes builds the full HTTP handler: middleware stack, JSON API, and the
@@ -15,6 +17,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
+	// Capture panics to Flare (self-reporting), then re-panic for Recoverer's
+	// 500. Must sit after Recoverer (inner) so it sees the panic first.
+	r.Use(flarereport.FlareRecoverer)
 	r.Use(securityHeaders)
 	r.Use(s.sessions.LoadAndSave)
 

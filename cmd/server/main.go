@@ -22,6 +22,7 @@ import (
 	"github.com/bright-interaction/flare/internal/auth"
 	"github.com/bright-interaction/flare/internal/config"
 	"github.com/bright-interaction/flare/internal/db"
+	"github.com/bright-interaction/flare/internal/flarereport"
 	"github.com/bright-interaction/flare/internal/partition"
 )
 
@@ -49,6 +50,11 @@ func run() error {
 		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+
+	// Error reporting to Flare itself (no-op unless FLARE_DSN is set; the DSN
+	// is injected by the Hephaestus flare-provision deploy step). BeforeSend
+	// rate-limits self-reports so an ingest-path panic cannot self-amplify.
+	flarereport.InitFlare("flare", "dev")
 
 	if err := db.RunMigrations(ctx, cfg.DatabaseURL); err != nil {
 		return fmt.Errorf("migrations: %w", err)

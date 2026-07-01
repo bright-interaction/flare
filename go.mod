@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/alexedwards/scs/pgxstore v0.0.0-20251002162104-209de6e426de
 	github.com/alexedwards/scs/v2 v2.9.0
+	github.com/getsentry/sentry-go v0.47.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible
 	github.com/gorilla/csrf v1.7.3
