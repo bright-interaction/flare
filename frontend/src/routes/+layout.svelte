@@ -19,7 +19,8 @@
   const navItems = [
     { href: '/projects', label: 'Projects' },
     { href: '/settings', label: 'Alerts' },
-    { href: '/members', label: 'Team' }
+    { href: '/members', label: 'Team' },
+    { href: '/docs', label: 'Docs' }
   ];
 </script>
 

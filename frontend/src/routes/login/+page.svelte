@@ -151,5 +151,7 @@
         {/if}
       </div>
     {/if}
+
+    <a href="/docs" class="mt-6 inline-block text-xs text-zinc-600 transition-colors hover:text-zinc-400">Documentation &amp; API reference &rarr;</a>
   </div>
 </div>
