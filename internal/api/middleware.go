@@ -18,8 +18,41 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		// Set HSTS in-app so a self-host behind any proxy is protected, not only
+		// deployments that happen to add it at the edge. Browsers ignore HSTS
+		// received over plain HTTP, so this is a no-op in local dev.
+		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// rateLimitIngest caps event ingest per DSN public key (falling back to client
+// IP when no key is present) so a captured DSN cannot flood the write path.
+func (s *Server) rateLimitIngest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := ingestKey(r)
+		bucket := "k:" + key
+		if key == "" {
+			bucket = "ip:" + clientIP(r)
+		}
+		if !s.ingestLimiter.Allow(bucket) {
+			w.Header().Set("Retry-After", "60")
+			writeErr(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// clientIP returns the caller IP without the port. chi's RealIP middleware has
+// already resolved X-Forwarded-For into RemoteAddr upstream.
+func clientIP(r *http.Request) string {
+	addr := r.RemoteAddr
+	if i := strings.LastIndex(addr, ":"); i > 0 {
+		return addr[:i]
+	}
+	return addr
 }
 
 // requireAuth accepts either a browser session (dashboard) or a Bearer API

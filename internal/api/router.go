@@ -26,12 +26,16 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 
 		// Ingest: authenticated by the DSN public key, not the session, so
 		// these sit outside CSRF and requireAuth. Sentry-wire compatible.
-		r.Post("/{projectID}/envelope/", s.handleEnvelope)
-		r.Post("/{projectID}/envelope", s.handleEnvelope)
-		r.Post("/{projectID}/store/", s.handleStore)
-		r.Post("/{projectID}/store", s.handleStore)
-		r.Post("/{projectID}/events", s.handleStore)
-		r.Post("/{projectID}/logs", s.handleNativeLogs)
+		// Rate-limited per DSN key so a captured key cannot flood writes.
+		r.Group(func(r chi.Router) {
+			r.Use(s.rateLimitIngest)
+			r.Post("/{projectID}/envelope/", s.handleEnvelope)
+			r.Post("/{projectID}/envelope", s.handleEnvelope)
+			r.Post("/{projectID}/store/", s.handleStore)
+			r.Post("/{projectID}/store", s.handleStore)
+			r.Post("/{projectID}/events", s.handleStore)
+			r.Post("/{projectID}/logs", s.handleNativeLogs)
+		})
 
 		r.Group(func(r chi.Router) {
 			r.Use(ccsrf)
@@ -118,9 +122,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 	})
 
 	// OTLP/HTTP ingest lives at the spec path (clients append /v1/logs to the
-	// configured OTLP endpoint). DSN-key auth, no CSRF/session.
-	r.Post("/otlp/v1/logs", s.handleOTLPLogs)
-	r.Post("/otlp/v1/traces", s.handleOTLPTraces)
+	// configured OTLP endpoint). DSN-key auth, no CSRF/session, same rate limit.
+	r.With(s.rateLimitIngest).Post("/otlp/v1/logs", s.handleOTLPLogs)
+	r.With(s.rateLimitIngest).Post("/otlp/v1/traces", s.handleOTLPTraces)
 
 	// Deep-link from a DSN (numeric dsn_id) to the dashboard project page.
 	r.Get("/go/{dsnID}", s.handleDSNRedirect)

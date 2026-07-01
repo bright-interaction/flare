@@ -33,6 +33,8 @@ const getSourceMapsForRelease = `-- name: GetSourceMapsForRelease :many
 SELECT name, content
 FROM source_map_artifacts
 WHERE project_id = $1 AND org_id = $2 AND release = $3
+ORDER BY created_at DESC
+LIMIT 1000
 `
 
 type GetSourceMapsForReleaseParams struct {
@@ -46,6 +48,8 @@ type GetSourceMapsForReleaseRow struct {
 	Content string `json:"content"`
 }
 
+// Bounded: symbolication loads full content into memory, so cap the number of
+// maps pulled per release to keep triage from exhausting memory.
 func (q *Queries) GetSourceMapsForRelease(ctx context.Context, arg GetSourceMapsForReleaseParams) ([]*GetSourceMapsForReleaseRow, error) {
 	rows, err := q.db.Query(ctx, getSourceMapsForRelease, arg.ProjectID, arg.OrgID, arg.Release)
 	if err != nil {

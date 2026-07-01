@@ -115,14 +115,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
+	// Brute-force lockout: 5 failed attempts per email+IP within 15 minutes.
+	lockKey := "login:" + req.Email + "|" + clientIP(r)
+	if s.loginLimiter.Blocked(lockKey) {
+		w.Header().Set("Retry-After", "900")
+		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return
+	}
+
 	ctx := r.Context()
 	user, err := s.q.GetUserByEmail(ctx, req.Email)
 	if err != nil || !auth.VerifyPassword(user.PasswordHash, req.Password) {
+		s.loginLimiter.Record(lockKey)
 		// Same message either way: never reveal which half failed.
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
+	s.loginLimiter.Reset(lockKey) // clear the counter on success
 	if err := s.sessions.RenewToken(ctx); err == nil {
 		s.sessions.Put(ctx, "user_id", user.ID)
 		s.sessions.Put(ctx, "org_id", user.OrgID)

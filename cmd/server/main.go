@@ -97,6 +97,13 @@ func run() error {
 		// gorilla/csrf enforces an Origin/Referer check on state-changing
 		// requests and validates against trusted origins. Trust the BASE_URL
 		// host so the same-origin SPA passes.
+		//
+		// NOTE (GO-2025-3884): gorilla/csrf has an unfixed advisory about
+		// TrustedOrigins validation. It is not reachable here: TrustedOrigins is
+		// a single static host derived from BASE_URL (never attacker-supplied),
+		// and the session cookie is SameSite=Strict, which structurally blocks
+		// cross-site cookie-bearing POSTs on its own. Tracked for a future move
+		// to a maintained CSRF implementation.
 		host := cfg.BaseURL
 		if u, err := url.Parse(cfg.BaseURL); err == nil && u.Host != "" {
 			host = u.Host

@@ -5,6 +5,7 @@ package api
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,9 +16,17 @@ import (
 	"github.com/bright-interaction/flare/internal/config"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/email"
+	"github.com/bright-interaction/flare/internal/ratelimit"
 	"github.com/bright-interaction/flare/internal/sourcemaps"
 	"github.com/bright-interaction/flare/internal/telemetry"
 	"github.com/bright-interaction/flare/internal/telemetry/pgstore"
+)
+
+const (
+	// loginFailBudget / loginFailWindow lock an account+IP out after this many
+	// failed logins, per the repo security rules (5 fails, 15-min cooldown).
+	loginFailBudget = 5
+	loginFailWindow = 15 * time.Minute
 )
 
 type Server struct {
@@ -31,6 +40,11 @@ type Server struct {
 	mailer       *email.Mailer
 	symbolicator *sourcemaps.Resolver
 	ai           *ai.Client
+
+	// loginLimiter locks out brute-force logins; ingestLimiter caps per-DSN-key
+	// (or per-IP) ingest flooding. Both in-memory, no Redis required.
+	loginLimiter  *ratelimit.Limiter
+	ingestLimiter *ratelimit.Limiter
 }
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
@@ -46,6 +60,9 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		mailer:       mailer,
 		symbolicator: sourcemaps.NewResolver(),
 		ai:           ai.New(cfg.IsProduction()),
+
+		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
+		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
 	}
 }
 

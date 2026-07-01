@@ -21,6 +21,10 @@ type Config struct {
 	DBMinConns    int32
 	RetentionDays int
 
+	// IngestRatePerMin caps events per minute per DSN key (or per IP when no
+	// key), so a captured DSN cannot flood the write path.
+	IngestRatePerMin int
+
 	// Cold-tier Parquet. Local dir by default (self-host friendly); S3/MinIO opt-in.
 	ParquetDir  string
 	S3Endpoint  string
@@ -64,6 +68,7 @@ func Load() (Config, error) {
 		DBMaxConns:         int32(envInt("DB_MAX_CONNS", 20)),
 		DBMinConns:         int32(envInt("DB_MIN_CONNS", 2)),
 		RetentionDays:      envInt("RETENTION_DAYS", 30),
+		IngestRatePerMin:   envInt("INGEST_RATE_PER_MIN", 1200),
 		ParquetDir:         env("FLARE_PARQUET_DIR", "data/parquet"),
 		S3Endpoint:         env("FLARE_PARQUET_S3_ENDPOINT", ""),
 		S3Bucket:           env("FLARE_PARQUET_S3_BUCKET", "flare"),
@@ -108,7 +113,8 @@ func Load() (Config, error) {
 			c.SessionKey = "dev-session-key-not-for-production"
 		}
 		if c.CSRFKey == "" {
-			c.CSRFKey = "dev-csrf-key-32-bytes-long-000000"
+			// gorilla/csrf requires exactly 32 bytes or it panics at startup.
+			c.CSRFKey = "dev-csrf-key-not-for-production0"
 		}
 	}
 
