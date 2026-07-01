@@ -10,6 +10,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AiConfig struct {
+	OrgID     string             `json:"org_id"`
+	BaseUrl   string             `json:"base_url"`
+	ApiKey    string             `json:"api_key"`
+	Model     string             `json:"model"`
+	Format    string             `json:"format"`
+	Enabled   bool               `json:"enabled"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type AlertRule struct {
 	ID            string             `json:"id"`
 	ProjectID     string             `json:"project_id"`
@@ -118,6 +128,8 @@ type Issue struct {
 	LastSpikeAt  pgtype.Timestamptz `json:"last_spike_at"`
 	GithubUrl    string             `json:"github_url"`
 	FirstRelease string             `json:"first_release"`
+	AiTriage     string             `json:"ai_triage"`
+	AiTriagedAt  pgtype.Timestamptz `json:"ai_triaged_at"`
 }
 
 type Log struct {

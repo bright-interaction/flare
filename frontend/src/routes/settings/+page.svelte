@@ -4,7 +4,7 @@
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
   import { relativeTime } from '$lib/format';
-  import type { ApiKey, AuditEntry, Channel, GithubConfig, OidcConfig } from '$lib/types';
+  import type { AiConfig, ApiKey, AuditEntry, Channel, GithubConfig, OidcConfig } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
   let error = $state<string | null>(null);
@@ -30,6 +30,14 @@
   let exporting = $state(false);
   let confirmDelete = $state('');
   let deletingOrg = $state(false);
+
+  let ai = $state<AiConfig | null>(null);
+  let aiBase = $state('');
+  let aiKey = $state('');
+  let aiModel = $state('');
+  let aiFormat = $state('openai');
+  let aiEnabled = $state(false);
+  let aiBusy = $state(false);
 
   let oidc = $state<OidcConfig | null>(null);
   let ssoIssuer = $state('');
@@ -59,6 +67,11 @@
         ssoClientId = oidc.client_id;
         ssoRole = oidc.default_role || 'member';
         ssoEnabled = oidc.enabled;
+        ai = await api.aiConfig();
+        aiBase = ai.base_url;
+        aiModel = ai.model;
+        aiFormat = ai.format || 'openai';
+        aiEnabled = ai.enabled;
       }
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load settings';
@@ -140,6 +153,39 @@
     await navigator.clipboard.writeText(oidc.redirect_uri);
     copiedRedirect = true;
     setTimeout(() => (copiedRedirect = false), 1500);
+  }
+
+  async function saveAi(e: SubmitEvent) {
+    e.preventDefault();
+    aiBusy = true;
+    error = null;
+    try {
+      ai = await api.setAiConfig({
+        base_url: aiBase.trim(),
+        api_key: aiKey.trim(),
+        model: aiModel.trim(),
+        format: aiFormat,
+        enabled: aiEnabled
+      });
+      aiKey = '';
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to save AI config';
+    } finally {
+      aiBusy = false;
+    }
+  }
+
+  async function disconnectAi() {
+    if (!confirm('Disconnect AI triage?')) return;
+    try {
+      await api.deleteAiConfig();
+      ai = await api.aiConfig();
+      aiBase = '';
+      aiModel = '';
+      aiEnabled = false;
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Failed to disconnect AI';
+    }
   }
 
   async function saveGithub(e: SubmitEvent) {
@@ -483,6 +529,59 @@
       </button>
       {#if oidc?.issuer}
         <button type="button" onclick={disconnectOidc} class="text-xs text-zinc-600 transition-colors hover:text-rose-400">Disconnect</button>
+      {/if}
+    </div>
+  </form>
+
+  <h2 class="mt-14 text-xl font-semibold tracking-tight">AI triage</h2>
+  <p class="mt-1 mb-4 text-sm text-zinc-500">
+    Point Flare at your own model endpoint (OpenAI-compatible or Anthropic Messages - OpenAI, a self-hosted
+    vLLM/Ollama, an EU provider). Triage runs on <strong>your</strong> endpoint and PII is scrubbed from the issue
+    before it is sent - so personal data never leaves your boundary.
+  </p>
+
+  {#if ai?.enabled}
+    <div class="mb-4 flex items-center gap-3 rounded-md border border-zinc-800/80 bg-zinc-900/40 px-4 py-3">
+      <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+      <span class="text-sm text-zinc-200"><span class="font-mono">{ai.model}</span> via <span class="font-mono">{ai.base_url}</span></span>
+      <button onclick={disconnectAi} class="ml-auto text-xs text-zinc-600 transition-colors hover:text-rose-400">Disconnect</button>
+    </div>
+  {/if}
+
+  <form onsubmit={saveAi} class="space-y-3">
+    <div class="flex flex-wrap gap-3">
+      <div class="flex flex-1 flex-col gap-1.5">
+        <label for="aibase" class="text-xs font-medium text-zinc-400">Endpoint base URL</label>
+        <input id="aibase" bind:value={aiBase} placeholder="https://api.openai.com/v1" class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60" />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="aifmt" class="text-xs font-medium text-zinc-400">API format</label>
+        <select id="aifmt" bind:value={aiFormat} class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60">
+          <option value="openai">OpenAI-compatible</option>
+          <option value="anthropic">Anthropic Messages</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-3">
+      <div class="flex flex-col gap-1.5">
+        <label for="aimodel" class="text-xs font-medium text-zinc-400">Model</label>
+        <input id="aimodel" bind:value={aiModel} placeholder="gpt-4o-mini" class="w-48 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60" />
+      </div>
+      <div class="flex flex-1 flex-col gap-1.5">
+        <label for="aikey" class="text-xs font-medium text-zinc-400">{ai?.base_url ? 'Replace API key' : 'API key'}</label>
+        <input id="aikey" type="password" bind:value={aiKey} placeholder={ai?.base_url ? 'leave blank to keep' : 'sk-...'} class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60" />
+      </div>
+    </div>
+    <label class="flex items-center gap-2 text-sm text-zinc-300">
+      <input type="checkbox" bind:checked={aiEnabled} class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 accent-amber-400" />
+      Enable AI triage on issues
+    </label>
+    <div class="flex items-center gap-3">
+      <button type="submit" disabled={aiBusy} class="rounded-md bg-amber-400 px-3.5 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-amber-300 active:translate-y-px disabled:opacity-60">
+        {aiBusy ? 'Saving...' : 'Save AI'}
+      </button>
+      {#if ai?.base_url}
+        <button type="button" onclick={disconnectAi} class="text-xs text-zinc-600 transition-colors hover:text-rose-400">Disconnect</button>
       {/if}
     </div>
   </form>

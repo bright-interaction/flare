@@ -82,6 +82,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Delete("/projects/{id}/artifacts/{artifactID}", s.handleDeleteSourceMap)
 					r.Post("/projects/{id}/releases", s.handleCreateRelease)
 					r.Patch("/issues/{id}", s.handleUpdateIssueStatus)
+					r.Post("/issues/{id}/triage", s.handleTriageIssue)
 					r.Post("/channels", s.handleCreateChannel)
 					r.Delete("/channels/{id}", s.handleDeleteChannel)
 					r.Post("/keys", s.handleCreateAPIKey)
@@ -105,6 +106,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Get("/integrations/oidc", s.handleGetOIDCConfig)
 					r.Put("/integrations/oidc", s.handleSetOIDCConfig)
 					r.Delete("/integrations/oidc", s.handleDeleteOIDCConfig)
+					r.Get("/integrations/ai", s.handleGetAIConfig)
+					r.Put("/integrations/ai", s.handleSetAIConfig)
+					r.Delete("/integrations/ai", s.handleDeleteAIConfig)
 				})
 
 				// Workspace erasure: owner only.

@@ -24,6 +24,7 @@ type Issue struct {
 	EventCount   int64
 	GithubURL    string
 	FirstRelease string
+	AITriage     string
 }
 
 type Event struct {

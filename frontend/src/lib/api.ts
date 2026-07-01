@@ -3,6 +3,7 @@ import type {
   ApiKey,
   ApiKeyCreated,
   Artifact,
+  AiConfig,
   AuditEntry,
   Channel,
   GithubConfig,
@@ -81,6 +82,13 @@ export const api = {
   deleteGithubConfig: () => req<void>('DELETE', '/integrations/github'),
   createGithubIssue: (issueId: string) =>
     req<{ github_url: string }>('POST', `/issues/${issueId}/github`),
+
+  aiConfig: () => req<AiConfig>('GET', '/integrations/ai'),
+  setAiConfig: (cfg: { base_url: string; api_key: string; model: string; format: string; enabled: boolean }) =>
+    req<AiConfig>('PUT', '/integrations/ai', cfg),
+  deleteAiConfig: () => req<void>('DELETE', '/integrations/ai'),
+  triageIssue: (issueId: string, refresh = false) =>
+    req<{ triage: string; cached: boolean }>('POST', `/issues/${issueId}/triage${refresh ? '?refresh=true' : ''}`),
 
   oidcConfig: () => req<OidcConfig>('GET', '/integrations/oidc'),
   setOidcConfig: (cfg: {

@@ -9,6 +9,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/analytics"
 	"github.com/bright-interaction/flare/internal/config"
@@ -29,6 +30,7 @@ type Server struct {
 	dispatcher   *alerts.Dispatcher
 	mailer       *email.Mailer
 	symbolicator *sourcemaps.Resolver
+	ai           *ai.Client
 }
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
@@ -43,6 +45,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		dispatcher:   alerts.NewDispatcher(mailer),
 		mailer:       mailer,
 		symbolicator: sourcemaps.NewResolver(),
+		ai:           ai.New(cfg.IsProduction()),
 	}
 }
 

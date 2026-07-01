@@ -26,6 +26,14 @@ export interface Issue {
   event_count: number;
   github_url: string;
   first_release: string;
+  ai_triage: string;
+}
+
+export interface AiConfig {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  format: string;
 }
 
 export interface Release {

@@ -39,6 +39,27 @@
   let ghBusy = $state(false);
   const canWrite = $derived(session.user?.role !== 'viewer');
 
+  let triage = $state('');
+  let triaging = $state(false);
+
+  async function runTriage(refresh = false) {
+    triaging = true;
+    error = null;
+    try {
+      const r = await api.triageIssue(id, refresh);
+      triage = r.triage;
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'AI triage failed';
+    } finally {
+      triaging = false;
+    }
+  }
+
+  // Safe minimal markdown: split each line on ** to toggle bold. No raw HTML.
+  function segments(line: string) {
+    return line.split('**').map((text, i) => ({ text, bold: i % 2 === 1 }));
+  }
+
   async function makeGithubIssue() {
     ghBusy = true;
     error = null;
@@ -98,6 +119,32 @@
       </div>
     {/each}
   </div>
+
+  {#if triage}
+    <div class="mt-6 rounded-lg border border-amber-400/25 bg-amber-400/[0.03] p-4">
+      <div class="mb-2 flex items-center gap-2">
+        <span class="text-xs font-semibold uppercase tracking-wide text-amber-300">AI triage</span>
+        <span class="text-[10px] text-zinc-600">PII-scrubbed, your endpoint</span>
+        {#if canWrite}
+          <button onclick={() => runTriage(true)} disabled={triaging} class="ml-auto text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:opacity-60">{triaging ? 'Running...' : 'Re-run'}</button>
+        {/if}
+      </div>
+      <div class="space-y-1.5 text-sm leading-relaxed text-zinc-300">
+        {#each triage.split('\n') as line (line)}
+          <p>{#each segments(line) as seg}{#if seg.bold}<strong class="font-semibold text-zinc-100">{seg.text}</strong>{:else}{seg.text}{/if}{/each}</p>
+        {/each}
+      </div>
+    </div>
+  {:else if canWrite}
+    <button onclick={() => runTriage(false)} disabled={triaging} class="mt-6 inline-flex items-center gap-2 rounded-md border border-amber-400/40 bg-amber-400/[0.06] px-3.5 py-2 text-sm font-medium text-amber-300 transition-colors hover:bg-amber-400/10 active:translate-y-px disabled:opacity-60">
+      {#if triaging}
+        <span class="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-amber-300"></span>
+        Analyzing on your endpoint...
+      {:else}
+        AI triage this issue
+      {/if}
+    </button>
+  {/if}
 
   {#if latest}
     <h2 class="mt-8 mb-2 text-sm font-medium text-zinc-300">Latest event</h2>
