@@ -233,5 +233,9 @@ func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) 
 		slogError(w, "provision create", err)
 		return
 	}
+	// Audit the CREATE side of provision. The 2026-06-30 deletion incident
+	// could not be reconstructed partly because provisioned projects left no
+	// trail; name+id in one target keeps both greppable.
+	s.audit(r.Context(), "project.provision", name+" ("+p.ID+")")
 	writeJSON(w, http.StatusCreated, s.toProjectResponse(p))
 }

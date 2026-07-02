@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -220,19 +221,42 @@ func (s *Server) spikeReason(ctx context.Context, issue *generated.UpsertIssueRo
 func (s *Server) authIngest(w http.ResponseWriter, r *http.Request) (*generated.Project, bool) {
 	key := ingestKey(r)
 	if key == "" {
+		slog.Warn("ingest rejected: missing key", "path", r.URL.Path, "remote", remoteIP(r))
 		writeErr(w, http.StatusUnauthorized, "missing ingest key")
 		return nil, false
 	}
 	project, err := s.q.GetProjectByPublicKey(r.Context(), key)
 	if err != nil {
+		// Log the key PREFIX only: enough to identify a stale/deleted DSN in
+		// the field (the exact failure mode after a project deletion, which
+		// used to be fully silent) without leaking a usable credential.
+		slog.Warn("ingest rejected: unknown key", "key_prefix", keyPrefix(key), "path", r.URL.Path, "remote", remoteIP(r))
 		writeErr(w, http.StatusUnauthorized, "invalid ingest key")
 		return nil, false
 	}
 	if pid := chi.URLParam(r, "projectID"); pid != "" && pid != project.DsnID && pid != project.ID {
+		slog.Warn("ingest rejected: key/project mismatch", "key_prefix", keyPrefix(key), "path_project", pid, "remote", remoteIP(r))
 		writeErr(w, http.StatusUnauthorized, "key does not match project")
 		return nil, false
 	}
 	return project, true
+}
+
+// keyPrefix returns the first 8 chars of an ingest key for diagnostics.
+func keyPrefix(key string) string {
+	if len(key) > 8 {
+		return key[:8]
+	}
+	return key
+}
+
+// remoteIP is the peer address without the port, for rejected-ingest logs.
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // ingestKey pulls the public key from the X-Sentry-Auth header, the

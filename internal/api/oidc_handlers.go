@@ -3,7 +3,9 @@ package api
 import (
 	"crypto/subtle"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -67,6 +69,20 @@ func (s *Server) handleSetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	req.ClientSecret = strings.TrimSpace(req.ClientSecret)
 	if !strings.HasPrefix(req.Issuer, "https://") || req.ClientID == "" {
 		writeErr(w, http.StatusBadRequest, "issuer (https) and client_id are required")
+		return
+	}
+	// Reject issuers whose host is a loopback/private/link-local IP literal
+	// at CONFIGURE time, not just at discovery time. The SSRF-guarded dialer
+	// already blocks the fetch, but accepting https://169.254.169.254 as a
+	// stored issuer passed a live probe on 2026-06-30; validation belongs at
+	// the trust boundary too.
+	if u, err := url.Parse(req.Issuer); err != nil || u.Hostname() == "" {
+		writeErr(w, http.StatusBadRequest, "issuer is not a valid URL")
+		return
+	} else if ip := net.ParseIP(u.Hostname()); ip != nil &&
+		(ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+		writeErr(w, http.StatusBadRequest, "issuer host must be a public address")
 		return
 	}
 	// A blank secret on update keeps the stored one (so admins can toggle
