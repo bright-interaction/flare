@@ -1,8 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"io/fs"
+	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,21 +16,74 @@ import (
 )
 
 // securityHeaders sets the baseline response headers required by the repo
-// security rules.
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
-		// Set HSTS in-app so a self-host behind any proxy is protected, not only
-		// deployments that happen to add it at the edge. Browsers ignore HSTS
-		// received over plain HTTP, so this is a no-op in local dev.
-		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
-		next.ServeHTTP(w, r)
-	})
+// security rules. csp is the Content-Security-Policy computed once at startup
+// (see cspForBuild): scripts are locked to 'self' plus the exact hashes of the
+// SPA's inline bootstrap, so the strict policy still lets the dashboard start.
+func securityHeaders(csp string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			h.Set("Content-Security-Policy", csp)
+			// Set HSTS in-app so a self-host behind any proxy is protected, not only
+			// deployments that happen to add it at the edge. Browsers ignore HSTS
+			// received over plain HTTP, so this is a no-op in local dev.
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+			h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// cspForBuild derives the Content-Security-Policy from the embedded frontend.
+// SvelteKit's SPA shell boots from an INLINE <script>, which a bare
+// `default-src 'self'` blocks (inline scripts need 'unsafe-inline', a nonce,
+// or a hash), leaving a blank page. We hash that inline script from the SAME
+// bytes the server serves, so script-src stays 'self' + exact hashes with no
+// 'unsafe-inline' and no manual step across builds. If the HTML can't be read
+// or has no inline script (should not happen), we fall back to script
+// 'unsafe-inline' so the UI still works, and log it loudly.
+func cspForBuild(build fs.FS) string {
+	html, err := fs.ReadFile(build, "index.html")
+	if err != nil {
+		slog.Warn("csp: index.html unreadable; allowing script 'unsafe-inline' so the UI is not black-screened", "error", err)
+		return baseCSP("'unsafe-inline'")
+	}
+	hashes := inlineScriptHashes(html)
+	if len(hashes) == 0 {
+		slog.Warn("csp: no inline scripts found in index.html; allowing script 'unsafe-inline' as a fallback")
+		return baseCSP("'unsafe-inline'")
+	}
+	return baseCSP(strings.Join(hashes, " "))
+}
+
+// baseCSP renders the policy with scriptExtra spliced into script-src.
+func baseCSP(scriptExtra string) string {
+	return "default-src 'self'; " +
+		"script-src 'self' " + scriptExtra + "; " +
+		"img-src 'self' data:; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+}
+
+var inlineScriptRe = regexp.MustCompile(`(?is)<script(\s[^>]*)?>(.*?)</script>`)
+
+// inlineScriptHashes returns a CSP source expression ('sha256-<base64>') for
+// every INLINE <script> (no src attribute) in html. The digest is over the
+// exact bytes between the tags, which is what a browser hashes.
+func inlineScriptHashes(html []byte) []string {
+	var out []string
+	for _, m := range inlineScriptRe.FindAllSubmatch(html, -1) {
+		attrs, body := m[1], m[2]
+		if bytes.Contains(bytes.ToLower(attrs), []byte("src=")) {
+			continue // external script: already allowed by 'self'
+		}
+		sum := sha256.Sum256(body)
+		out = append(out, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
+	}
+	return out
 }
 
 // rateLimitIngest caps event ingest per DSN public key (falling back to client

@@ -20,7 +20,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 	// Capture panics to Flare (self-reporting), then re-panic for Recoverer's
 	// 500. Must sit after Recoverer (inner) so it sees the panic first.
 	r.Use(flarereport.FlareRecoverer)
-	r.Use(securityHeaders)
+	r.Use(securityHeaders(cspForBuild(build)))
 	r.Use(s.sessions.LoadAndSave)
 
 	ccsrf := conditionalCSRF(csrfMW)
