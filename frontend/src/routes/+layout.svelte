@@ -17,6 +17,7 @@
   }
 
   const navItems = [
+    { href: '/overview', label: 'Overview' },
     { href: '/projects', label: 'Projects' },
     { href: '/settings', label: 'Alerts' },
     { href: '/members', label: 'Team' },

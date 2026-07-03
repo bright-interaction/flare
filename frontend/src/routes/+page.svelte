@@ -4,7 +4,7 @@
 
   $effect(() => {
     if (!session.loaded) return;
-    goto(session.user ? '/projects' : '/login', { replaceState: true });
+    goto(session.user ? '/overview' : '/login', { replaceState: true });
   });
 </script>
 

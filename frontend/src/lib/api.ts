@@ -15,6 +15,7 @@ import type {
   IssueEvent,
   LogRow,
   LogVolumeBucket,
+  Overview,
   Project,
   Span,
   TraceSummary,
@@ -134,6 +135,8 @@ export const api = {
     const qs = p.toString();
     return req<LogRow[]>('GET', `/projects/${pid}/logs${qs ? `?${qs}` : ''}`);
   },
+
+  overview: () => req<Overview>('GET', '/overview'),
 
   logVolume: (pid: string, hours = 24) =>
     req<LogVolumeBucket[]>('GET', `/projects/${pid}/analytics/log-volume?hours=${hours}`),

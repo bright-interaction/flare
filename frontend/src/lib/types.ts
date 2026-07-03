@@ -181,3 +181,36 @@ export interface AlertRule {
   window_minutes: number;
   enabled: boolean;
 }
+
+export interface OverviewHourBucket {
+  hour: string;
+  count: number;
+}
+
+export interface OverviewIssue {
+  id: string;
+  title: string;
+  level: string;
+  event_count: number;
+  project_id: string;
+  project_name: string;
+}
+
+export interface OverviewProject {
+  id: string;
+  name: string;
+  slug: string;
+  events_24h: number;
+  unresolved: number;
+  status: 'ok' | 'spike' | 'quiet';
+  volume: number[];
+}
+
+export interface Overview {
+  events_24h: number;
+  unresolved: number;
+  new_today: number;
+  volume: OverviewHourBucket[];
+  top_issues: OverviewIssue[];
+  projects: OverviewProject[];
+}

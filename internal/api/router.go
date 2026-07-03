@@ -60,6 +60,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Use(s.requireAuth)
 
 				// Reads: any authenticated role (viewer+).
+				r.Get("/overview", s.handleOverview)
 				r.Get("/projects", s.handleListProjects)
 				r.Get("/projects/{id}", s.handleGetProject)
 				r.Get("/projects/{id}/issues", s.handleListIssues)
