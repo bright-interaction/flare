@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/bright-interaction/flare/internal/ingest"
+	"github.com/bright-interaction/flare/internal/ratelimit"
 )
 
 func TestBuildSecurityEventGroupsByKind(t *testing.T) {
@@ -27,5 +28,24 @@ func TestBuildSecurityEventGroupsByKind(t *testing.T) {
 	c, _ := ingest.ParseEvent(buildSecurityEventJSON("login-lockout", "x"))
 	if a.Fingerprint() == c.Fingerprint() {
 		t.Fatal("different kinds must not share a fingerprint")
+	}
+}
+
+func TestLoginLockoutTripsAfterBudget(t *testing.T) {
+	// The login handler fires the "login-lockout" security event exactly when
+	// loginLimiter.Blocked becomes true after Record. Prove that boundary so
+	// the trigger can't silently regress (the recording path itself is covered
+	// live + by TestBuildSecurityEventGroupsByKind).
+	lim := ratelimit.New(loginFailBudget, loginFailWindow)
+	key := "login:attacker@evil.test|1.2.3.4"
+	for i := 0; i < loginFailBudget-1; i++ {
+		lim.Record(key)
+		if lim.Blocked(key) {
+			t.Fatalf("blocked after only %d failed logins, want %d", i+1, loginFailBudget)
+		}
+	}
+	lim.Record(key) // the loginFailBudget-th failure
+	if !lim.Blocked(key) {
+		t.Fatalf("not blocked after %d failed logins; login-lockout event would never fire", loginFailBudget)
 	}
 }
