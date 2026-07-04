@@ -55,6 +55,24 @@ func (q *Queries) DeleteOrg(ctx context.Context, id string) error {
 	return err
 }
 
+const getFirstOrg = `-- name: GetFirstOrg :one
+SELECT id, name, slug, created_at FROM orgs ORDER BY created_at ASC LIMIT 1
+`
+
+// The oldest org, used as the system/owner scope for Flare's own security
+// events (e.g. an ingest-auth rejection that matches no project has no org).
+func (q *Queries) GetFirstOrg(ctx context.Context) (*Org, error) {
+	row := q.db.QueryRow(ctx, getFirstOrg)
+	var i Org
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.CreatedAt,
+	)
+	return &i, err
+}
+
 const getOrgByID = `-- name: GetOrgByID :one
 SELECT id, name, slug, created_at FROM orgs WHERE id = $1
 `

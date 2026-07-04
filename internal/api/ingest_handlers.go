@@ -231,11 +231,13 @@ func (s *Server) authIngest(w http.ResponseWriter, r *http.Request) (*generated.
 		// the field (the exact failure mode after a project deletion, which
 		// used to be fully silent) without leaking a usable credential.
 		slog.Warn("ingest rejected: unknown key", "key_prefix", keyPrefix(key), "path", r.URL.Path, "remote", remoteIP(r))
+		s.recordSecurityEvent("", "ingest-auth-rejected", "unknown ingest key "+keyPrefix(key)+" at "+r.URL.Path, remoteIP(r))
 		writeErr(w, http.StatusUnauthorized, "invalid ingest key")
 		return nil, false
 	}
 	if pid := chi.URLParam(r, "projectID"); pid != "" && pid != project.DsnID && pid != project.ID {
 		slog.Warn("ingest rejected: key/project mismatch", "key_prefix", keyPrefix(key), "path_project", pid, "remote", remoteIP(r))
+		s.recordSecurityEvent(project.OrgID, "ingest-key-project-mismatch", "key "+keyPrefix(key)+" used against project "+pid, remoteIP(r))
 		writeErr(w, http.StatusUnauthorized, "key does not match project")
 		return nil, false
 	}

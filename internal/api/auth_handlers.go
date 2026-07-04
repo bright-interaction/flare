@@ -127,6 +127,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	user, err := s.q.GetUserByEmail(ctx, req.Email)
 	if err != nil || !auth.VerifyPassword(user.PasswordHash, req.Password) {
 		s.loginLimiter.Record(lockKey)
+		// Once the failures cross the lockout threshold, that is a brute-force
+		// signal worth surfacing (the throttle in recordSecurityEvent keeps a
+		// sustained attack from flooding).
+		if s.loginLimiter.Blocked(lockKey) {
+			s.recordSecurityEvent("", "login-lockout", "repeated failed logins for "+req.Email+" from "+clientIP(r), clientIP(r))
+		}
 		// Same message either way: never reveal which half failed.
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return

@@ -5,6 +5,7 @@ package api
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexedwards/scs/v2"
@@ -45,6 +46,17 @@ type Server struct {
 	// (or per-IP) ingest flooding. Both in-memory, no Redis required.
 	loginLimiter  *ratelimit.Limiter
 	ingestLimiter *ratelimit.Limiter
+
+	// Security-event recording: Flare's own security signals (ingest-auth
+	// rejections, login lockouts) become grouped issues in a per-org
+	// "flare-security" project. secIPLimiter throttles per (kind, ip),
+	// secGlobalLimiter caps total volume per kind, so a flood of rejected
+	// requests cannot self-DoS the write path. secMu guards the caches.
+	secMu            sync.Mutex
+	systemOrg        string
+	secProjects      map[string]*generated.Project
+	secIPLimiter     *ratelimit.Limiter
+	secGlobalLimiter *ratelimit.Limiter
 }
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
@@ -63,6 +75,10 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
+
+		secProjects:      map[string]*generated.Project{},
+		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
+		secGlobalLimiter: ratelimit.New(60, time.Minute),   // <=60 per kind / min
 	}
 }
 
