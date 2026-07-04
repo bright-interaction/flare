@@ -123,15 +123,50 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "spike rules need a threshold (events) and window (minutes) of at least 1")
 			return
 		}
+	case "anomaly":
+		// threshold = baseline multiplier (>=2), window_minutes = the recent
+		// window compared against the trailing 24h baseline. Cap the window at
+		// 720m (12h): beyond that there is <2 windows in a day, so there is no
+		// baseline to compare against and the rule could never fire.
+		if req.WindowMinutes < 1 || req.WindowMinutes > 720 {
+			writeErr(w, http.StatusBadRequest, "anomaly rules need a window (minutes) between 1 and 720")
+			return
+		}
+		if req.Threshold < 2 {
+			req.Threshold = 3 // default: fire at 3x baseline
+		}
+	case "silence":
+		// threshold = minimum events over 24h to count as "normally active",
+		// window_minutes = how long silent before firing.
+		if req.WindowMinutes < 1 {
+			writeErr(w, http.StatusBadRequest, "silence rules need a window (minutes) of at least 1")
+			return
+		}
+		if req.Threshold < 1 {
+			req.Threshold = 20
+		}
 	default:
-		writeErr(w, http.StatusBadRequest, "type must be new_issue, regression or spike")
+		writeErr(w, http.StatusBadRequest, "type must be new_issue, regression, spike, anomaly or silence")
+		return
+	}
+
+	// Verify the path project belongs to the caller's org before writing a rule
+	// against it. projects.id is a global primary key, so without this a member
+	// could persist an alert rule referencing another org's project. Mirrors the
+	// ownership check every project read path performs.
+	proj, err := s.q.GetProjectByID(r.Context(), generated.GetProjectByIDParams{
+		ID:       chi.URLParam(r, "id"),
+		OrgScope: orgIDFrom(r.Context()),
+	})
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
 
 	rule, err := s.q.CreateAlertRule(r.Context(), generated.CreateAlertRuleParams{
 		ID:            id.New(),
-		ProjectID:     chi.URLParam(r, "id"),
-		OrgID:         orgIDFrom(r.Context()),
+		ProjectID:     proj.ID,
+		OrgID:         proj.OrgID,
 		Name:          req.Name,
 		Type:          req.Type,
 		Threshold:     req.Threshold,

@@ -18,6 +18,7 @@
 
   let rules = $state<AlertRule[]>([]);
   let ruleName = $state('');
+  let hasChannel = $state(true); // assume true until loaded, so no flash
   let ruleType = $state('new_issue');
   let ruleThreshold = $state(10);
   let ruleWindow = $state(5);
@@ -41,6 +42,7 @@
       project = await api.project(id);
       rules = await api.alertRules(id);
       artifacts = await api.artifacts(id);
+      hasChannel = (await api.channels()).some((c) => c.enabled);
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load project';
     }
@@ -68,11 +70,12 @@
     e.preventDefault();
     if (!ruleName.trim()) return;
     try {
+      const usesWindow = ruleType === 'spike' || ruleType === 'anomaly' || ruleType === 'silence';
       const r = await api.createAlertRule(id, {
         name: ruleName,
         type: ruleType,
-        threshold: ruleType === 'spike' ? ruleThreshold : 0,
-        window_minutes: ruleType === 'spike' ? ruleWindow : 0
+        threshold: usesWindow ? ruleThreshold : 0,
+        window_minutes: usesWindow ? ruleWindow : 0
       });
       rules = [r, ...rules];
       ruleName = '';
@@ -81,8 +84,23 @@
     }
   }
 
+  function applyRuleDefaults() {
+    if (ruleType === 'spike') {
+      ruleThreshold = 10;
+      ruleWindow = 5;
+    } else if (ruleType === 'anomaly') {
+      ruleThreshold = 3;
+      ruleWindow = 60;
+    } else if (ruleType === 'silence') {
+      ruleThreshold = 20;
+      ruleWindow = 30;
+    }
+  }
+
   function ruleSummary(r: AlertRule) {
     if (r.type === 'spike') return `spike: ${r.threshold} events / ${r.window_minutes}m`;
+    if (r.type === 'anomaly') return `anomaly: ${r.threshold}x baseline over ${r.window_minutes}m`;
+    if (r.type === 'silence') return `silence: quiet ${r.window_minutes}m (normally >${r.threshold}/24h)`;
     if (r.type === 'regression') return 'regression';
     return 'new issue';
   }
@@ -188,9 +206,16 @@
       <div>
         <h3 class="text-sm font-medium">Alert rules</h3>
         <p class="mt-1 text-xs text-zinc-500">
-          New issue, regression (a resolved issue recurs), or a spike (N events in M minutes). Delivery goes to channels you add under
+          New issue, regression, spike (N events in M minutes), anomaly (error rate jumps vs the project's own
+          baseline), or silence (a normally-active project goes quiet). Delivery goes to channels you add under
           <a href="/settings" class="text-amber-400 hover:text-amber-300">Alerts</a>.
         </p>
+        {#if !hasChannel}
+          <p class="mt-2 rounded-md border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-300/90">
+            No notification channel is configured, so rules will not deliver anything yet. Add one under
+            <a href="/settings" class="font-medium underline hover:text-amber-200">Alerts</a>.
+          </p>
+        {/if}
         <form onsubmit={addRule} class="mt-3 space-y-2">
           <div class="flex gap-2">
             <input
@@ -200,11 +225,14 @@
             />
             <select
               bind:value={ruleType}
+              onchange={applyRuleDefaults}
               class="rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm outline-none focus:border-amber-400/60"
             >
               <option value="new_issue">New issue</option>
               <option value="regression">Regression</option>
               <option value="spike">Spike</option>
+              <option value="anomaly">Anomaly</option>
+              <option value="silence">Silence</option>
             </select>
           </div>
           {#if ruleType === 'spike'}
@@ -224,6 +252,42 @@
                 class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
               />
               <span>minutes</span>
+            </div>
+          {:else if ruleType === 'anomaly'}
+            <div class="flex items-center gap-2 text-xs text-zinc-500">
+              <span>when error rate exceeds</span>
+              <input
+                type="number"
+                min="2"
+                bind:value={ruleThreshold}
+                class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+              />
+              <span>x its baseline over</span>
+              <input
+                type="number"
+                min="1"
+                bind:value={ruleWindow}
+                class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+              />
+              <span>minutes</span>
+            </div>
+          {:else if ruleType === 'silence'}
+            <div class="flex items-center gap-2 text-xs text-zinc-500">
+              <span>when quiet for</span>
+              <input
+                type="number"
+                min="1"
+                bind:value={ruleWindow}
+                class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+              />
+              <span>min and normally &gt;</span>
+              <input
+                type="number"
+                min="1"
+                bind:value={ruleThreshold}
+                class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+              />
+              <span>events/24h</span>
             </div>
           {/if}
           <button class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px">Add rule</button>

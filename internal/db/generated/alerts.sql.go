@@ -13,7 +13,7 @@ import (
 const createAlertRule = `-- name: CreateAlertRule :one
 INSERT INTO alert_rules (id, project_id, org_id, name, type, threshold, window_minutes, enabled)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes
+RETURNING id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes, last_fired_at
 `
 
 type CreateAlertRuleParams struct {
@@ -49,6 +49,7 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.WindowMinutes,
+		&i.LastFiredAt,
 	)
 	return &i, err
 }
@@ -123,7 +124,7 @@ func (q *Queries) DeleteNotificationChannel(ctx context.Context, arg DeleteNotif
 }
 
 const listAlertRulesByProject = `-- name: ListAlertRulesByProject :many
-SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes FROM alert_rules WHERE project_id = $1 AND org_id = $2 ORDER BY created_at DESC
+SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes, last_fired_at FROM alert_rules WHERE project_id = $1 AND org_id = $2 ORDER BY created_at DESC
 `
 
 type ListAlertRulesByProjectParams struct {
@@ -150,6 +151,7 @@ func (q *Queries) ListAlertRulesByProject(ctx context.Context, arg ListAlertRule
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.WindowMinutes,
+			&i.LastFiredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -162,7 +164,7 @@ func (q *Queries) ListAlertRulesByProject(ctx context.Context, arg ListAlertRule
 }
 
 const listEnabledAlertRulesByProject = `-- name: ListEnabledAlertRulesByProject :many
-SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true
+SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes, last_fired_at FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true
 `
 
 type ListEnabledAlertRulesByProjectParams struct {
@@ -189,6 +191,7 @@ func (q *Queries) ListEnabledAlertRulesByProject(ctx context.Context, arg ListEn
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.WindowMinutes,
+			&i.LastFiredAt,
 		); err != nil {
 			return nil, err
 		}

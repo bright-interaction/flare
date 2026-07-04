@@ -130,6 +130,11 @@ func run() error {
 	}
 
 	srv := api.NewServer(pool, sessions, cfg, analyticsMgr)
+
+	// Watchdog: periodic anomaly + silence detection (the "abnormal behavior"
+	// alerts that cannot ride on ingest). Best-effort; shares alert channels.
+	go srv.RunWatchdog(ctx, 5*time.Minute)
+
 	handler := srv.Routes(build, csrfMW)
 
 	httpServer := &http.Server{

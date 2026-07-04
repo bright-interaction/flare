@@ -30,6 +30,7 @@ type AlertRule struct {
 	Enabled       bool               `json:"enabled"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	WindowMinutes int32              `json:"window_minutes"`
+	LastFiredAt   pgtype.Timestamptz `json:"last_fired_at"`
 }
 
 type ApiKey struct {
