@@ -86,7 +86,16 @@
       <div class="flex items-center gap-2.5">
         <span class="text-xs font-semibold uppercase {levelColor(issue.level)}">{issue.level}</span>
         <span class="rounded-full border px-2 py-0.5 text-xs capitalize {statusColor(issue.status)}">{issue.status}</span>
+        {#if issue.sensitive}
+          <span class="rounded-full border border-rose-800/70 bg-rose-950/40 px-2 py-0.5 text-xs font-medium text-rose-300">Sensitive data</span>
+        {/if}
       </div>
+      {#if issue.sensitive}
+        <p class="mt-2 rounded-md border border-rose-900/50 bg-rose-950/20 px-3 py-2 text-xs text-rose-300/90">
+          This issue's telemetry contained values that should not be logged ({issue.sensitive}). Rotate any exposed
+          secret and scrub it at the source; the raw payload is stored until retention expires.
+        </p>
+      {/if}
       <h1 class="mt-2 text-lg font-semibold tracking-tight break-words">{issue.title}</h1>
       {#if issue.culprit}<p class="mt-1 font-mono text-sm text-zinc-500">{issue.culprit}</p>{/if}
       {#if issue.first_release}

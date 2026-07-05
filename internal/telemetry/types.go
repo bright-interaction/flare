@@ -25,6 +25,7 @@ type Issue struct {
 	GithubURL    string
 	FirstRelease string
 	AITriage     string
+	Sensitive    string
 }
 
 type Event struct {

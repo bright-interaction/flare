@@ -110,12 +110,17 @@ func (s *Server) ensureSecurityProject(ctx context.Context, org string) (*genera
 		}
 		return nil, err
 	}
-	// Seed a spike alert so a burst (brute force, DSN abuse) pages without any
-	// manual configuration. Best-effort: a failure here still leaves the
-	// project usable and the operator can add rules by hand.
+	// Seed alerts so security signals page without manual setup: a spike rule
+	// for a burst (brute force, DSN abuse) and a new_issue rule so the FIRST
+	// occurrence of a distinct signal (e.g. the first secret leak) alerts too.
+	// Best-effort: a failure still leaves the project usable.
 	_, _ = s.q.CreateAlertRule(ctx, generated.CreateAlertRuleParams{
 		ID: id.New(), ProjectID: p.ID, OrgID: org,
 		Name: "Security event spike", Type: "spike", Threshold: 10, WindowMinutes: 5, Enabled: true,
+	})
+	_, _ = s.q.CreateAlertRule(ctx, generated.CreateAlertRuleParams{
+		ID: id.New(), ProjectID: p.ID, OrgID: org,
+		Name: "New security event", Type: "new_issue", Enabled: true,
 	})
 	s.cacheSecProject(org, p)
 	return p, nil

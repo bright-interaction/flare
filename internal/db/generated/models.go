@@ -131,6 +131,7 @@ type Issue struct {
 	FirstRelease string             `json:"first_release"`
 	AiTriage     string             `json:"ai_triage"`
 	AiTriagedAt  pgtype.Timestamptz `json:"ai_triaged_at"`
+	Sensitive    string             `json:"sensitive"`
 }
 
 type Log struct {

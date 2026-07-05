@@ -60,3 +60,9 @@ SELECT * FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DE
 -- ciguard:allow-no-project write by project-unique issue id
 -- name: UpdateIssueStatus :one
 UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING *;
+
+-- ciguard:allow-no-project set-once flag by project-unique issue id
+-- name: MarkIssueSensitive :exec
+-- First detection wins: only set when not already flagged, so the badge is
+-- stable and one write per issue, not per event.
+UPDATE issues SET sensitive = $3 WHERE id = $1 AND org_id = $2 AND sensitive = '';
