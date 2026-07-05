@@ -27,6 +27,7 @@ type issueResponse struct {
 	GithubURL    string    `json:"github_url"`
 	FirstRelease string    `json:"first_release"`
 	AITriage     string    `json:"ai_triage"`
+	Sensitive    string    `json:"sensitive"`
 }
 
 func toIssueResponse(i telemetry.Issue) issueResponse {
@@ -35,6 +36,7 @@ func toIssueResponse(i telemetry.Issue) issueResponse {
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, EventCount: i.EventCount,
 		GithubURL: i.GithubURL, FirstRelease: i.FirstRelease, AITriage: i.AITriage,
+		Sensitive: i.Sensitive,
 	}
 }
 
@@ -46,6 +48,7 @@ func genIssueToResponse(i *generated.Issue) issueResponse {
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen.Time, LastSeen: i.LastSeen.Time, EventCount: i.EventCount,
 		GithubURL: i.GithubUrl, FirstRelease: i.FirstRelease, AITriage: i.AiTriage,
+		Sensitive: i.Sensitive,
 	}
 }
 

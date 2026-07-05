@@ -27,6 +27,7 @@ export interface Issue {
   github_url: string;
   first_release: string;
   ai_triage: string;
+  sensitive: string;
 }
 
 export interface AiConfig {

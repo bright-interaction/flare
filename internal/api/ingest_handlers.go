@@ -130,6 +130,21 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		return "", err
 	}
 
+	// Sensitive-data scan: flag the issue and surface a security signal when an
+	// event leaked a secret / JWT / card number. Skipped for the security
+	// project itself, both to avoid recursion and because its own event bodies
+	// (key prefixes, IPs) are not leaks.
+	if project.Slug != securityProjectSlug {
+		if kinds := detectSensitive(ev); len(kinds) > 0 {
+			joined := strings.Join(kinds, ",")
+			_ = s.q.MarkIssueSensitive(ctx, generated.MarkIssueSensitiveParams{
+				ID: issue.ID, OrgID: project.OrgID, Sensitive: joined,
+			})
+			s.recordSecurityEvent(project.OrgID, "sensitive-data-in-payload",
+				"possible "+joined+" in "+project.Name+" - issue: "+issue.Title, "")
+		}
+	}
+
 	s.evaluateAlerts(project, issue, issue.IsNew, reopened)
 	return eventID, nil
 }

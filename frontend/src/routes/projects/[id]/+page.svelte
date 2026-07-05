@@ -431,7 +431,17 @@
           <a href="/issues/{issue.id}" class="flex items-center gap-4 py-3 transition-colors hover:bg-zinc-900/40">
             <span class="inline-block h-2 w-2 shrink-0 rounded-full {issue.status === 'resolved' ? 'bg-emerald-400' : issue.status === 'ignored' ? 'bg-zinc-600' : 'bg-amber-400'}"></span>
             <div class="min-w-0 flex-1">
-              <div class="truncate text-sm font-medium text-zinc-100">{issue.title}</div>
+              <div class="flex items-center gap-2">
+                <div class="truncate text-sm font-medium text-zinc-100">{issue.title}</div>
+                {#if issue.sensitive}
+                  <span
+                    class="shrink-0 rounded border border-rose-800/70 bg-rose-950/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-300"
+                    title="Payload may contain: {issue.sensitive}"
+                  >
+                    Sensitive
+                  </span>
+                {/if}
+              </div>
               <div class="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
                 <span class="uppercase {levelColor(issue.level)}">{issue.level}</span>
                 {#if issue.culprit}<span class="truncate font-mono">{issue.culprit}</span>{/if}

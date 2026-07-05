@@ -140,6 +140,7 @@ func issueFrom(i *generated.Issue) telemetry.Issue {
 		Title: i.Title, Culprit: i.Culprit, Level: i.Level, Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen.Time, LastSeen: i.LastSeen.Time, EventCount: i.EventCount,
 		GithubURL: i.GithubUrl, FirstRelease: i.FirstRelease, AITriage: i.AiTriage,
+		Sensitive: i.Sensitive,
 	}
 }
 

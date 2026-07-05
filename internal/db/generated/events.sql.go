@@ -47,7 +47,7 @@ func (q *Queries) CountIssues(ctx context.Context, arg CountIssuesParams) (int64
 }
 
 const getIssue = `-- name: GetIssue :one
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at FROM issues WHERE id = $1 AND org_id = $2
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at, sensitive FROM issues WHERE id = $1 AND org_id = $2
 `
 
 type GetIssueParams struct {
@@ -77,6 +77,7 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (*Issue, err
 		&i.FirstRelease,
 		&i.AiTriage,
 		&i.AiTriagedAt,
+		&i.Sensitive,
 	)
 	return &i, err
 }
@@ -200,7 +201,7 @@ func (q *Queries) ListEventsByIssue(ctx context.Context, arg ListEventsByIssuePa
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at FROM issues
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at, sensitive FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
@@ -249,6 +250,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 			&i.FirstRelease,
 			&i.AiTriage,
 			&i.AiTriagedAt,
+			&i.Sensitive,
 		); err != nil {
 			return nil, err
 		}
@@ -258,6 +260,24 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 		return nil, err
 	}
 	return items, nil
+}
+
+const markIssueSensitive = `-- name: MarkIssueSensitive :exec
+UPDATE issues SET sensitive = $3 WHERE id = $1 AND org_id = $2 AND sensitive = ''
+`
+
+type MarkIssueSensitiveParams struct {
+	ID        string `json:"id"`
+	OrgID     string `json:"org_id"`
+	Sensitive string `json:"sensitive"`
+}
+
+// ciguard:allow-no-project set-once flag by project-unique issue id
+// First detection wins: only set when not already flagged, so the badge is
+// stable and one write per issue, not per event.
+func (q *Queries) MarkIssueSensitive(ctx context.Context, arg MarkIssueSensitiveParams) error {
+	_, err := q.db.Exec(ctx, markIssueSensitive, arg.ID, arg.OrgID, arg.Sensitive)
+	return err
 }
 
 const reopenIssue = `-- name: ReopenIssue :exec
@@ -299,7 +319,7 @@ func (q *Queries) TrySetIssueSpike(ctx context.Context, arg TrySetIssueSpikePara
 }
 
 const updateIssueStatus = `-- name: UpdateIssueStatus :one
-UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at
+UPDATE issues SET status = $3 WHERE id = $1 AND org_id = $2 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at, sensitive
 `
 
 type UpdateIssueStatusParams struct {
@@ -330,6 +350,7 @@ func (q *Queries) UpdateIssueStatus(ctx context.Context, arg UpdateIssueStatusPa
 		&i.FirstRelease,
 		&i.AiTriage,
 		&i.AiTriagedAt,
+		&i.Sensitive,
 	)
 	return &i, err
 }
