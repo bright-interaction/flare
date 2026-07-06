@@ -192,9 +192,28 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				nt, _ := s.q.OverviewNewIssuesToday(ctx, org)
 				top, _ := s.q.OverviewTopIssues(ctx, org)
 				perProj, _ := s.q.OverviewProjectUnresolved(ctx, org)
+				projects, _ := s.q.ListProjectsByOrg(ctx, org)
+				byID := make(map[string]*generated.Project, len(projects))
+				for _, p := range projects {
+					byID[p.ID] = p
+				}
+				type projUnresolved struct {
+					ProjectID  string `json:"project_id"`
+					Name       string `json:"name"`
+					Slug       string `json:"slug"`
+					Unresolved int64  `json:"unresolved"`
+				}
+				pu := make([]projUnresolved, 0, len(perProj))
+				for _, r := range perProj {
+					row := projUnresolved{ProjectID: r.ProjectID, Unresolved: r.Count}
+					if p := byID[r.ProjectID]; p != nil {
+						row.Name, row.Slug = p.Name, p.Slug
+					}
+					pu = append(pu, row)
+				}
 				return map[string]any{
 					"events_24h": ev, "unresolved": un, "new_today": nt,
-					"top_issues": top, "project_unresolved": perProj,
+					"top_issues": top, "projects": pu,
 				}, nil
 			},
 		},
@@ -240,7 +259,11 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
-				return issues, nil
+				out := make([]issueResponse, 0, len(issues))
+				for _, i := range issues {
+					out = append(out, toIssueResponse(i))
+				}
+				return out, nil
 			},
 		},
 		"get_issue": {
@@ -265,7 +288,10 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					a.Events = 3
 				}
 				events, _ := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
-				return map[string]any{"issue": issue, "events": events}, nil
+				return map[string]any{
+					"issue":  toIssueResponse(issue),
+					"events": s.toEventResponses(ctx, a.IssueID, org, events),
+				}, nil
 			},
 		},
 		"search_logs": {
@@ -298,7 +324,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
-				return logs, nil
+				return toLogResponses(logs), nil
 			},
 		},
 		"update_issue_status": {
@@ -321,7 +347,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, fmt.Errorf("issue %q not found", a.IssueID)
 				}
-				return map[string]any{"id": i.ID, "status": i.Status, "title": i.Title}, nil
+				return genIssueToResponse(i), nil
 			},
 		},
 		"triage_issue": {

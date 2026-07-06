@@ -117,12 +117,15 @@ func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "list issue events", err)
 		return
 	}
+	writeJSON(w, http.StatusOK, s.toEventResponses(ctx, issueID, org, events))
+}
 
-	// Symbolicate minified frames using any source maps uploaded for the
-	// event's release. Best-effort: resolve the issue's project once, load each
-	// distinct release's maps once, and leave frames untouched on any miss.
+// toEventResponses maps stored events to the clean API shape, symbolicating
+// minified frames using any source maps uploaded for each event's release
+// (best-effort: distinct releases are loaded once, frames left untouched on a
+// miss). Shared by the REST events endpoint and the MCP get_issue tool.
+func (s *Server) toEventResponses(ctx context.Context, issueID, org string, events []telemetry.Event) []eventResponse {
 	releaseMaps := s.releaseSourceMaps(ctx, issueID, org, events)
-
 	out := make([]eventResponse, 0, len(events))
 	for _, e := range events {
 		stack := e.Stacktrace
@@ -136,7 +139,7 @@ func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
 			Stacktrace: stack, ReceivedAt: e.ReceivedAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 // releaseSourceMaps loads the source maps (name -> content) for each distinct
