@@ -15,12 +15,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
+
+// mcpRatePerMin caps MCP requests per org per minute. Generous for an AI
+// operator's investigation cadence, but bounds a member key looping an
+// expensive tool (e.g. triage_issue with refresh=true drives a fresh outbound
+// BYOAI completion each call). Keyed on org so a whole tenant shares the
+// budget.
+const mcpRatePerMin = 120
+
+// mcpUserError carries a caller-facing message that is safe to return verbatim
+// (validation / not-found). Any other error a tool handler returns is treated
+// as internal: logged server-side and replaced with a generic message so DB
+// driver detail and upstream-provider response bodies never reach the client,
+// matching the REST slogError contract.
+type mcpUserError struct{ msg string }
+
+func (e mcpUserError) Error() string { return e.msg }
+
+func userErr(format string, a ...any) error { return mcpUserError{msg: fmt.Sprintf(format, a...)} }
 
 const mcpProtocol = "2025-03-26"
 
@@ -103,6 +122,20 @@ func (s *Server) mcpHandler() http.Handler {
 	})
 }
 
+// rateLimitMCP throttles MCP requests per org. It runs after requireAuth, so
+// the org is already in context; a member key looping an expensive tool
+// (triage_issue refresh=true) is bounded to mcpRatePerMin for the whole tenant.
+func (s *Server) rateLimitMCP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.mcpLimiter.Allow("org:" + orgIDFrom(r.Context())) {
+			w.Header().Set("Retry-After", "60")
+			writeErr(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) mcpDispatch(ctx context.Context, org string, req mcpRequest) (any, *mcpError) {
 	switch req.Method {
 	case "initialize":
@@ -145,9 +178,34 @@ func (s *Server) mcpCall(ctx context.Context, org string, params json.RawMessage
 	}
 	val, err := tool.Handler(ctx, org, p.Arguments)
 	if err != nil {
-		return mcpToolResult{IsError: true, Content: []mcpContent{{Type: "text", Text: err.Error()}}}, nil
+		return mcpToolResult{IsError: true, Content: []mcpContent{{Type: "text", Text: s.mcpErrText(p.Name, err)}}}, nil
 	}
 	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: mcpJSON(val)}}}, nil
+}
+
+// mcpErrText renders a tool error for the client, returning only messages that
+// are safe to expose: the two triage sentinels (which are caller-actionable and
+// carry no upstream detail), authored validation/not-found messages
+// (mcpUserError, telemetry.ErrNotFound), and nothing else. Any other error
+// (raw pgx/DB failure, wrapped provider response body) is logged server-side
+// and replaced with a generic string.
+func (s *Server) mcpErrText(tool string, err error) string {
+	switch {
+	case errors.Is(err, errTriageNotConfigured):
+		return errTriageNotConfigured.Error()
+	case errors.Is(err, errTriageEndpoint):
+		return errTriageEndpoint.Error()
+	}
+	var ue mcpUserError
+	if errors.As(err, &ue) {
+		return ue.Error()
+	}
+	var nf telemetry.ErrNotFound
+	if errors.As(err, &nf) {
+		return err.Error()
+	}
+	slog.Error("mcp tool failed", "tool", tool, "err", err)
+	return "internal error"
 }
 
 func mcpWriteErr(w http.ResponseWriter, id any, code int, msg string) {
@@ -167,7 +225,7 @@ func schema(raw string) json.RawMessage { return json.RawMessage(raw) }
 // resolveProjectRef finds a project by its id OR its slug, scoped to org.
 func (s *Server) resolveProjectRef(ctx context.Context, org, ref string) (*generated.Project, error) {
 	if ref == "" {
-		return nil, fmt.Errorf("project is required (id or slug)")
+		return nil, userErr("project is required (id or slug)")
 	}
 	if p, err := s.q.GetProjectByID(ctx, generated.GetProjectByIDParams{ID: ref, OrgScope: org}); err == nil {
 		return p, nil
@@ -175,7 +233,7 @@ func (s *Server) resolveProjectRef(ctx context.Context, org, ref string) (*gener
 	if p, err := s.q.GetProjectBySlug(ctx, generated.GetProjectBySlugParams{OrgID: org, Slug: ref}); err == nil {
 		return p, nil
 	}
-	return nil, fmt.Errorf("project %q not found", ref)
+	return nil, userErr("project %q not found", ref)
 }
 
 // mcpToolset builds the allow-listed tool catalog. Handlers reuse the same
@@ -280,7 +338,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					var nf telemetry.ErrNotFound
 					if errors.As(err, &nf) {
-						return nil, fmt.Errorf("issue %q not found", a.IssueID)
+						return nil, userErr("issue %q not found", a.IssueID)
 					}
 					return nil, err
 				}
@@ -341,11 +399,11 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				switch a.Status {
 				case "unresolved", "resolved", "ignored":
 				default:
-					return nil, fmt.Errorf("status must be unresolved, resolved, or ignored")
+					return nil, userErr("status must be unresolved, resolved, or ignored")
 				}
 				i, err := s.q.UpdateIssueStatus(ctx, generated.UpdateIssueStatusParams{ID: a.IssueID, OrgID: org, Status: a.Status})
 				if err != nil {
-					return nil, fmt.Errorf("issue %q not found", a.IssueID)
+					return nil, userErr("issue %q not found", a.IssueID)
 				}
 				return genIssueToResponse(i), nil
 			},

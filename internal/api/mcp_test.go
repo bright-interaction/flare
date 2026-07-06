@@ -3,10 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bright-interaction/flare/internal/ratelimit"
+	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
 // authedReq builds a POST /api/mcp request whose context already carries the
@@ -135,5 +141,47 @@ func TestMCPMethodNotFound(t *testing.T) {
 	resp := callMCP(t, "org1", "member", `{"jsonrpc":"2.0","id":5,"method":"bogus/method"}`)
 	if resp.Error == nil || resp.Error.Code != -32601 {
 		t.Fatalf("expected method-not-found (-32601), got %+v", resp.Error)
+	}
+}
+
+// The dispatcher must not leak internal error detail to the client. Authored
+// validation/not-found messages and the triage sentinels pass through; raw DB
+// errors and wrapped provider bodies collapse to "internal error".
+func TestMCPErrTextSanitizes(t *testing.T) {
+	s := &Server{}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"not-configured", errTriageNotConfigured, errTriageNotConfigured.Error()},
+		{"endpoint-wraps-provider-body", fmt.Errorf("%w: 401 {\"error\":\"sk-leak\"}", errTriageEndpoint), errTriageEndpoint.Error()},
+		{"user-error", userErr("project %q not found", "x"), `project "x" not found`},
+		{"not-found", telemetry.ErrNotFound{What: "issue"}, "issue not found"},
+		{"raw-db", errors.New(`ERROR: relation "issues" does not exist (SQLSTATE 42P01)`), "internal error"},
+		{"raw-dial", errors.New("dial tcp 10.0.0.5:5432: connect: connection refused"), "internal error"},
+	}
+	for _, c := range cases {
+		if got := s.mcpErrText("tool", c.err); got != c.want {
+			t.Errorf("%s: mcpErrText = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRateLimitMCP(t *testing.T) {
+	s := &Server{mcpLimiter: ratelimit.New(2, time.Minute)}
+	h := s.rateLimitMCP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	hit := func() int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/api/mcp", nil)
+		r = r.WithContext(context.WithValue(r.Context(), ctxOrgID, "org1"))
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if hit() != http.StatusOK || hit() != http.StatusOK {
+		t.Fatal("first 2 requests within budget should pass")
+	}
+	if got := hit(); got != http.StatusTooManyRequests {
+		t.Fatalf("3rd request should be 429, got %d", got)
 	}
 }
