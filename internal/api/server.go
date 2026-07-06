@@ -43,9 +43,11 @@ type Server struct {
 	ai           *ai.Client
 
 	// loginLimiter locks out brute-force logins; ingestLimiter caps per-DSN-key
-	// (or per-IP) ingest flooding. Both in-memory, no Redis required.
+	// (or per-IP) ingest flooding; mcpLimiter caps per-org MCP request rate so a
+	// member key cannot loop an expensive tool. All in-memory, no Redis.
 	loginLimiter  *ratelimit.Limiter
 	ingestLimiter *ratelimit.Limiter
+	mcpLimiter    *ratelimit.Limiter
 
 	// Security-event recording: Flare's own security signals (ingest-auth
 	// rejections, login lockouts) become grouped issues in a per-org
@@ -75,6 +77,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
+		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
 
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s

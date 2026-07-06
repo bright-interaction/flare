@@ -61,8 +61,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 
 				// MCP: one JSON-RPC endpoint for an AI operator (Claude). Same
 				// auth as the REST API (session or org API key); write tools
-				// self-gate to member+ inside the handler. POST-only.
-				r.Handle("/mcp", s.mcpHandler())
+				// self-gate to member+ inside the handler; per-org rate limited.
+				// POST-only.
+				r.With(s.rateLimitMCP).Handle("/mcp", s.mcpHandler())
 
 				// Reads: any authenticated role (viewer+).
 				r.Get("/overview", s.handleOverview)
