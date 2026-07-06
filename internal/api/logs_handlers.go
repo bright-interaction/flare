@@ -114,6 +114,12 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "search logs", err)
 		return
 	}
+	writeJSON(w, http.StatusOK, toLogResponses(logs))
+}
+
+// toLogResponses maps stored logs to the clean API shape. Shared by the REST
+// logs endpoint and the MCP search_logs tool.
+func toLogResponses(logs []telemetry.Log) []logResponse {
 	out := make([]logResponse, 0, len(logs))
 	for _, l := range logs {
 		out = append(out, logResponse{
@@ -121,5 +127,5 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 			TraceID: l.TraceID, SpanID: l.SpanID, ObservedAt: l.ObservedAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
