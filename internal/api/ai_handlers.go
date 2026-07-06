@@ -94,34 +94,57 @@ func (s *Server) handleDeleteAIConfig(w http.ResponseWriter, r *http.Request) {
 // handleTriageIssue runs (or returns cached) AI triage for an issue: a plain
 // language explanation, likely root cause, and suggested fix, built from the
 // symbolicated stack trace. PII is scrubbed before it reaches the model.
+// Sentinel errors so callers (the REST handler and the MCP tool) can map a
+// triage failure to the right status/message without string-matching. The
+// "not configured" text is load-bearing: the frontend and MCP surface a
+// Settings hint when they see it.
+var (
+	errTriageNotConfigured = errors.New("AI triage is not configured for this workspace")
+	errTriageEndpoint      = errors.New("the AI endpoint did not respond (check the base URL, key and model)")
+)
+
 func (s *Server) handleTriageIssue(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	org := orgIDFrom(ctx)
 	issueID := chi.URLParam(r, "id")
 
-	issue, err := s.store.GetIssue(ctx, issueID, org)
+	text, cached, err := s.triageIssue(ctx, org, issueID, r.URL.Query().Get("refresh") == "true")
 	if err != nil {
 		var nf telemetry.ErrNotFound
-		if errors.As(err, &nf) {
+		switch {
+		case errors.As(err, &nf):
 			writeErr(w, http.StatusNotFound, "issue not found")
-			return
+		case errors.Is(err, errTriageNotConfigured):
+			writeErr(w, http.StatusBadRequest, errTriageNotConfigured.Error())
+		case errors.Is(err, errTriageEndpoint):
+			writeErr(w, http.StatusBadGateway, errTriageEndpoint.Error())
+		default:
+			slogError(w, "ai triage", err)
 		}
-		slogError(w, "triage: load issue", err)
 		return
 	}
-	if issue.AITriage != "" && r.URL.Query().Get("refresh") != "true" {
-		writeJSON(w, http.StatusOK, map[string]any{"triage": issue.AITriage, "cached": true})
-		return
+	writeJSON(w, http.StatusOK, map[string]any{"triage": text, "cached": cached})
+}
+
+// triageIssue runs (or returns cached) AI triage for one issue. Shared by the
+// REST handler and the MCP tool. Returns the triage text, whether it was
+// served from cache, and a typed error (errTriageNotConfigured /
+// errTriageEndpoint / telemetry.ErrNotFound / raw DB error).
+func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh bool) (string, bool, error) {
+	issue, err := s.store.GetIssue(ctx, issueID, org)
+	if err != nil {
+		return "", false, err
+	}
+	if issue.AITriage != "" && !refresh {
+		return issue.AITriage, true, nil
 	}
 
 	cfg, err := s.q.GetAIConfig(ctx, org)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !cfg.Enabled) {
-		writeErr(w, http.StatusBadRequest, "AI triage is not configured for this workspace")
-		return
+		return "", false, errTriageNotConfigured
 	}
 	if err != nil {
-		slogError(w, "triage: config", err)
-		return
+		return "", false, err
 	}
 
 	prompt := s.buildTriageContext(ctx, issue, org)
@@ -132,16 +155,13 @@ func (s *Server) handleTriageIssue(w http.ResponseWriter, r *http.Request) {
 
 	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: cfg.ApiKey, Model: cfg.Model, Format: cfg.Format}, system, prompt)
 	if err != nil {
-		slogError(w, "ai triage", err)
-		writeErr(w, http.StatusBadGateway, "the AI endpoint did not respond (check the base URL, key and model)")
-		return
+		return "", false, fmt.Errorf("%w: %v", errTriageEndpoint, err)
 	}
 	if err := s.q.SetIssueTriage(ctx, generated.SetIssueTriageParams{ID: issue.ID, OrgID: org, AiTriage: triage}); err != nil {
-		slogError(w, "triage: save", err)
-		return
+		return "", false, err
 	}
 	s.audit(ctx, "ai.triage", issue.Title)
-	writeJSON(w, http.StatusOK, map[string]any{"triage": triage, "cached": false})
+	return triage, false, nil
 }
 
 type triageFrame struct {
