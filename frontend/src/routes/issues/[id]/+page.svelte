@@ -41,15 +41,18 @@
 
   let triage = $state('');
   let triaging = $state(false);
+  let triageError = $state<string | null>(null);
 
   async function runTriage(refresh = false) {
     triaging = true;
-    error = null;
+    triageError = null;
     try {
       const r = await api.triageIssue(id, refresh);
       triage = r.triage;
     } catch (err) {
-      error = err instanceof ApiError ? err.message : 'AI triage failed';
+      // Show the failure next to the button. The common case is "not
+      // configured" (no model endpoint set yet), which needs a Settings link.
+      triageError = err instanceof ApiError ? err.message : 'AI triage failed';
     } finally {
       triaging = false;
     }
@@ -153,6 +156,16 @@
         AI triage this issue
       {/if}
     </button>
+  {/if}
+
+  {#if triageError}
+    <p class="mt-3 rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-300">
+      {triageError}
+      {#if triageError.toLowerCase().includes('not configured')}
+        <a href="/settings" class="ml-1 font-medium text-amber-300 underline hover:text-amber-200">Set up a model in Settings</a>
+        to enable AI triage: it sends this issue's scrubbed stack trace to your own model endpoint and returns a plain-language cause and fix.
+      {/if}
+    </p>
   {/if}
 
   {#if latest}
