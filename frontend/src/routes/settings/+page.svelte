@@ -48,6 +48,23 @@
   let ssoBusy = $state(false);
   let copiedRedirect = $state(false);
 
+  // AI operator (MCP): everything a tenant needs to connect an MCP client. The
+  // endpoint is this deployment's own origin; the key is the one just created
+  // (shown once) or a placeholder until the tenant makes one above.
+  let mcpUrl = $state('');
+  let copiedMcp = $state<string | null>(null);
+  const mcpKey = $derived(newKey ?? '<YOUR_API_KEY>');
+  const mcpCommand = $derived(
+    `claude mcp add --transport http flare ${mcpUrl} --header "Authorization: Bearer ${mcpKey}"`
+  );
+  const mcpJsonConfig = $derived(
+    JSON.stringify(
+      { mcpServers: { flare: { type: 'http', url: mcpUrl, headers: { Authorization: `Bearer ${mcpKey}` } } } },
+      null,
+      2
+    )
+  );
+
   $effect(() => {
     if (session.loaded && !session.user) goto('/login', { replaceState: true });
   });
@@ -55,6 +72,7 @@
   onMount(load);
 
   async function load() {
+    mcpUrl = `${location.origin}/api/mcp`;
     try {
       channels = await api.channels();
       apiKeys = await api.apiKeys();
@@ -153,6 +171,14 @@
     await navigator.clipboard.writeText(oidc.redirect_uri);
     copiedRedirect = true;
     setTimeout(() => (copiedRedirect = false), 1500);
+  }
+
+  async function copyMcp(text: string, id: string) {
+    await navigator.clipboard.writeText(text);
+    copiedMcp = id;
+    setTimeout(() => {
+      if (copiedMcp === id) copiedMcp = null;
+    }, 1500);
   }
 
   async function saveAi(e: SubmitEvent) {
@@ -430,6 +456,52 @@
 {:else if apiKeys}
   <p class="text-sm text-zinc-500">No keys yet.</p>
 {/if}
+
+<h2 class="mt-14 text-xl font-semibold tracking-tight">AI operator (MCP)</h2>
+<p class="mt-1 mb-6 max-w-2xl text-sm text-zinc-500">
+  Flare speaks the
+  <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" class="text-amber-400 transition-colors hover:text-amber-300">Model Context Protocol</a>,
+  so an AI client (Claude Code, Cursor, and others) can investigate and act on your errors directly:
+  pull an overview, read a stack trace, search logs, run AI triage, and resolve issues. Reads work for any
+  member; the two write tools (resolve and triage) need a member key. It authenticates with an org API key,
+  created above, and stays scoped to this workspace.
+</p>
+
+<div class="mb-4">
+  <div class="mb-1.5 text-xs font-medium text-zinc-400">Endpoint</div>
+  <div class="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+    <code class="flex-1 truncate font-mono text-[12px] text-zinc-300">{mcpUrl}</code>
+    <button
+      onclick={() => copyMcp(mcpUrl, 'url')}
+      class="shrink-0 rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
+    >
+      {copiedMcp === 'url' ? 'Copied' : 'Copy'}
+    </button>
+  </div>
+</div>
+
+<div class="mb-4">
+  <div class="mb-1.5 flex items-center gap-2">
+    <span class="text-xs font-medium text-zinc-400">Connect Claude Code</span>
+    <button
+      onclick={() => copyMcp(mcpCommand, 'cmd')}
+      class="rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
+    >
+      {copiedMcp === 'cmd' ? 'Copied' : 'Copy'}
+    </button>
+  </div>
+  <pre class="overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-[12px] leading-relaxed text-zinc-300">{mcpCommand}</pre>
+  {#if newKey}
+    <p class="mt-1.5 text-sm text-amber-200/80">Your new key is filled in above. Run this in your terminal, then restart the client. The key is shown only once.</p>
+  {:else}
+    <p class="mt-1.5 text-xs text-zinc-600">Create a key above and it drops into this command automatically. Run it in your terminal, then restart the client.</p>
+  {/if}
+</div>
+
+<details class="mb-2">
+  <summary class="cursor-pointer text-xs text-zinc-500 transition-colors hover:text-zinc-300">Other MCP clients (raw config)</summary>
+  <pre class="mt-2 overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-[12px] leading-relaxed text-zinc-400">{mcpJsonConfig}</pre>
+</details>
 
 {#if isAdmin}
   <h2 class="mt-14 text-xl font-semibold tracking-tight">GitHub</h2>
