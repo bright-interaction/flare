@@ -259,10 +259,11 @@ type SpansDefault struct {
 }
 
 type User struct {
-	ID           string             `json:"id"`
-	OrgID        string             `json:"org_id"`
-	Email        string             `json:"email"`
-	PasswordHash string             `json:"password_hash"`
-	Role         string             `json:"role"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID                string             `json:"id"`
+	OrgID             string             `json:"org_id"`
+	Email             string             `json:"email"`
+	PasswordHash      string             `json:"password_hash"`
+	Role              string             `json:"role"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	SessionsValidFrom pgtype.Timestamptz `json:"sessions_valid_from"`
 }
