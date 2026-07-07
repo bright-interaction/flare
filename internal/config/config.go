@@ -52,6 +52,12 @@ type Config struct {
 	SMTPFrom     string
 	SMTPFromName string
 	SMTPTLS      string // "tls" (implicit 465) | "starttls" (587) | "none" (dev)
+
+	// SecretKey (FLARE_SECRET_KEY) encrypts integration secrets at rest (BYOAI
+	// key, OIDC client secret, GitHub token, channel webhook URLs). Optional and
+	// fail-safe: when unset those secrets are stored plaintext (current behavior)
+	// rather than the service failing. Provisioned by the deploy pipeline.
+	SecretKey string
 }
 
 func (c Config) IsProduction() bool { return c.Environment == "production" }
@@ -89,6 +95,7 @@ func Load() (Config, error) {
 		SMTPFrom:           env("SMTP_FROM", ""),
 		SMTPFromName:       env("SMTP_FROM_NAME", "Flare"),
 		SMTPTLS:            env("SMTP_TLS", "starttls"),
+		SecretKey:          env("FLARE_SECRET_KEY", ""),
 	}
 
 	if c.DatabaseURL == "" {

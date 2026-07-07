@@ -18,34 +18,57 @@ type channelResponse struct {
 	Enabled bool            `json:"enabled"`
 }
 
-// redactChannelConfig masks the secret-bearing fields of a channel config
-// before it is returned by any read handler. A Slack incoming-webhook URL and a
-// generic webhook URL are bearer secrets (whoever holds the URL can post into
-// the org's channel), so they are never re-displayed in full - only host plus a
-// short suffix for identification, mirroring the "shown once" rule for API keys
-// and the GitHub token. Email destinations and the empty log config are kept.
-func redactChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
-	field := ""
+// channelSecretField returns the config key holding a bearer secret (a Slack
+// incoming-webhook URL or a generic webhook URL - whoever holds it can post into
+// the org's channel), or "" for channel types with no secret.
+func channelSecretField(chType string) string {
 	switch chType {
 	case "webhook":
-		field = "url"
+		return "url"
 	case "slack":
-		field = "webhook_url"
-	default:
+		return "webhook_url"
+	}
+	return ""
+}
+
+// mapChannelSecret applies fn to the secret-bearing field of a channel config
+// and returns the rewritten JSON. On any parse error it returns the input
+// unchanged so a malformed row never breaks dispatch.
+func mapChannelSecret(chType string, cfg json.RawMessage, fn func(string) string) json.RawMessage {
+	field := channelSecretField(chType)
+	if field == "" {
 		return cfg
 	}
 	var m map[string]any
 	if json.Unmarshal(cfg, &m) != nil {
-		return json.RawMessage(`{}`)
+		return cfg
 	}
 	if v, ok := m[field].(string); ok && v != "" {
-		m[field] = maskURL(v)
+		m[field] = fn(v)
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return json.RawMessage(`{}`)
+		return cfg
 	}
 	return b
+}
+
+// encryptChannelConfig / decryptChannelConfig encrypt the webhook secret at rest
+// so a DB dump does not expose it; decryption happens only at the dispatch
+// boundary just before the alert is sent.
+func (s *Server) encryptChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
+	return mapChannelSecret(chType, cfg, s.secrets.Encrypt)
+}
+func (s *Server) decryptChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
+	return mapChannelSecret(chType, cfg, s.secrets.Decrypt)
+}
+
+// redactChannelConfig decrypts then masks the webhook secret before it is
+// returned by any read handler: never re-displayed in full, only host plus a
+// short suffix for identification, mirroring the "shown once" rule for API keys
+// and the GitHub token. Email destinations and the empty log config are kept.
+func (s *Server) redactChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
+	return mapChannelSecret(chType, cfg, func(v string) string { return maskURL(s.secrets.Decrypt(v)) })
 }
 
 // maskURL keeps scheme://host and a 4-char suffix, dropping the secret path so
@@ -114,13 +137,13 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ch, err := s.q.CreateNotificationChannel(r.Context(), generated.CreateNotificationChannelParams{
-		ID: id.New(), OrgID: orgIDFrom(r.Context()), Type: req.Type, Config: req.Config, Enabled: true,
+		ID: id.New(), OrgID: orgIDFrom(r.Context()), Type: req.Type, Config: s.encryptChannelConfig(req.Type, req.Config), Enabled: true,
 	})
 	if err != nil {
 		slogError(w, "create channel", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, channelResponse{ID: ch.ID, Type: ch.Type, Config: redactChannelConfig(ch.Type, ch.Config), Enabled: ch.Enabled})
+	writeJSON(w, http.StatusCreated, channelResponse{ID: ch.ID, Type: ch.Type, Config: s.redactChannelConfig(ch.Type, ch.Config), Enabled: ch.Enabled})
 }
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +154,7 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]channelResponse, 0, len(chans))
 	for _, c := range chans {
-		out = append(out, channelResponse{ID: c.ID, Type: c.Type, Config: redactChannelConfig(c.Type, c.Config), Enabled: c.Enabled})
+		out = append(out, channelResponse{ID: c.ID, Type: c.Type, Config: s.redactChannelConfig(c.Type, c.Config), Enabled: c.Enabled})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

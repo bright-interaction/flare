@@ -72,7 +72,7 @@ func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 		req.APIKey = existing.ApiKey
 	}
 	if err := s.q.UpsertAIConfig(r.Context(), generated.UpsertAIConfigParams{
-		OrgID: orgIDFrom(r.Context()), BaseUrl: req.BaseURL, ApiKey: req.APIKey,
+		OrgID: orgIDFrom(r.Context()), BaseUrl: req.BaseURL, ApiKey: s.secrets.Encrypt(req.APIKey),
 		Model: req.Model, Format: req.Format, Enabled: req.Enabled,
 	}); err != nil {
 		slogError(w, "save ai config", err)
@@ -153,7 +153,7 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 		"**What happened** (plain language), **Likely root cause**, and **Suggested fix** (concrete, code-level where possible). " +
 		"Only use what the report supports; do not invent details."
 
-	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: cfg.ApiKey, Model: cfg.Model, Format: cfg.Format}, system, prompt)
+	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: s.secrets.Decrypt(cfg.ApiKey), Model: cfg.Model, Format: cfg.Format}, system, prompt)
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", errTriageEndpoint, err)
 	}
