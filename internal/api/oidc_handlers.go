@@ -107,7 +107,7 @@ func (s *Server) handleSetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		OrgID:        orgIDFrom(r.Context()),
 		Issuer:       req.Issuer,
 		ClientID:     req.ClientID,
-		ClientSecret: req.ClientSecret,
+		ClientSecret: s.secrets.Encrypt(req.ClientSecret),
 		DefaultRole:  req.DefaultRole,
 		Enabled:      req.Enabled,
 	}); err != nil {
@@ -183,7 +183,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		ssoError(w, r, "sso_discovery")
 		return
 	}
-	accessToken, err := provider.Exchange(ctx, cfg.ClientID, cfg.ClientSecret, code, s.oidcRedirectURI())
+	accessToken, err := provider.Exchange(ctx, cfg.ClientID, s.secrets.Decrypt(cfg.ClientSecret), code, s.oidcRedirectURI())
 	if err != nil {
 		ssoError(w, r, "sso_exchange")
 		return

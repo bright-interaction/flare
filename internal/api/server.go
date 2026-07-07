@@ -18,6 +18,7 @@ import (
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/email"
 	"github.com/bright-interaction/flare/internal/ratelimit"
+	"github.com/bright-interaction/flare/internal/secretbox"
 	"github.com/bright-interaction/flare/internal/sourcemaps"
 	"github.com/bright-interaction/flare/internal/telemetry"
 	"github.com/bright-interaction/flare/internal/telemetry/pgstore"
@@ -41,6 +42,7 @@ type Server struct {
 	mailer       *email.Mailer
 	symbolicator *sourcemaps.Resolver
 	ai           *ai.Client
+	secrets      *secretbox.Cipher // encrypts integration secrets at rest
 
 	// loginLimiter locks out brute-force logins; ingestLimiter caps per-DSN-key
 	// (or per-IP) ingest flooding; mcpLimiter caps per-org MCP request rate so a
@@ -77,6 +79,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		mailer:       mailer,
 		symbolicator: sourcemaps.NewResolver(),
 		ai:           ai.New(cfg.IsProduction()),
+		secrets:      secretbox.New(cfg.SecretKey),
 
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),

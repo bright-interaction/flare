@@ -54,7 +54,7 @@ func (s *Server) handleSetGithubConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.q.UpsertGithubConfig(r.Context(), generated.UpsertGithubConfigParams{
-		OrgID: orgIDFrom(r.Context()), Repo: req.Repo, Token: req.Token,
+		OrgID: orgIDFrom(r.Context()), Repo: req.Repo, Token: s.secrets.Encrypt(req.Token),
 	}); err != nil {
 		slogError(w, "save github config", err)
 		return
@@ -109,7 +109,7 @@ func (s *Server) handleCreateGithubIssue(w http.ResponseWriter, r *http.Request)
 	body := fmt.Sprintf("Reported by Flare.\n\n**Level:** %s\n**Culprit:** %s\n**Events:** %d\n\n%s/issues/%s",
 		issue.Level, issue.Culprit, issue.EventCount, strings.TrimRight(s.cfg.BaseURL, "/"), issue.ID)
 
-	url, err := github.CreateIssue(ctx, cfg.Token, cfg.Repo, title, body)
+	url, err := github.CreateIssue(ctx, s.secrets.Decrypt(cfg.Token), cfg.Repo, title, body)
 	if err != nil {
 		slogError(w, "github create issue", err)
 		writeErr(w, http.StatusBadGateway, "could not create the GitHub issue (check the repo and token)")
