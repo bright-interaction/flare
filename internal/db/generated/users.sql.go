@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bumpUserSessionsValidFrom = `-- name: BumpUserSessionsValidFrom :exec
+UPDATE users SET sessions_valid_from = now() WHERE id = $1
+`
+
+// Invalidates every session established before now (called on password reset).
+func (q *Queries) BumpUserSessionsValidFrom(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, bumpUserSessionsValidFrom, id)
+	return err
+}
+
 const countOwnersByOrg = `-- name: CountOwnersByOrg :one
 SELECT count(*) FROM users WHERE org_id = $1 AND role = 'owner'
 `
@@ -58,7 +68,7 @@ func (q *Queries) CreatePasswordResetToken(ctx context.Context, arg CreatePasswo
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, org_id, email, password_hash, role)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, org_id, email, password_hash, role, created_at
+RETURNING id, org_id, email, password_hash, role, created_at, sessions_valid_from
 `
 
 type CreateUserParams struct {
@@ -85,6 +95,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (*User, 
 		&i.PasswordHash,
 		&i.Role,
 		&i.CreatedAt,
+		&i.SessionsValidFrom,
 	)
 	return &i, err
 }
@@ -127,7 +138,7 @@ func (q *Queries) GetPasswordResetToken(ctx context.Context, tokenHash string) (
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, org_id, email, password_hash, role, created_at FROM users WHERE email = $1
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (*User, error) {
@@ -140,12 +151,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (*User, erro
 		&i.PasswordHash,
 		&i.Role,
 		&i.CreatedAt,
+		&i.SessionsValidFrom,
 	)
 	return &i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, org_id, email, password_hash, role, created_at FROM users WHERE id = $1
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
@@ -158,12 +170,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
 		&i.PasswordHash,
 		&i.Role,
 		&i.CreatedAt,
+		&i.SessionsValidFrom,
 	)
 	return &i, err
 }
 
 const getUserInOrg = `-- name: GetUserInOrg :one
-SELECT id, org_id, email, password_hash, role, created_at FROM users WHERE id = $1 AND org_id = $2
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from FROM users WHERE id = $1 AND org_id = $2
 `
 
 type GetUserInOrgParams struct {
@@ -181,6 +194,7 @@ func (q *Queries) GetUserInOrg(ctx context.Context, arg GetUserInOrgParams) (*Us
 		&i.PasswordHash,
 		&i.Role,
 		&i.CreatedAt,
+		&i.SessionsValidFrom,
 	)
 	return &i, err
 }

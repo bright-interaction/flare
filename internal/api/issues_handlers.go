@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
@@ -31,8 +32,15 @@ type issueResponse struct {
 }
 
 func toIssueResponse(i telemetry.Issue) issueResponse {
+	title, culprit := i.Title, i.Culprit
+	if i.Sensitive != "" {
+		// The detector flagged a secret/PII value in this issue's telemetry.
+		// Scrub it out of the strings echoed back so the leaked value is not
+		// re-served to any reader through the API/UI.
+		title, culprit = ai.Scrub(title), ai.Scrub(culprit)
+	}
 	return issueResponse{
-		ID: i.ID, Title: i.Title, Culprit: i.Culprit, Level: i.Level,
+		ID: i.ID, Title: title, Culprit: culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, EventCount: i.EventCount,
 		GithubURL: i.GithubURL, FirstRelease: i.FirstRelease, AITriage: i.AITriage,
@@ -43,8 +51,12 @@ func toIssueResponse(i telemetry.Issue) issueResponse {
 // genIssueToResponse maps the write-path row (UpdateIssueStatus returns the
 // generated type) into the same response shape.
 func genIssueToResponse(i *generated.Issue) issueResponse {
+	title, culprit := i.Title, i.Culprit
+	if i.Sensitive != "" {
+		title, culprit = ai.Scrub(title), ai.Scrub(culprit)
+	}
 	return issueResponse{
-		ID: i.ID, Title: i.Title, Culprit: i.Culprit, Level: i.Level,
+		ID: i.ID, Title: title, Culprit: culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen.Time, LastSeen: i.LastSeen.Time, EventCount: i.EventCount,
 		GithubURL: i.GithubUrl, FirstRelease: i.FirstRelease, AITriage: i.AiTriage,
@@ -117,14 +129,19 @@ func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "list issue events", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toEventResponses(ctx, issueID, org, events))
+	// If the issue is flagged sensitive, scrub the leaked value out of the
+	// event text before returning it. Missing issue -> no scrub (no events).
+	issue, _ := s.store.GetIssue(ctx, issueID, org)
+	writeJSON(w, http.StatusOK, s.toEventResponses(ctx, issueID, org, events, issue.Sensitive != ""))
 }
 
 // toEventResponses maps stored events to the clean API shape, symbolicating
 // minified frames using any source maps uploaded for each event's release
 // (best-effort: distinct releases are loaded once, frames left untouched on a
-// miss). Shared by the REST events endpoint and the MCP get_issue tool.
-func (s *Server) toEventResponses(ctx context.Context, issueID, org string, events []telemetry.Event) []eventResponse {
+// miss). When sensitive is set (the issue's detector flagged a secret/PII
+// value), the message and exception value are scrubbed so the leaked value is
+// not re-served. Shared by the REST events endpoint and the MCP get_issue tool.
+func (s *Server) toEventResponses(ctx context.Context, issueID, org string, events []telemetry.Event, sensitive bool) []eventResponse {
 	releaseMaps := s.releaseSourceMaps(ctx, issueID, org, events)
 	out := make([]eventResponse, 0, len(events))
 	for _, e := range events {
@@ -132,9 +149,13 @@ func (s *Server) toEventResponses(ctx context.Context, issueID, org string, even
 		if maps := releaseMaps[e.Release]; len(maps) > 0 {
 			stack = s.symbolicator.Symbolicate(stack, maps)
 		}
+		msg, excVal := e.Message, e.ExceptionValue
+		if sensitive {
+			msg, excVal = ai.Scrub(msg), ai.Scrub(excVal)
+		}
 		out = append(out, eventResponse{
-			ID: e.ID, Level: e.Level, Message: e.Message,
-			ExceptionType: e.ExceptionType, ExceptionValue: e.ExceptionValue,
+			ID: e.ID, Level: e.Level, Message: msg,
+			ExceptionType: e.ExceptionType, ExceptionValue: excVal,
 			Platform: e.Platform, Environment: e.Environment, Release: e.Release,
 			Stacktrace: stack, ReceivedAt: e.ReceivedAt,
 		})

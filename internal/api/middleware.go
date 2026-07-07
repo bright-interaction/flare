@@ -154,6 +154,19 @@ func realIP(next http.Handler) http.Handler {
 // requireAuth accepts either a browser session (dashboard) or a Bearer API
 // key (programmatic). It injects the user and org ids into the request
 // context for downstream handlers.
+// establishSession rotates the session token and records the authenticated
+// user, org, and the auth epoch (login instant). The epoch lets requireAuth
+// revoke sessions that predate a password reset (see users.sessions_valid_from).
+// Every login path must go through here so the epoch is always set.
+func (s *Server) establishSession(ctx context.Context, userID, orgID string) {
+	if err := s.sessions.RenewToken(ctx); err != nil {
+		return
+	}
+	s.sessions.Put(ctx, "user_id", userID)
+	s.sessions.Put(ctx, "org_id", orgID)
+	s.sessions.Put(ctx, "auth_epoch", time.Now().Unix())
+}
+
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -162,6 +175,15 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		// role change takes effect on the next request (no stale session role).
 		if uid := s.sessions.GetString(ctx, "user_id"); uid != "" {
 			if user, err := s.q.GetUserByID(ctx, uid); err == nil {
+				// Revoke sessions established before the user's
+				// sessions_valid_from (bumped on password reset). Sessions with
+				// no epoch (created before this feature) are left alone.
+				epoch := s.sessions.GetInt64(ctx, "auth_epoch")
+				if epoch > 0 && user.SessionsValidFrom.Valid && user.SessionsValidFrom.Time.Unix() > epoch {
+					_ = s.sessions.Destroy(ctx)
+					writeErr(w, http.StatusUnauthorized, "session expired, please sign in again")
+					return
+				}
 				ctx = context.WithValue(ctx, ctxUserID, user.ID)
 				ctx = context.WithValue(ctx, ctxOrgID, user.OrgID)
 				ctx = context.WithValue(ctx, ctxRole, user.Role)

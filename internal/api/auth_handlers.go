@@ -95,10 +95,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.sessions.RenewToken(ctx); err == nil {
-		s.sessions.Put(ctx, "user_id", user.ID)
-		s.sessions.Put(ctx, "org_id", org.ID)
-	}
+	s.establishSession(ctx, user.ID, org.ID)
 	writeJSON(w, http.StatusCreated, toUserResponse(user))
 }
 
@@ -145,10 +142,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.loginLimiter.Reset(lockKey) // clear the counter on success
-	if err := s.sessions.RenewToken(ctx); err == nil {
-		s.sessions.Put(ctx, "user_id", user.ID)
-		s.sessions.Put(ctx, "org_id", user.OrgID)
-	}
+	s.establishSession(ctx, user.ID, user.OrgID)
 	writeJSON(w, http.StatusOK, toUserResponse(user))
 }
 
@@ -278,6 +272,12 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// used, so a second leaked link cannot be redeemed after the reset.
 	if err := s.q.InvalidatePasswordResetTokensForUser(ctx, prt.UserID); err != nil {
 		slog.Warn("invalidate reset tokens", "error", err)
+	}
+	// Revoke every existing session for the user so an attacker who was already
+	// logged in (the reason for the reset) is kicked out, not just locked out of
+	// new logins.
+	if err := s.q.BumpUserSessionsValidFrom(ctx, prt.UserID); err != nil {
+		slog.Warn("bump sessions_valid_from", "error", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

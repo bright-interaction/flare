@@ -279,9 +279,6 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	if err := s.q.MarkInvitationAccepted(ctx, inv.ID); err != nil {
 		slog.Warn("mark invitation accepted", "error", err)
 	}
-	if err := s.sessions.RenewToken(ctx); err == nil {
-		s.sessions.Put(ctx, "user_id", user.ID)
-		s.sessions.Put(ctx, "org_id", user.OrgID)
-	}
+	s.establishSession(ctx, user.ID, user.OrgID)
 	writeJSON(w, http.StatusOK, toUserResponse(user))
 }

@@ -348,7 +348,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				events, _ := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
 				return map[string]any{
 					"issue":  toIssueResponse(issue),
-					"events": s.toEventResponses(ctx, a.IssueID, org, events),
+					"events": s.toEventResponses(ctx, a.IssueID, org, events, issue.Sensitive != ""),
 				}, nil
 			},
 		},

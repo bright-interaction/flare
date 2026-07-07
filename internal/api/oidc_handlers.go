@@ -232,9 +232,6 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.sessions.RenewToken(ctx); err == nil {
-		s.sessions.Put(ctx, "user_id", user.ID)
-		s.sessions.Put(ctx, "org_id", user.OrgID)
-	}
+	s.establishSession(ctx, user.ID, user.OrgID)
 	http.Redirect(w, r, "/projects", http.StatusFound)
 }
