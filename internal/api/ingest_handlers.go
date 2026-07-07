@@ -21,7 +21,10 @@ import (
 	"github.com/bright-interaction/flare/internal/ingest"
 )
 
-const maxIngestBody = 1 << 20 // 1 MiB
+const (
+	maxIngestBody       = 1 << 20 // 1 MiB compressed request body
+	maxDecompressedBody = 8 << 20 // 8 MiB cap after gzip inflation (bomb guard)
+)
 
 // handleEnvelope ingests a Sentry envelope (the modern @sentry/* SDK path).
 func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
@@ -305,10 +308,16 @@ func readIngestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 			return nil, false
 		}
 		defer gz.Close()
-		reader = gz
+		// Cap the DECOMPRESSED size too: a 1 MiB gzip can inflate to gigabytes
+		// (decompression bomb). Read one byte past the cap so overflow is caught.
+		reader = io.LimitReader(gz, maxDecompressedBody+1)
 	}
 	body, err := io.ReadAll(reader)
 	if err != nil {
+		writeErr(w, http.StatusRequestEntityTooLarge, "body too large")
+		return nil, false
+	}
+	if len(body) > maxDecompressedBody {
 		writeErr(w, http.StatusRequestEntityTooLarge, "body too large")
 		return nil, false
 	}

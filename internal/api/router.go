@@ -15,7 +15,10 @@ import (
 func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	// Trusted-proxy-aware client IP: only honor X-Forwarded-For from an internal
+	// proxy peer, so a public client cannot spoof it to dodge the login lockout
+	// or ingest rate limit. Replaces chimw.RealIP (unconditional header trust).
+	r.Use(realIP)
 	r.Use(chimw.Recoverer)
 	// Capture panics to Flare (self-reporting), then re-panic for Recoverer's
 	// 500. Must sit after Recoverer (inner) so it sees the panic first.

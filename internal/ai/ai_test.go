@@ -24,6 +24,47 @@ func TestScrub(t *testing.T) {
 	}
 }
 
+func TestScrubHardened(t *testing.T) {
+	// Each input carries a secret/PII value that must NOT survive scrubbing.
+	leaks := map[string]string{
+		"formatted card (spaces)": "card 4111 1111 1111 1111 declined",
+		"formatted card (dashes)": "pan=4111-1111-1111-1111",
+		"aws secret (assignment)": "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"db url password":         "postgres://svc:s3cr3tPass@db.internal:5432/app",
+		"generic password":        `{"password":"hunter2horse"}`,
+		"bearer token":            "Authorization: Bearer abcDEF123456ghiJKL",
+		"github oauth token":      "using gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+		"google api key":          "key AIzaSyA1234567890abcdefghijklmnopqrstuv",
+		"pem private key":         "-----BEGIN RSA PRIVATE KEY-----\nMIIEabc123\n-----END RSA PRIVATE KEY-----",
+	}
+	secrets := map[string]string{
+		"formatted card (spaces)": "4111 1111 1111 1111",
+		"formatted card (dashes)": "4111-1111-1111-1111",
+		"aws secret (assignment)": "wJalrXUtnFEMI",
+		"db url password":         "s3cr3tPass",
+		"generic password":        "hunter2horse",
+		"bearer token":            "abcDEF123456ghiJKL",
+		"github oauth token":      "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+		"google api key":          "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+		"pem private key":         "MIIEabc123",
+	}
+	for name, in := range leaks {
+		out := Scrub(in)
+		if strings.Contains(out, secrets[name]) {
+			t.Errorf("%s: secret leaked through scrubber: %q -> %q", name, in, out)
+		}
+	}
+
+	// Ordinary code and a non-card long id must survive intact.
+	if got := Scrub("order 1234567890123456 failed in checkout() at pay.go:88"); !strings.Contains(got, "checkout()") || !strings.Contains(got, "pay.go:88") {
+		t.Errorf("code structure scrubbed away: %q", got)
+	}
+	// A Luhn-invalid 16-digit run must not be labelled a card.
+	if got := Scrub("id 1234567890123456"); strings.Contains(got, "[card]") {
+		t.Errorf("non-card number mislabelled as card: %q", got)
+	}
+}
+
 func TestCompleteOpenAI(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {

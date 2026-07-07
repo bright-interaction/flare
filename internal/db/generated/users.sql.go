@@ -185,6 +185,16 @@ func (q *Queries) GetUserInOrg(ctx context.Context, arg GetUserInOrgParams) (*Us
 	return &i, err
 }
 
+const invalidatePasswordResetTokensForUser = `-- name: InvalidatePasswordResetTokensForUser :exec
+UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL
+`
+
+// ciguard:allow-unscoped invalidates all of one user's outstanding reset tokens on a completed reset
+func (q *Queries) InvalidatePasswordResetTokensForUser(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, invalidatePasswordResetTokensForUser, userID)
+	return err
+}
+
 const listUsersByOrg = `-- name: ListUsersByOrg :many
 SELECT id, email, role, created_at FROM users WHERE org_id = $1 ORDER BY created_at ASC
 `

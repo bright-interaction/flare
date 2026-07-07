@@ -18,6 +18,54 @@ type channelResponse struct {
 	Enabled bool            `json:"enabled"`
 }
 
+// redactChannelConfig masks the secret-bearing fields of a channel config
+// before it is returned by any read handler. A Slack incoming-webhook URL and a
+// generic webhook URL are bearer secrets (whoever holds the URL can post into
+// the org's channel), so they are never re-displayed in full - only host plus a
+// short suffix for identification, mirroring the "shown once" rule for API keys
+// and the GitHub token. Email destinations and the empty log config are kept.
+func redactChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
+	field := ""
+	switch chType {
+	case "webhook":
+		field = "url"
+	case "slack":
+		field = "webhook_url"
+	default:
+		return cfg
+	}
+	var m map[string]any
+	if json.Unmarshal(cfg, &m) != nil {
+		return json.RawMessage(`{}`)
+	}
+	if v, ok := m[field].(string); ok && v != "" {
+		m[field] = maskURL(v)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return b
+}
+
+// maskURL keeps scheme://host and a 4-char suffix, dropping the secret path so
+// the value identifies the endpoint without being replayable.
+func maskURL(raw string) string {
+	scheme, host := "", raw
+	if i := strings.Index(raw, "://"); i >= 0 {
+		scheme = raw[:i+3]
+		host = raw[i+3:]
+	}
+	if j := strings.IndexByte(host, '/'); j >= 0 {
+		host = host[:j]
+	}
+	tail := ""
+	if len(raw) >= 4 {
+		tail = raw[len(raw)-4:]
+	}
+	return scheme + host + "/..." + tail
+}
+
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Type   string          `json:"type"`
@@ -72,7 +120,7 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "create channel", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, channelResponse{ID: ch.ID, Type: ch.Type, Config: ch.Config, Enabled: ch.Enabled})
+	writeJSON(w, http.StatusCreated, channelResponse{ID: ch.ID, Type: ch.Type, Config: redactChannelConfig(ch.Type, ch.Config), Enabled: ch.Enabled})
 }
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +131,7 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]channelResponse, 0, len(chans))
 	for _, c := range chans {
-		out = append(out, channelResponse{ID: c.ID, Type: c.Type, Config: c.Config, Enabled: c.Enabled})
+		out = append(out, channelResponse{ID: c.ID, Type: c.Type, Config: redactChannelConfig(c.Type, c.Config), Enabled: c.Enabled})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

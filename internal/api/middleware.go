@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -112,6 +113,42 @@ func clientIP(r *http.Request) string {
 		return addr[:i]
 	}
 	return addr
+}
+
+// trustedProxyIP reports whether ip is an internal reverse-proxy address that
+// we allow to set X-Forwarded-For (loopback, RFC1918/ULA private, link-local).
+// Flare sits behind an internal nginx -> Caddy chain, so real client IPs arrive
+// via X-Forwarded-For from a private/loopback peer.
+func trustedProxyIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// realIP resolves the client IP from X-Forwarded-For ONLY when the immediate
+// TCP peer is a trusted internal proxy. A directly-connected public client
+// therefore cannot spoof X-Forwarded-For to rotate its apparent IP and evade
+// the IP-keyed login lockout or ingest rate limit. It takes the right-most XFF
+// entry that is not itself a trusted-proxy address (the real client as seen at
+// our edge). This replaces chi's RealIP, which trusts the header unconditionally.
+func realIP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.RemoteAddr
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if peer := net.ParseIP(host); peer != nil && trustedProxyIP(peer) {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				parts := strings.Split(xff, ",")
+				for i := len(parts) - 1; i >= 0; i-- {
+					cand := strings.TrimSpace(parts[i])
+					if ip := net.ParseIP(cand); ip != nil && !trustedProxyIP(ip) {
+						r.RemoteAddr = cand
+						break
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requireAuth accepts either a browser session (dashboard) or a Bearer API

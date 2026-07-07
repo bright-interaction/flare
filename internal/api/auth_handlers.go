@@ -125,7 +125,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	user, err := s.q.GetUserByEmail(ctx, req.Email)
-	if err != nil || !auth.VerifyPassword(user.PasswordHash, req.Password) {
+	// Always run a bcrypt comparison (against a dummy hash when the email is
+	// unknown) so response time does not reveal whether the account exists.
+	storedHash := ""
+	if err == nil {
+		storedHash = user.PasswordHash
+	}
+	if err != nil || !auth.VerifyPasswordConstantTime(storedHash, req.Password) {
 		s.loginLimiter.Record(lockKey)
 		// Once the failures cross the lockout threshold, that is a brute-force
 		// signal worth surfacing (the throttle in recordSecurityEvent keeps a
@@ -182,6 +188,15 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	ok := func() { writeJSON(w, http.StatusOK, map[string]string{"status": "ok"}) }
 	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	// Rate-limit per email+IP. The limit trips on the key regardless of whether
+	// the account exists, so it enables neither enumeration nor reset-email
+	// bombing while still letting a genuine user retry a few times.
+	if !s.resetLimiter.Allow("reset:" + email + "|" + clientIP(r)) {
+		w.Header().Set("Retry-After", "900")
+		writeErr(w, http.StatusTooManyRequests, "too many reset requests, try again later")
+		return
+	}
 
 	ctx := r.Context()
 	user, err := s.q.GetUserByEmail(ctx, email)
@@ -259,8 +274,10 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "update password", err)
 		return
 	}
-	if err := s.q.MarkPasswordResetTokenUsed(ctx, prt.ID); err != nil {
-		slog.Warn("mark reset token used", "error", err)
+	// Invalidate every outstanding reset token for this user, not just the one
+	// used, so a second leaked link cannot be redeemed after the reset.
+	if err := s.q.InvalidatePasswordResetTokensForUser(ctx, prt.UserID); err != nil {
+		slog.Warn("invalidate reset tokens", "error", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
