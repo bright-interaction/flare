@@ -118,10 +118,50 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 // Owner-only; cascades all org data and destroys the caller's session.
 func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if err := s.q.DeleteOrg(ctx, orgIDFrom(ctx)); err != nil {
+	org := orgIDFrom(ctx)
+
+	// Right-to-erasure must reach the raw telemetry. events/logs/spans are
+	// partitioned hot tables with NO foreign key to projects/orgs, so the
+	// ON DELETE CASCADE from orgs never touches them (this is exactly why
+	// handleDeleteProject deletes them by hand). Delete every project's
+	// telemetry first, then drop the org so its FK-linked rows (projects,
+	// issues, source maps, releases, channels, keys, audit log) cascade.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		slogError(w, "delete org: begin tx", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+
+	projects, err := qtx.ListProjectsByOrg(ctx, org)
+	if err != nil {
+		slogError(w, "delete org: list projects", err)
+		return
+	}
+	for _, p := range projects {
+		if err := qtx.DeleteProjectEvents(ctx, generated.DeleteProjectEventsParams{ProjectID: p.ID, OrgID: org}); err != nil {
+			slogError(w, "delete org events", err)
+			return
+		}
+		if err := qtx.DeleteProjectLogs(ctx, generated.DeleteProjectLogsParams{ProjectID: p.ID, OrgID: org}); err != nil {
+			slogError(w, "delete org logs", err)
+			return
+		}
+		if err := qtx.DeleteProjectSpans(ctx, generated.DeleteProjectSpansParams{ProjectID: p.ID, OrgID: org}); err != nil {
+			slogError(w, "delete org spans", err)
+			return
+		}
+	}
+	if err := qtx.DeleteOrg(ctx, org); err != nil {
 		slogError(w, "delete org", err)
 		return
 	}
+	if err := tx.Commit(ctx); err != nil {
+		slogError(w, "delete org: commit", err)
+		return
+	}
+
 	_ = s.sessions.Destroy(ctx)
 	writeJSON(w, http.StatusNoContent, nil)
 }

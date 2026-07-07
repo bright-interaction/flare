@@ -38,6 +38,23 @@ func VerifyPassword(hash, pw string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
 }
 
+// dummyHash is a valid bcrypt hash used to equalize verification timing when an
+// account does not exist, so login response time does not reveal whether an
+// email is registered (username enumeration).
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("flare-nonexistent-account-timing-equalizer"), 12)
+
+// VerifyPasswordConstantTime behaves like VerifyPassword but always performs a
+// bcrypt comparison even when hash is empty (unknown user), running against a
+// dummy hash so the work - and thus the response time - is the same whether or
+// not the account exists. Returns false for the empty-hash case.
+func VerifyPasswordConstantTime(hash, pw string) bool {
+	if hash == "" {
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(pw))
+		return false
+	}
+	return VerifyPassword(hash, pw)
+}
+
 // HashAPIKey returns the lookup hash stored for an API key. Keys are never
 // stored in plaintext; the hash column is what we query.
 func HashAPIKey(key string) string {

@@ -48,6 +48,9 @@ type Server struct {
 	loginLimiter  *ratelimit.Limiter
 	ingestLimiter *ratelimit.Limiter
 	mcpLimiter    *ratelimit.Limiter
+	// resetLimiter caps password-reset requests per email+IP so /forgot-password
+	// cannot be used for account enumeration or reset-email bombing.
+	resetLimiter *ratelimit.Limiter
 
 	// Security-event recording: Flare's own security signals (ingest-auth
 	// rejections, login lockouts) become grouped issues in a per-org
@@ -78,6 +81,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
 		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
+		resetLimiter:  ratelimit.New(5, 15*time.Minute), // <=5 reset requests per (email, ip) / 15m
 
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
