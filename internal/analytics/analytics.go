@@ -14,6 +14,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -135,3 +137,78 @@ func (m *Manager) Healthy(ctx context.Context) bool {
 
 // escapeSQL escapes single quotes for embedding in a DuckDB string literal.
 func escapeSQL(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+// coldTables are the tables whose aged partitions are exported to Parquet.
+var coldTables = []string{"events", "logs", "spans"}
+
+// PurgeColdScope physically erases every row matching column=value from the
+// Parquet cold tier, so a project/org deletion (right-to-erasure) also reaches
+// telemetry that has already aged out of the hot Postgres tier. Each affected
+// Parquet file is rewritten without the scope's rows; a file that becomes empty
+// is removed. column must be "project_id" or "org_id"; value is escaped. No-op
+// when DuckDB is unavailable or the local cold tier is empty. It takes the write
+// lock (rare, delete-time) so a concurrent analytics read cannot see a
+// half-rewritten file. S3 cold tiers are not purged here (no object delete) and
+// return an error so the caller can surface it rather than silently skip.
+func (m *Manager) PurgeColdScope(ctx context.Context, column, value string) error {
+	if m == nil {
+		return nil
+	}
+	switch column {
+	case "project_id", "org_id":
+	default:
+		return fmt.Errorf("analytics: invalid purge column %q", column)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil
+	}
+	if m.cfg.S3Endpoint != "" {
+		return fmt.Errorf("analytics: cold-tier purge not supported on S3 (erase %s=%s in the bucket manually)", column, value)
+	}
+	esc := escapeSQL(value)
+	for _, table := range coldTables {
+		matches, _ := filepath.Glob(filepath.Join(m.cfg.ParquetDir, table, "dt=*", "part.parquet"))
+		for _, file := range matches {
+			if err := m.purgeFile(ctx, file, column, esc); err != nil {
+				return fmt.Errorf("analytics: purge %s: %w", file, err)
+			}
+		}
+	}
+	return nil
+}
+
+// purgeFile rewrites one Parquet file without rows where column='escVal'. Assumes
+// the caller holds the write lock.
+func (m *Manager) purgeFile(ctx context.Context, file, column, escVal string) error {
+	slashed := escapeSQL(filepath.ToSlash(file))
+	var total, remaining int64
+	if err := m.db.QueryRowContext(ctx, fmt.Sprintf("SELECT count(*) FROM read_parquet('%s')", slashed)).Scan(&total); err != nil {
+		return err
+	}
+	if err := m.db.QueryRowContext(ctx, fmt.Sprintf("SELECT count(*) FROM read_parquet('%s') WHERE %s <> '%s'", slashed, column, escVal)).Scan(&remaining); err != nil {
+		return err
+	}
+	if remaining == total {
+		return nil // scope not present in this file
+	}
+	if remaining == 0 {
+		if err := os.Remove(file); err != nil {
+			return err
+		}
+		_ = os.Remove(filepath.Dir(file)) // drop the now-empty dt=... dir (ignore if not empty)
+		return nil
+	}
+	tmp := file + ".purge"
+	copySQL := fmt.Sprintf("COPY (SELECT * FROM read_parquet('%s') WHERE %s <> '%s') TO '%s' (FORMAT parquet, COMPRESSION zstd)",
+		slashed, column, escVal, escapeSQL(filepath.ToSlash(tmp)))
+	if _, err := m.db.ExecContext(ctx, copySQL); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, file); err != nil { // atomic replace
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
