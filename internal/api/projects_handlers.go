@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -164,6 +165,14 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(r.Context()); err != nil {
 		slogError(w, "delete project: commit", err)
 		return
+	}
+	// Erase the project's telemetry from the Parquet cold tier too (aged-out
+	// data the hot-tier delete above cannot reach). Best-effort: the hot delete
+	// is already committed, so a cold-purge failure is logged, not fatal.
+	if s.analytics != nil {
+		if err := s.analytics.PurgeColdScope(r.Context(), "project_id", pid); err != nil {
+			slog.Error("cold-tier purge failed on project delete", "project", pid, "err", err)
+		}
 	}
 	s.audit(r.Context(), "project.delete", pid)
 	writeJSON(w, http.StatusNoContent, nil)

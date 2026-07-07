@@ -162,6 +162,14 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Erase the org's telemetry from the Parquet cold tier too (aged-out data
+	// the hot-tier delete cannot reach). Best-effort after the committed delete.
+	if s.analytics != nil {
+		if err := s.analytics.PurgeColdScope(ctx, "org_id", org); err != nil {
+			slog.Error("cold-tier purge failed on org delete", "org", org, "err", err)
+		}
+	}
+
 	_ = s.sessions.Destroy(ctx)
 	writeJSON(w, http.StatusNoContent, nil)
 }
