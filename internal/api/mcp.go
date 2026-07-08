@@ -382,7 +382,9 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
-				return toLogResponses(logs), nil
+				// Scrub PII from bodies/attributes before egress to the LLM (the
+				// logs pillar has no per-log sensitive flag).
+				return toLogResponsesScrubbed(logs), nil
 			},
 		},
 		"update_issue_status": {
