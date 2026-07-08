@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
 	"github.com/bright-interaction/flare/internal/ingest"
@@ -117,8 +118,9 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLogResponses(logs))
 }
 
-// toLogResponses maps stored logs to the clean API shape. Shared by the REST
-// logs endpoint and the MCP search_logs tool.
+// toLogResponses maps stored logs to the clean API shape. Used by the REST
+// dashboard, where a human views their own in-region logs (not an egress
+// boundary), so bodies + attributes are returned as-is.
 func toLogResponses(logs []telemetry.Log) []logResponse {
 	out := make([]logResponse, 0, len(logs))
 	for _, l := range logs {
@@ -126,6 +128,22 @@ func toLogResponses(logs []telemetry.Log) []logResponse {
 			ID: l.ID, Severity: l.Severity, Body: l.Body, Attributes: l.Attributes,
 			TraceID: l.TraceID, SpanID: l.SpanID, ObservedAt: l.ObservedAt,
 		})
+	}
+	return out
+}
+
+// toLogResponsesScrubbed is the MCP-egress variant: it runs each log body +
+// attributes through ai.Scrub before the rows leave for an LLM. The logs pillar
+// has no per-log sensitive flag (unlike issues), and bodies routinely carry PII
+// (emails, tokens, ids), so search_logs must scrub on the way out - matching how
+// get_issue scrubs sensitive event messages.
+func toLogResponsesScrubbed(logs []telemetry.Log) []logResponse {
+	out := toLogResponses(logs)
+	for i := range out {
+		out[i].Body = ai.Scrub(out[i].Body)
+		if len(out[i].Attributes) > 0 {
+			out[i].Attributes = json.RawMessage(ai.Scrub(string(out[i].Attributes)))
+		}
 	}
 	return out
 }
