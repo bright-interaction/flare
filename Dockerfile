@@ -18,7 +18,7 @@ COPY frontend/ .
 RUN bun run build
 
 # Stage 2: Go server (CGO for go-duckdb). The frontend build is copied in for go:embed.
-FROM golang:1.26.4-bookworm AS backend
+FROM golang:1.26.5-bookworm AS backend
 WORKDIR /app
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends git ca-certificates build-essential gcc g++ \
