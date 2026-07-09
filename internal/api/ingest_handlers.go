@@ -156,7 +156,29 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 // rules and dispatches at most one notification (the most actionable reason
 // wins: regression > spike > new issue). Runs in the background with a detached
 // context so it never blocks or fails ingest.
+// pageableLevel reports whether an issue at this severity may fire an alert.
+// info/debug are informational (heartbeats, breadcrumbs) and never page; every
+// other level - including the empty/default, which Sentry treats as error -
+// does. Kept a pure fn so the gate is unit-tested.
+func pageableLevel(level string) bool {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "info", "debug":
+		return false
+	default:
+		return true
+	}
+}
+
 func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.UpsertIssueRow, isNew, reopened bool) {
+	// Low-severity signals (info/debug: heartbeats, breadcrumbs, health check-ins)
+	// never page, whatever the rules say - they are informational, not incidents.
+	// They still ingest and count toward the watchdog's silence-detection activity
+	// baseline (CountEventsForProjectSince is level-agnostic), so a liveness
+	// heartbeat can keep a project "active" without ever firing a new-issue/spike
+	// alert. Warning+ (and the default/empty level) alert as before.
+	if !pageableLevel(issue.Level) {
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

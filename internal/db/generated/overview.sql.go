@@ -15,12 +15,20 @@ const overviewEventCount24h = `-- name: OverviewEventCount24h :one
 
 SELECT count(*) FROM events
 WHERE org_id = $1 AND received_at >= now() - interval '24 hours'
+  AND level NOT IN ('info', 'debug')
 `
 
 // Org-wide dashboard aggregates for the Overview page. Every query is scoped
 // by org_id (the tenant boundary); they intentionally span all of the org's
 // projects, so each carries a ciguard allow-no-project marker directly above
 // its -- name: directive.
+//
+// The Overview is the ACTIONABLE ops view, so every metric here excludes
+// info/debug-level signals (heartbeats, breadcrumbs, health check-ins): they
+// are informational, never incidents, and must not inflate counts, dominate Top
+// Issues, or ride the volume charts. They still exist (visible via the project
+// issue list with an explicit filter) and still count toward the watchdog's
+// silence detection, which reads events directly and is unaffected by this.
 // ciguard:allow-no-project org-wide dashboard aggregate (scoped by org_id)
 func (q *Queries) OverviewEventCount24h(ctx context.Context, orgID string) (int64, error) {
 	row := q.db.QueryRow(ctx, overviewEventCount24h, orgID)
@@ -33,6 +41,7 @@ const overviewEventVolumeByHour = `-- name: OverviewEventVolumeByHour :many
 SELECT date_trunc('hour', received_at)::timestamptz AS hour, count(*) AS count
 FROM events
 WHERE org_id = $1 AND received_at >= now() - interval '24 hours'
+  AND level NOT IN ('info', 'debug')
 GROUP BY hour
 ORDER BY hour
 `
@@ -66,6 +75,7 @@ func (q *Queries) OverviewEventVolumeByHour(ctx context.Context, orgID string) (
 const overviewNewIssuesToday = `-- name: OverviewNewIssuesToday :one
 SELECT count(*) FROM issues
 WHERE org_id = $1 AND first_seen >= date_trunc('day', now())
+  AND level NOT IN ('info', 'debug')
 `
 
 // ciguard:allow-no-project org-wide dashboard aggregate (scoped by org_id)
@@ -80,6 +90,7 @@ const overviewProjectUnresolved = `-- name: OverviewProjectUnresolved :many
 SELECT project_id, count(*) AS count
 FROM issues
 WHERE org_id = $1 AND status = 'unresolved'
+  AND level NOT IN ('info', 'debug')
 GROUP BY project_id
 `
 
@@ -113,6 +124,7 @@ const overviewProjectVolumeByHour = `-- name: OverviewProjectVolumeByHour :many
 SELECT project_id, date_trunc('hour', received_at)::timestamptz AS hour, count(*) AS count
 FROM events
 WHERE org_id = $1 AND received_at >= now() - interval '24 hours'
+  AND level NOT IN ('info', 'debug')
 GROUP BY project_id, hour
 ORDER BY project_id, hour
 `
@@ -149,6 +161,7 @@ SELECT i.id, i.title, i.level, i.event_count, i.project_id, p.name AS project_na
 FROM issues i
 JOIN projects p ON p.id = i.project_id
 WHERE i.org_id = $1 AND i.status = 'unresolved'
+  AND i.level NOT IN ('info', 'debug')
 ORDER BY i.event_count DESC, i.last_seen DESC
 LIMIT 8
 `
@@ -193,6 +206,7 @@ func (q *Queries) OverviewTopIssues(ctx context.Context, orgID string) ([]*Overv
 const overviewUnresolvedCount = `-- name: OverviewUnresolvedCount :one
 SELECT count(*) FROM issues
 WHERE org_id = $1 AND status = 'unresolved'
+  AND level NOT IN ('info', 'debug')
 `
 
 // ciguard:allow-no-project org-wide dashboard aggregate (scoped by org_id)
