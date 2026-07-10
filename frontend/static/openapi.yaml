@@ -7,7 +7,7 @@ info:
     traces). Send data with any Sentry SDK (change only the DSN) or over OTLP;
     manage projects, issues, releases and source maps with an org API key.
   license:
-    name: AGPL-3.0
+    name: Flare Sustainable Use License
 servers:
   - url: https://flare.example.com
     description: Hosted
