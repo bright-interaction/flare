@@ -5,7 +5,7 @@
     "version": "1.0",
     "description": "Flare is a sovereign, self-hostable observability backend (errors, logs, traces). Send data with any Sentry SDK (change only the DSN) or over OTLP; manage projects, issues, releases and source maps with an org API key.\n",
     "license": {
-      "name": "AGPL-3.0"
+      "name": "Flare Sustainable Use License"
     }
   },
   "servers": [

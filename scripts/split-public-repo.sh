@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Produce the public AGPL-3.0 mirror of Flare at github.com/bright-interaction/flare,
+# Produce the public fair-code mirror of Flare at github.com/bright-interaction/flare,
 # so `go install github.com/bright-interaction/flare/cmd/server@latest` resolves.
 #
-# Flare is open core: the whole flare/ tree ships in the mirror under AGPL-3.0.
+# Flare is open core: the whole flare/ tree ships in the mirror under the Flare
+# Sustainable Use License (fair-code: self-host free, no reselling as a service).
 # The commercial overlay (hosted multi-tenant control plane, fleet DSN auto-wiring)
 # lives OUTSIDE this repo, so there is no pro layer to strip here (see LICENSING.md).
 # This script strips only the estate deploy compose (which names the house proxy
