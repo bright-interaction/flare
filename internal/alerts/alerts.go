@@ -1,6 +1,6 @@
 // Package alerts dispatches issue notifications to configured channels. Phase
 // 2 ships a log sink and an SSRF-guarded webhook; richer channel types
-// (Telegram, Slack, Cloud routing) plug in behind the same Dispatch call.
+// (Telegram, Slack, webhook routing) plug in behind the same Dispatch call.
 package alerts
 
 import (

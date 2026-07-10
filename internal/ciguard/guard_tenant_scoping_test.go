@@ -1,8 +1,8 @@
 // Package ciguard is Flare's structural backstop against cross-tenant data
 // leaks. It parses the SQL query source tree itself so a brand-new query that
 // reads a tenant-scoped table without an org_id predicate fails CI, even
-// though every existing query is correctly scoped. Mirrors the brightcrm
-// ciguard pattern (internal/ciguard).
+// though every existing query is correctly scoped. Mirrors a common
+// source-parsing ciguard pattern.
 //
 // A query that legitimately reads a scoped table by an unguessable secret
 // (an ingest public_key, an API-key hash) opts out with a trailing marker:

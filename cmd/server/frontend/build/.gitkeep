@@ -1,0 +1,2 @@
+# Placeholder so `//go:embed all:frontend/build` compiles on a fresh checkout.
+# The real SvelteKit build (bun run build) overwrites this directory.
