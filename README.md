@@ -77,5 +77,6 @@ and the SMTP vars for your environment; everything else has sane defaults.
 
 ## License
 
-AGPL-3.0-or-later (see [LICENSE](LICENSE)). The open-core boundary and the
-commercial overlay are described in [LICENSING.md](LICENSING.md).
+Fair-code under the Flare Sustainable Use License (see [LICENSE](LICENSE)): free
+to self-host and use, but you can't resell it as a hosted service. The details
+and the enterprise boundary are in [LICENSING.md](LICENSING.md).

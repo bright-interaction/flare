@@ -7,7 +7,7 @@ module from a repo whose path matches the module path, so a public release is:
 then tag a version.**
 
 Flare is open core (see [../LICENSING.md](../LICENSING.md)): the mirror carries the
-whole `flare/` tree under AGPL-3.0. The commercial overlay (hosted multi-tenant
+whole `flare/` tree under the Flare Sustainable Use License. The enterprise product (hosted multi-tenant
 control plane) lives outside this repo, so nothing is stripped for licensing. The
 split script strips only the estate deploy compose and redacts internal infra
 hostnames from history (`scripts/split-public-repo.sh`).
@@ -25,7 +25,7 @@ PATH.
 2. Create the public repo (outward):
    ```
    gh repo create bright-interaction/flare --public \
-     --description "Sovereign self-hostable observability (errors, logs, traces) on one Postgres. AGPL-3.0."
+     --description "Sovereign self-hostable observability (errors, logs, traces) on one Postgres. Fair-code."
    ```
 3. Mirror and push:
    ```

@@ -1,25 +1,28 @@
 # Flare licensing
 
-Flare is open-core, mirroring Mesh.
+Flare is open core (fair-code).
 
-## Core: AGPL-3.0
+## Core: Flare Sustainable Use License
 
-Everything in this `flare/` repo is licensed under the GNU AGPL-3.0 (see
+Everything in this repo is licensed under the Flare Sustainable Use License (see
 [LICENSE](./LICENSE)): the ingest engine (errors, logs, traces), the storage
 layer, the SvelteKit dashboard, the API-key + project provisioning surface, and
 the self-hostable single binary. You can run the whole product yourself on one
-Postgres.
+Postgres, for free, forever.
 
-The AGPL's network-use clause means if you offer Flare as a hosted service to
-others, you must make your modified source available to those users.
+This is a [fair-code](https://faircode.io) license, not an OSI "open source"
+license. The one limit: you may not resell Flare or run it as a hosted service
+for third parties (a competing "Flare cloud"). Self-hosting, internal commercial
+use, and operating monitoring for your own clients are all fine.
 
-## Commercial overlay (not in this repo)
+## Enterprise (not in this repo)
 
-The hosted, multi-tenant Flare service and the Cloud (Dockyard) auto-wiring
-that provisions a project + injects a DSN per deploy are a separate commercial
-overlay, not covered by the AGPL grant here.
+The hosted, multi-tenant Flare service and the fleet auto-wiring that provisions
+a project and injects a DSN per deploy across many services are a separate
+commercial enterprise product, held back from this repository.
 
 ## Commercial license
 
-If the AGPL does not fit your use (for example, embedding Flare in a closed-source
-product), a commercial license is available. Contact Bright Interaction.
+If you want to do something the Sustainable Use License does not permit (for
+example, offering Flare as a hosted service to third parties), a commercial
+license is available at licensing@brightinteraction.com.
