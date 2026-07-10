@@ -7,15 +7,23 @@ daemon. Storage scales up a ladder: time-partitioned Postgres (hot) -> embedded
 DuckDB columnar queries -> Parquet on object storage (cold), all behind one
 pluggable `Store` interface.
 
-## Status
+## What it does
 
-- **Phase 1 (done):** service skeleton, control plane (orgs, users, projects +
-  DSN, API keys), partitioned telemetry schema, auth (sessions + API keys),
-  tenant-scoping ciguard, SvelteKit shell, Docker + Trigger deploy workflow.
-- **Phase 2-4 (next):** errors, logs, traces pillars + ingest (OTLP +
-  Sentry-envelope) + dashboards.
-- **Phase 5:** Cloud (Dockyard) surface: per-service DSN auto-injection,
-  Observability tab, alert routing.
+- **Ingest**: Sentry-envelope and OTLP over HTTP. Point any Sentry or
+  OpenTelemetry SDK at a project DSN.
+- **Errors**: grouped issues with stack traces, source-map de-minification, and
+  first/last-seen + frequency.
+- **Logs and traces**: structured logs and spans on the same partitioned store,
+  queried through DuckDB.
+- **Alerts**: new-issue and threshold alerts routed to email and webhooks.
+- **AI triage** (BYOAI, optional): LLM triage of new issues, bring your own key.
+- **Analytics**: DuckDB rollups over the telemetry tables.
+- **Multi-project**: orgs, projects, per-project DSNs and API keys, tenant-scoped
+  throughout and enforced by a source-parsing CI guard.
+- **MCP**: an agent API so an assistant can read and triage issues.
+
+The hosted, multi-tenant control plane (auto-wiring DSNs across a fleet) is the
+commercial overlay and is not in this repo. See [LICENSING.md](LICENSING.md).
 
 ## Architecture
 
@@ -25,6 +33,7 @@ pluggable `Store` interface.
   tables), sqlc-generated queries.
 - `internal/auth` - sessions (scs + pgxstore), bcrypt passwords, API keys.
 - `internal/api` - chi router, handlers, CSRF, SPA fallback.
+- `internal/ingest` - Sentry-envelope + OTLP ingest.
 - `internal/ciguard` - source-parsing CI guard: every query reading a
   tenant-scoped table must filter on `org_id` (or carry an explicit
   `-- ciguard:allow-unscoped` marker).
@@ -60,7 +69,13 @@ docker build -t flare .
 
 ## Deploy
 
-Push to `flare/**`; the Trigger (Hephaestus) workflow `deploy-flare` rsyncs to
-`/opt/flare-build/flare` and runs docker compose. Use `git psync`, not bare
-`git push`. The deploy generates `.env` secrets on first run and preserves them
-after.
+Build the container (`docker build -t flare .`) and run it behind your reverse
+proxy, or use the compose file and Helm chart under `deploy/` (see
+[deploy/README.md](deploy/README.md)). Flare generates its `.env` secrets on
+first run and preserves them across restarts. Set `BASE_URL`, `DATABASE_URL`,
+and the SMTP vars for your environment; everything else has sane defaults.
+
+## License
+
+AGPL-3.0-or-later (see [LICENSE](LICENSE)). The open-core boundary and the
+commercial overlay are described in [LICENSING.md](LICENSING.md).

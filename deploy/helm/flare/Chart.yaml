@@ -4,7 +4,7 @@ description: Flare - sovereign, self-hostable observability (errors, logs, trace
 type: application
 version: 0.1.0
 appVersion: "1.0"
-home: https://flare.example.com
+home: https://github.com/bright-interaction/flare
 sources:
   - https://github.com/bright-interaction/flare
 keywords:

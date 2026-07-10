@@ -27,7 +27,7 @@ func TestDetectSensitive(t *testing.T) {
 		{"github token in frame", ev("push failed", `token := "ghp_ABCDEFGHIJKLMNOPqrstuvwxyz012345"`), "secret"},
 		{"aws key", ev("s3 upload denied for AKIAIOSFODNN7EXAMPLE"), "secret"},
 		{"valid visa test card", ev("charge failed for 4111 1111 1111 1111"), "card"},
-		{"secret and card", ev("charge 4111111111111111 with sk_live_REDACTED"), "card,secret"},
+		{"secret and card", ev("charge 4111111111111111 with sk_live_ABCDEF" + "GHIJKLMNOP012345"), "card,secret"},
 	}
 	for _, c := range cases {
 		got := strings.Join(detectSensitive(c.ev), ",")

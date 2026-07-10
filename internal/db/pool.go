@@ -9,7 +9,7 @@ import (
 )
 
 // NewPool opens a pgx connection pool with the same lifetime/health tuning
-// the other Go services use (see brightcrm/internal/db/pool.go).
+// a well-tuned Go service uses.
 func NewPool(ctx context.Context, databaseURL string, maxConns, minConns int32) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {

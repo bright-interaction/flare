@@ -104,14 +104,14 @@ Release: web@1.4.2
 Exception: payment declined for card 4539123412341234
 Request from 203.0.113.42 (device a1:b2:c3:d4:e5:f6)
 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqYW5lIn0.s3cr3tSignaturePart
-Stripe key sk_live_REDACTED used
+Stripe key sk_live_ABCDEF` + `GHIJKLMNOPQRSTUVWX used
 Session hash 5f4dcc3b5aa765d61d8327deb882cf99aa1234567890abcd
   at chargeCustomer (billing.js:88)
   at handleCheckout (checkout.js:214)`
 
 	leaks := []string{
 		"jane.doe@corp.com", "4539123412341234", "203.0.113.42",
-		"a1:b2:c3:d4:e5:f6", "eyJhbGciOiJIUzI1NiJ9", "sk_live_REDACTED",
+		"a1:b2:c3:d4:e5:f6", "eyJhbGciOiJIUzI1NiJ9", "sk_live_ABCDEF" + "GHIJKLMNOPQRSTUVWX",
 		"5f4dcc3b5aa765d61d8327deb882cf99aa1234567890abcd",
 	}
 

@@ -88,7 +88,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDSNRedirect maps a numeric DSN id to the dashboard project page. The
-// DSN that Cloud injects carries the numeric dsn_id, not the cuid the SPA
+// DSN that an external provisioner injects carries the numeric dsn_id, not the cuid the SPA
 // routes on, so the Observability deep-link points here and we 302 to the real
 // project. Unauthenticated: the target page enforces the session itself.
 func (s *Server) handleDSNRedirect(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +185,7 @@ type provisionRequest struct {
 }
 
 // handleProvisionProject get-or-creates a project by (org, slug) with a STABLE
-// slug. It is idempotent so an external system (Cloud) can call it on every
+// slug. It is idempotent so an external system can call it on every
 // deploy without creating duplicates. Authenticated by an org API key.
 func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) {
 	var req provisionRequest
