@@ -83,7 +83,7 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (*Issue, err
 }
 
 const getLatestEvent = `-- name: GetLatestEvent :one
-SELECT id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT 1
+SELECT id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at, trace_id, span_id FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT 1
 `
 
 type GetLatestEventParams struct {
@@ -110,13 +110,15 @@ func (q *Queries) GetLatestEvent(ctx context.Context, arg GetLatestEventParams) 
 		&i.Stacktrace,
 		&i.Payload,
 		&i.ReceivedAt,
+		&i.TraceID,
+		&i.SpanID,
 	)
 	return &i, err
 }
 
 const insertEvent = `-- name: InsertEvent :exec
-INSERT INTO events (id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+INSERT INTO events (id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, trace_id, span_id, received_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
 `
 
 type InsertEventParams struct {
@@ -133,6 +135,8 @@ type InsertEventParams struct {
 	Release        string          `json:"release"`
 	Stacktrace     json.RawMessage `json:"stacktrace"`
 	Payload        json.RawMessage `json:"payload"`
+	TraceID        pgtype.Text     `json:"trace_id"`
+	SpanID         pgtype.Text     `json:"span_id"`
 }
 
 func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {
@@ -150,12 +154,14 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 		arg.Release,
 		arg.Stacktrace,
 		arg.Payload,
+		arg.TraceID,
+		arg.SpanID,
 	)
 	return err
 }
 
 const listEventsByIssue = `-- name: ListEventsByIssue :many
-SELECT id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT $3
+SELECT id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at, trace_id, span_id FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT $3
 `
 
 type ListEventsByIssueParams struct {
@@ -189,6 +195,8 @@ func (q *Queries) ListEventsByIssue(ctx context.Context, arg ListEventsByIssuePa
 			&i.Stacktrace,
 			&i.Payload,
 			&i.ReceivedAt,
+			&i.TraceID,
+			&i.SpanID,
 		); err != nil {
 			return nil, err
 		}

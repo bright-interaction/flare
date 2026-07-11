@@ -143,7 +143,7 @@ func (s *Server) mcpDispatch(ctx context.Context, org string, req mcpRequest) (a
 			"protocolVersion": mcpProtocol,
 			"serverInfo":      map[string]string{"name": "flare", "version": "1.0.0"},
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"instructions": "Flare observability MCP. Start with `overview` for estate-wide health, then `list_issues` for a project and `get_issue` for a stack trace. `search_logs` reads the logs pillar. Writes: `update_issue_status` (resolve/ignore) and `triage_issue` (needs a BYOAI model configured in Flare settings). Everything is scoped to your org.",
+			"instructions":    "Flare observability MCP. Start with `overview` for estate-wide health, then `list_issues` for a project and `get_issue` for a stack trace. `search_logs` reads the logs pillar. Writes: `update_issue_status` (resolve/ignore) and `triage_issue` (needs a BYOAI model configured in Flare settings). Everything is scoped to your org.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -354,13 +354,14 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 		},
 		"search_logs": {
 			Name:        "search_logs",
-			Description: "Search a project's log records. project = id or slug. Optional severity and query (substring). limit default 50. Returns [] until services ship logs (OTLP) to Flare.",
-			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"severity":{"type":"string"},"query":{"type":"string"},"limit":{"type":"integer"}},"required":["project"]}`),
+			Description: "Search a project's log records. project = id or slug. Optional severity, query (substring), and trace_id (pass an error's trace_id to get the logs from the same request). limit default 50. Returns [] until services ship logs (OTLP) to Flare.",
+			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"severity":{"type":"string"},"query":{"type":"string"},"trace_id":{"type":"string"},"limit":{"type":"integer"}},"required":["project"]}`),
 			Handler: func(ctx context.Context, org string, args json.RawMessage) (any, error) {
 				var a struct {
 					Project  string `json:"project"`
 					Severity string `json:"severity"`
 					Query    string `json:"query"`
+					TraceID  string `json:"trace_id"`
 					Limit    int32  `json:"limit"`
 				}
 				_ = json.Unmarshal(args, &a)
@@ -378,6 +379,9 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Query != "" {
 					f.Query = &a.Query
 				}
+				if a.TraceID != "" {
+					f.TraceID = &a.TraceID
+				}
 				logs, err := s.store.SearchLogs(ctx, proj.ID, org, f)
 				if err != nil {
 					return nil, err
@@ -385,6 +389,38 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				// Scrub PII from bodies/attributes before egress to the LLM (the
 				// logs pillar has no per-log sensitive flag).
 				return toLogResponsesScrubbed(logs), nil
+			},
+		},
+		"get_trace": {
+			Name:        "get_trace",
+			Description: "Fetch every span of a distributed trace by trace_id (take it from an error's trace_id or a log's trace_id), ordered by start time. project = id or slug. This is the cross-pillar pivot: see the actual request an error happened in.",
+			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"trace_id":{"type":"string"}},"required":["project","trace_id"]}`),
+			Handler: func(ctx context.Context, org string, args json.RawMessage) (any, error) {
+				var a struct {
+					Project string `json:"project"`
+					TraceID string `json:"trace_id"`
+				}
+				_ = json.Unmarshal(args, &a)
+				proj, err := s.resolveProjectRef(ctx, org, a.Project)
+				if err != nil {
+					return nil, err
+				}
+				spans, err := s.store.GetTraceSpans(ctx, a.TraceID, proj.ID, org)
+				if err != nil {
+					return nil, err
+				}
+				if len(spans) == 0 {
+					return nil, userErr("trace %q not found", a.TraceID)
+				}
+				out := make([]spanResponse, 0, len(spans))
+				for _, sp := range spans {
+					out = append(out, spanResponse{
+						SpanID: sp.SpanID, ParentSpanID: sp.ParentSpanID, Name: sp.Name,
+						Kind: sp.Kind, Status: sp.Status,
+						StartUnixMs: sp.StartUnixMs, DurationMs: sp.DurationMs, Attributes: sp.Attributes,
+					})
+				}
+				return out, nil
 			},
 		},
 		"update_issue_status": {

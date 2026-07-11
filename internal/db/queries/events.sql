@@ -31,8 +31,8 @@ UPDATE issues SET last_spike_at = now()
 WHERE id = $1 AND org_id = $2 AND (last_spike_at IS NULL OR last_spike_at < $3);
 
 -- name: InsertEvent :exec
-INSERT INTO events (id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now());
+INSERT INTO events (id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, trace_id, span_id, received_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now());
 
 -- name: ListIssues :many
 SELECT * FROM issues
