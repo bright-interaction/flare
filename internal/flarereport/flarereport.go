@@ -58,9 +58,11 @@ func InitFlare(service, release string) bool {
 		return false
 	}
 	err := sentry.Init(sentry.ClientOptions{
-		Dsn:        dsn,
-		Release:    release,
-		ServerName: service,
+		Dsn:              dsn,
+		Release:          release,
+		ServerName:       service,
+		EnableTracing:    true,
+		TracesSampleRate: tracesSampleRate(),
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 			if !allowSend() {
 				return nil
@@ -83,6 +85,7 @@ func InitFlare(service, release string) bool {
 // Recoverer in the chain so it sees the panic first. Safe to mount when
 // InitFlare was a no-op: capture calls on an uninitialized hub do nothing.
 func FlareRecoverer(next http.Handler) http.Handler {
+	traced := flareTracer(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -93,7 +96,7 @@ func FlareRecoverer(next http.Handler) http.Handler {
 				panic(rec)
 			}
 		}()
-		next.ServeHTTP(w, r)
+		traced.ServeHTTP(w, r)
 	})
 }
 
