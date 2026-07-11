@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/telemetry"
@@ -421,6 +422,61 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					})
 				}
 				return out, nil
+			},
+		},
+		"query_metrics": {
+			Name:        "query_metrics",
+			Description: "Metrics for a project. With no name, lists the metric series (name, kind, point count). With a name, returns a summary (count/min/max/avg/latest) over the window (default 60 minutes) - use it to answer 'what is the request rate / p95 / queue depth right now'. project = id or slug.",
+			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"window":{"type":"integer"}},"required":["project"]}`),
+			Handler: func(ctx context.Context, org string, args json.RawMessage) (any, error) {
+				var a struct {
+					Project string `json:"project"`
+					Name    string `json:"name"`
+					Window  int32  `json:"window"`
+				}
+				_ = json.Unmarshal(args, &a)
+				proj, err := s.resolveProjectRef(ctx, org, a.Project)
+				if err != nil {
+					return nil, err
+				}
+				if a.Name == "" {
+					names, err := s.store.ListMetricNames(ctx, proj.ID, org)
+					if err != nil {
+						return nil, err
+					}
+					out := make([]metricNameResponse, 0, len(names))
+					for _, m := range names {
+						out = append(out, metricNameResponse{Name: m.Name, Kind: m.Kind, Points: m.Points, LastSeen: m.LastSeen})
+					}
+					return out, nil
+				}
+				win := 60
+				if a.Window > 0 && a.Window <= 10080 {
+					win = int(a.Window)
+				}
+				since := time.Now().Add(-time.Duration(win) * time.Minute)
+				points, err := s.store.QueryMetricSeries(ctx, proj.ID, org, a.Name, since, 5000)
+				if err != nil {
+					return nil, err
+				}
+				if len(points) == 0 {
+					return nil, userErr("metric %q has no points in the last %dm", a.Name, win)
+				}
+				// points are newest-first; latest = points[0].
+				min, max, sum := points[0].Value, points[0].Value, 0.0
+				for _, p := range points {
+					if p.Value < min {
+						min = p.Value
+					}
+					if p.Value > max {
+						max = p.Value
+					}
+					sum += p.Value
+				}
+				return map[string]any{
+					"name": a.Name, "window_minutes": win, "count": len(points),
+					"min": min, "max": max, "avg": sum / float64(len(points)), "latest": points[0].Value,
+				}, nil
 			},
 		},
 		"update_issue_status": {

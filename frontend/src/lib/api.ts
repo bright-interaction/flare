@@ -15,6 +15,8 @@ import type {
   IssueEvent,
   LogRow,
   LogVolumeBucket,
+  MetricName,
+  MetricPoint,
   Monitor,
   Overview,
   Project,
@@ -135,6 +137,13 @@ export const api = {
   issue: (id: string) => req<Issue>('GET', `/issues/${id}`),
   issueEvents: (id: string) => req<IssueEvent[]>('GET', `/issues/${id}/events`),
   setIssueStatus: (id: string, status: string) => req<Issue>('PATCH', `/issues/${id}`, { status }),
+
+  metrics: (pid: string) => req<MetricName[]>('GET', `/projects/${pid}/metrics`),
+  metricSeries: (pid: string, name: string, windowMin = 60) =>
+    req<MetricPoint[]>(
+      'GET',
+      `/projects/${pid}/metrics/query?name=${encodeURIComponent(name)}&window=${windowMin}`
+    ),
 
   logs: (pid: string, opts: { q?: string; severity?: string; trace?: string } = {}) => {
     const p = new URLSearchParams();

@@ -43,6 +43,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 			r.Post("/{projectID}/store", s.handleStore)
 			r.Post("/{projectID}/events", s.handleStore)
 			r.Post("/{projectID}/logs", s.handleNativeLogs)
+			r.Post("/{projectID}/metrics", s.handleNativeMetrics)
 			// Cron/job check-in: DSN-authed like ingest. GET too, so a bare
 			// `curl` from a cron works; ?status=error marks the run failed.
 			r.Post("/{projectID}/checkins/{slug}", s.handleCheckin)
@@ -82,6 +83,8 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects/{id}/traces/{traceID}", s.handleGetTrace)
 				r.Get("/projects/{id}/analytics/log-volume", s.handleLogVolume)
 				r.Get("/projects/{id}/analytics/span-latency", s.handleSpanLatency)
+				r.Get("/projects/{id}/metrics", s.handleListMetrics)
+				r.Get("/projects/{id}/metrics/query", s.handleQueryMetric)
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
 				r.Get("/projects/{id}/monitors", s.handleListMonitors)
 				r.Get("/projects/{id}/artifacts", s.handleListSourceMaps)
@@ -149,6 +152,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 	// configured OTLP endpoint). DSN-key auth, no CSRF/session, same rate limit.
 	r.With(s.rateLimitIngest).Post("/otlp/v1/logs", s.handleOTLPLogs)
 	r.With(s.rateLimitIngest).Post("/otlp/v1/traces", s.handleOTLPTraces)
+	r.With(s.rateLimitIngest).Post("/otlp/v1/metrics", s.handleOTLPMetrics)
 
 	// Deep-link from a DSN (numeric dsn_id) to the dashboard project page.
 	r.Get("/go/{dsnID}", s.handleDSNRedirect)

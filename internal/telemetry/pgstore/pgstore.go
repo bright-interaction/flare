@@ -160,3 +160,34 @@ func nTs(p *time.Time) pgtype.Timestamptz {
 	}
 	return pgtype.Timestamptz{Time: *p, Valid: true}
 }
+
+func (s *PGStore) ListMetricNames(ctx context.Context, projectID, orgID string) ([]telemetry.MetricName, error) {
+	rows, err := s.q.ListMetricNames(ctx, generated.ListMetricNamesParams{ProjectID: projectID, OrgID: orgID})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]telemetry.MetricName, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, telemetry.MetricName{
+			Name: r.Name, Kind: r.Kind, Points: r.Points, LastSeen: r.LastSeen.Time,
+		})
+	}
+	return out, nil
+}
+
+func (s *PGStore) QueryMetricSeries(ctx context.Context, projectID, orgID, name string, since time.Time, limit int32) ([]telemetry.MetricPoint, error) {
+	rows, err := s.q.QueryMetricSeries(ctx, generated.QueryMetricSeriesParams{
+		ProjectID: projectID, OrgID: orgID, Name: name,
+		ObservedAt: pgtype.Timestamptz{Time: since, Valid: true}, Limit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]telemetry.MetricPoint, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, telemetry.MetricPoint{
+			Value: r.Value, Labels: r.Labels, ObservedAt: r.ObservedAt.Time,
+		})
+	}
+	return out, nil
+}

@@ -1,6 +1,9 @@
 package telemetry
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store is the pluggable read/analytics surface for telemetry. The dashboard
 // read handlers depend only on this interface, so swapping the backing engine
@@ -17,6 +20,8 @@ type Store interface {
 	SearchLogs(ctx context.Context, projectID, orgID string, f LogFilter) ([]Log, error)
 	ListTraces(ctx context.Context, projectID, orgID string, limit int32) ([]TraceSummary, error)
 	GetTraceSpans(ctx context.Context, traceID, projectID, orgID string) ([]Span, error)
+	ListMetricNames(ctx context.Context, projectID, orgID string) ([]MetricName, error)
+	QueryMetricSeries(ctx context.Context, projectID, orgID, name string, since time.Time, limit int32) ([]MetricPoint, error)
 	Healthy(ctx context.Context) bool
 }
 

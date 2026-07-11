@@ -49,6 +49,45 @@ func (q *Queries) InsertLogs(ctx context.Context, arg []InsertLogsParams) (int64
 	return q.db.CopyFrom(ctx, []string{"logs"}, []string{"id", "project_id", "org_id", "severity", "body", "attributes", "trace_id", "span_id", "observed_at"}, &iteratorForInsertLogs{rows: arg})
 }
 
+// iteratorForInsertMetrics implements pgx.CopyFromSource.
+type iteratorForInsertMetrics struct {
+	rows                 []InsertMetricsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForInsertMetrics) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForInsertMetrics) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].ID,
+		r.rows[0].ProjectID,
+		r.rows[0].OrgID,
+		r.rows[0].Name,
+		r.rows[0].Kind,
+		r.rows[0].Value,
+		r.rows[0].Labels,
+		r.rows[0].ObservedAt,
+	}, nil
+}
+
+func (r iteratorForInsertMetrics) Err() error {
+	return nil
+}
+
+func (q *Queries) InsertMetrics(ctx context.Context, arg []InsertMetricsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"metrics"}, []string{"id", "project_id", "org_id", "name", "kind", "value", "labels", "observed_at"}, &iteratorForInsertMetrics{rows: arg})
+}
+
 // iteratorForInsertSpans implements pgx.CopyFromSource.
 type iteratorForInsertSpans struct {
 	rows                 []InsertSpansParams
