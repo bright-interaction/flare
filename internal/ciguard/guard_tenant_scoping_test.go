@@ -24,7 +24,7 @@ import (
 var scopedTables = []string{
 	"events", "logs", "spans", "issues",
 	"projects", "api_keys", "alert_rules", "notification_channels", "monitors",
-	"ai_triage_usage",
+	"ai_triage_usage", "metrics",
 }
 
 func repoRoot(t *testing.T) string {

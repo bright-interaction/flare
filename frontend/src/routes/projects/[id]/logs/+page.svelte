@@ -63,6 +63,7 @@
     <a href="/projects/{id}" class="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300">Issues</a>
     <a href="/projects/{id}/logs" class="-mb-px border-b-2 border-amber-400 px-3 py-2 text-sm text-zinc-100">Logs</a>
     <a href="/projects/{id}/traces" class="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300">Traces</a>
+    <a href="/projects/{id}/metrics" class="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300">Metrics</a>
     <a href="/projects/{id}/releases" class="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300">Releases</a>
   </div>
 
