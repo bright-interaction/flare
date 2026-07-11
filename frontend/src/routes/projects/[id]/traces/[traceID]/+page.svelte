@@ -11,6 +11,7 @@
 
   let spans = $state<Span[] | null>(null);
   let error = $state<string | null>(null);
+  let expanded = $state<Record<string, boolean>>({});
 
   $effect(() => {
     if (session.loaded && !session.user) goto('/login', { replaceState: true });
@@ -65,7 +66,13 @@
     <h1 class="text-lg font-semibold tracking-tight">{spans[0].name}</h1>
     <span class="font-mono text-sm text-zinc-400">{fmtDur(total)}</span>
   </div>
-  <p class="mb-6 font-mono text-xs text-zinc-600">{traceID}</p>
+  <p class="mb-2 font-mono text-xs text-zinc-600">{traceID}</p>
+  <a
+    href="/projects/{projectID}/logs?trace={traceID}"
+    class="mb-6 inline-flex items-center gap-1.5 text-xs text-zinc-500 transition-colors hover:text-amber-300"
+  >
+    View logs for this trace <span aria-hidden="true">&rarr;</span>
+  </a>
 
   <div class="overflow-hidden rounded-lg border border-zinc-800/80">
     <ul class="divide-y divide-zinc-800/40">
@@ -73,24 +80,47 @@
         {@const left = ((s.start_unix_ms - t0) / total) * 100}
         {@const width = Math.max(0.5, (s.duration_ms / total) * 100)}
         {@const err = s.status === 'error'}
-        <li class="grid grid-cols-[minmax(0,2fr)_3fr] items-center gap-3 px-4 py-2 hover:bg-zinc-900/40">
-          <div class="min-w-0" style="padding-left: {depth(s) * 14}px">
-            <div class="truncate text-sm text-zinc-200">{s.name}</div>
-            <div class="truncate font-mono text-[11px] text-zinc-600">{s.kind || 'internal'}{err ? ' · error' : ''}</div>
+        {@const attrs = s.attributes ? Object.entries(s.attributes) : []}
+        <li class="hover:bg-zinc-900/40">
+          <div class="grid grid-cols-[minmax(0,2fr)_3fr] items-center gap-3 px-4 py-2">
+            <div class="min-w-0" style="padding-left: {depth(s) * 14}px">
+              {#if attrs.length}
+                <button
+                  onclick={() => (expanded[s.span_id] = !expanded[s.span_id])}
+                  class="block w-full truncate text-left text-sm text-zinc-200 transition-colors hover:text-amber-300"
+                  aria-expanded={!!expanded[s.span_id]}
+                >
+                  {s.name}
+                </button>
+              {:else}
+                <div class="truncate text-sm text-zinc-200">{s.name}</div>
+              {/if}
+              <div class="truncate font-mono text-[11px] text-zinc-600">
+                {s.kind || 'internal'}{err ? ' · error' : ''}{attrs.length ? ` · ${attrs.length} attrs` : ''}
+              </div>
+            </div>
+            <div class="relative h-6">
+              <div
+                class="absolute top-1/2 h-3 -translate-y-1/2 rounded-sm {err ? 'bg-rose-400/80' : 'bg-amber-400/80'}"
+                style="left: {left}%; width: {width}%"
+                title="{fmtDur(s.duration_ms)}"
+              ></div>
+              <span
+                class="absolute top-1/2 -translate-y-1/2 font-mono text-[11px] text-zinc-500"
+                style="left: clamp(0%, {left + width}%, 88%); padding-left: 6px"
+              >
+                {fmtDur(s.duration_ms)}
+              </span>
+            </div>
           </div>
-          <div class="relative h-6">
-            <div
-              class="absolute top-1/2 h-3 -translate-y-1/2 rounded-sm {err ? 'bg-rose-400/80' : 'bg-amber-400/80'}"
-              style="left: {left}%; width: {width}%"
-              title="{fmtDur(s.duration_ms)}"
-            ></div>
-            <span
-              class="absolute top-1/2 -translate-y-1/2 font-mono text-[11px] text-zinc-500"
-              style="left: clamp(0%, {left + width}%, 88%); padding-left: 6px"
-            >
-              {fmtDur(s.duration_ms)}
-            </span>
-          </div>
+          {#if expanded[s.span_id] && attrs.length}
+            <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 border-t border-zinc-800/40 bg-zinc-950/40 px-4 py-2 font-mono text-[11px]">
+              {#each attrs as [k, v] (k)}
+                <dt class="text-zinc-500">{k}</dt>
+                <dd class="min-w-0 break-words text-zinc-300">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</dd>
+              {/each}
+            </dl>
+          {/if}
         </li>
       {/each}
     </ul>

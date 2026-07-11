@@ -68,6 +68,8 @@ type Event struct {
 	Stacktrace     json.RawMessage    `json:"stacktrace"`
 	Payload        json.RawMessage    `json:"payload"`
 	ReceivedAt     pgtype.Timestamptz `json:"received_at"`
+	TraceID        pgtype.Text        `json:"trace_id"`
+	SpanID         pgtype.Text        `json:"span_id"`
 }
 
 type EventsDefault struct {

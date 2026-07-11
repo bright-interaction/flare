@@ -129,6 +129,8 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		Release:        ev.Release,
 		Stacktrace:     stacktraceJSON(ev.Frames),
 		Payload:        ev.Raw,
+		TraceID:        textOrNull(ev.TraceID),
+		SpanID:         textOrNull(ev.SpanID),
 	}); err != nil {
 		return "", err
 	}
