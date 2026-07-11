@@ -69,7 +69,8 @@ func (s *PGStore) ListEventsByIssue(ctx context.Context, issueID, orgID string, 
 			ID: e.ID, Level: e.Level, Message: e.Message,
 			ExceptionType: e.ExceptionType, ExceptionValue: e.ExceptionValue,
 			Platform: e.Platform, Environment: e.Environment, Release: e.Release,
-			Stacktrace: e.Stacktrace, ReceivedAt: e.ReceivedAt.Time,
+			Stacktrace: e.Stacktrace, TraceID: e.TraceID.String, SpanID: e.SpanID.String,
+			ReceivedAt: e.ReceivedAt.Time,
 		})
 	}
 	return out, nil

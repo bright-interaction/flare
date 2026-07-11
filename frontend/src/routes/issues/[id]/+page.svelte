@@ -170,6 +170,17 @@
 
   {#if latest}
     <h2 class="mt-8 mb-2 text-sm font-medium text-zinc-300">Latest event</h2>
+    {#if latest.trace_id && issue}
+      <a
+        href="/projects/{issue.project_id}/traces/{latest.trace_id}"
+        class="mb-3 inline-flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-amber-400/50 hover:text-amber-300"
+      >
+        <span class="text-zinc-500">In trace</span>
+        <span class="font-mono">{latest.trace_id.slice(0, 16)}</span>
+        <span aria-hidden="true">&rarr;</span>
+        <span>View trace</span>
+      </a>
+    {/if}
     {#if latest.exception_value || latest.message}
       <p class="mb-4 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-sm text-zinc-300">
         {latest.exception_value || latest.message}

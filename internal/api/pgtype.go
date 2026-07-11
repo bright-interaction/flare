@@ -10,6 +10,15 @@ func pgText(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }
 
+// textOrNull maps "" to SQL NULL, so an optional column (e.g. a missing
+// trace_id) is stored NULL rather than an empty string.
+func textOrNull(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
 // tsPtr renders a nullable timestamptz as an RFC3339 string pointer (nil when
 // NULL), so JSON responses carry a clean ISO timestamp or null.
 func tsPtr(t pgtype.Timestamptz) *string {

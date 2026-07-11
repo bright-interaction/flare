@@ -10,15 +10,15 @@ import (
 )
 
 type Issue struct {
-	ID          string
-	ProjectID   string
-	OrgID       string
-	Fingerprint string
-	Title       string
-	Culprit     string
-	Level       string
-	Status      string
-	Platform    string
+	ID           string
+	ProjectID    string
+	OrgID        string
+	Fingerprint  string
+	Title        string
+	Culprit      string
+	Level        string
+	Status       string
+	Platform     string
 	FirstSeen    time.Time
 	LastSeen     time.Time
 	EventCount   int64
@@ -38,6 +38,8 @@ type Event struct {
 	Environment    string
 	Release        string
 	Stacktrace     json.RawMessage
+	TraceID        string
+	SpanID         string
 	ReceivedAt     time.Time
 }
 

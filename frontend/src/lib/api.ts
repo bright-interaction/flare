@@ -129,10 +129,11 @@ export const api = {
   issueEvents: (id: string) => req<IssueEvent[]>('GET', `/issues/${id}/events`),
   setIssueStatus: (id: string, status: string) => req<Issue>('PATCH', `/issues/${id}`, { status }),
 
-  logs: (pid: string, opts: { q?: string; severity?: string } = {}) => {
+  logs: (pid: string, opts: { q?: string; severity?: string; trace?: string } = {}) => {
     const p = new URLSearchParams();
     if (opts.q) p.set('q', opts.q);
     if (opts.severity) p.set('severity', opts.severity);
+    if (opts.trace) p.set('trace_id', opts.trace);
     const qs = p.toString();
     return req<LogRow[]>('GET', `/projects/${pid}/logs${qs ? `?${qs}` : ''}`);
   },

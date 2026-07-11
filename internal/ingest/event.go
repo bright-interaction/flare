@@ -38,6 +38,8 @@ type NormalizedEvent struct {
 	ExceptionValue string
 	Message        string
 	Frames         []Frame
+	TraceID        string
+	SpanID         string
 	Raw            json.RawMessage
 }
 
@@ -55,6 +57,12 @@ type sentryEvent struct {
 		Message   string `json:"message"`
 	} `json:"logentry"`
 	Exception *exceptionField `json:"exception"`
+	Contexts  *struct {
+		Trace *struct {
+			TraceID string `json:"trace_id"`
+			SpanID  string `json:"span_id"`
+		} `json:"trace"`
+	} `json:"contexts"`
 }
 
 type exceptionValue struct {
@@ -113,6 +121,11 @@ func ParseEvent(raw []byte) (NormalizedEvent, error) {
 		if last.Stacktrace != nil {
 			ev.Frames = last.Stacktrace.Frames
 		}
+	}
+
+	if se.Contexts != nil && se.Contexts.Trace != nil {
+		ev.TraceID = se.Contexts.Trace.TraceID
+		ev.SpanID = se.Contexts.Trace.SpanID
 	}
 
 	ev.Title = title(ev)

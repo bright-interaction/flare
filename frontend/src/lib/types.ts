@@ -16,6 +16,7 @@ export interface Project {
 
 export interface Issue {
   id: string;
+  project_id: string;
   title: string;
   culprit: string;
   level: string;
@@ -113,6 +114,8 @@ export interface IssueEvent {
   environment: string;
   release: string;
   stacktrace: { frames: Frame[] } | null;
+  trace_id: string;
+  span_id: string;
   received_at: string;
 }
 

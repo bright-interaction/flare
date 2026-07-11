@@ -16,12 +16,13 @@ import (
 )
 
 type issueResponse struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title"`
-	Culprit    string    `json:"culprit"`
-	Level      string    `json:"level"`
-	Status     string    `json:"status"`
-	Platform   string    `json:"platform"`
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"project_id"`
+	Title        string    `json:"title"`
+	Culprit      string    `json:"culprit"`
+	Level        string    `json:"level"`
+	Status       string    `json:"status"`
+	Platform     string    `json:"platform"`
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
 	EventCount   int64     `json:"event_count"`
@@ -40,7 +41,7 @@ func toIssueResponse(i telemetry.Issue) issueResponse {
 		title, culprit = ai.Scrub(title), ai.Scrub(culprit)
 	}
 	return issueResponse{
-		ID: i.ID, Title: title, Culprit: culprit, Level: i.Level,
+		ID: i.ID, ProjectID: i.ProjectID, Title: title, Culprit: culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen, LastSeen: i.LastSeen, EventCount: i.EventCount,
 		GithubURL: i.GithubURL, FirstRelease: i.FirstRelease, AITriage: i.AITriage,
@@ -56,7 +57,7 @@ func genIssueToResponse(i *generated.Issue) issueResponse {
 		title, culprit = ai.Scrub(title), ai.Scrub(culprit)
 	}
 	return issueResponse{
-		ID: i.ID, Title: title, Culprit: culprit, Level: i.Level,
+		ID: i.ID, ProjectID: i.ProjectID, Title: title, Culprit: culprit, Level: i.Level,
 		Status: i.Status, Platform: i.Platform,
 		FirstSeen: i.FirstSeen.Time, LastSeen: i.LastSeen.Time, EventCount: i.EventCount,
 		GithubURL: i.GithubUrl, FirstRelease: i.FirstRelease, AITriage: i.AiTriage,
@@ -74,6 +75,8 @@ type eventResponse struct {
 	Environment    string          `json:"environment"`
 	Release        string          `json:"release"`
 	Stacktrace     json.RawMessage `json:"stacktrace"`
+	TraceID        string          `json:"trace_id"`
+	SpanID         string          `json:"span_id"`
 	ReceivedAt     time.Time       `json:"received_at"`
 }
 
@@ -157,7 +160,7 @@ func (s *Server) toEventResponses(ctx context.Context, issueID, org string, even
 			ID: e.ID, Level: e.Level, Message: msg,
 			ExceptionType: e.ExceptionType, ExceptionValue: excVal,
 			Platform: e.Platform, Environment: e.Environment, Release: e.Release,
-			Stacktrace: stack, ReceivedAt: e.ReceivedAt,
+			Stacktrace: stack, TraceID: e.TraceID, SpanID: e.SpanID, ReceivedAt: e.ReceivedAt,
 		})
 	}
 	return out

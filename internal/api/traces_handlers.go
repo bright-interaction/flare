@@ -63,12 +63,12 @@ func (s *Server) persistSpans(ctx context.Context, project *generated.Project, s
 }
 
 type traceSummary struct {
-	TraceID   string    `json:"trace_id"`
-	RootName  string    `json:"root_name"`
-	SpanCount int64     `json:"span_count"`
-	HasError  bool      `json:"has_error"`
-	DurationMs float64  `json:"duration_ms"`
-	Started   time.Time `json:"started"`
+	TraceID    string    `json:"trace_id"`
+	RootName   string    `json:"root_name"`
+	SpanCount  int64     `json:"span_count"`
+	HasError   bool      `json:"has_error"`
+	DurationMs float64   `json:"duration_ms"`
+	Started    time.Time `json:"started"`
 }
 
 func (s *Server) handleListTraces(w http.ResponseWriter, r *http.Request) {
