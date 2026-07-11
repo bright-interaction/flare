@@ -15,6 +15,7 @@ import type {
   IssueEvent,
   LogRow,
   LogVolumeBucket,
+  Monitor,
   Overview,
   Project,
   Span,
@@ -165,6 +166,17 @@ export const api = {
   ) => req<AlertRule>('POST', `/projects/${pid}/alert-rules`, rule),
   deleteAlertRule: (pid: string, ruleId: string) =>
     req<void>('DELETE', `/projects/${pid}/alert-rules/${ruleId}`),
+
+  monitors: (pid: string) => req<Monitor[]>('GET', `/projects/${pid}/monitors`),
+  createMonitor: (
+    pid: string,
+    body: { slug: string; name: string; interval_seconds: number; grace_seconds: number }
+  ) => req<Monitor>('POST', `/projects/${pid}/monitors`, body),
+  updateMonitor: (
+    id: string,
+    body: { name: string; interval_seconds: number; grace_seconds: number }
+  ) => req<Monitor>('PATCH', `/monitors/${id}`, body),
+  deleteMonitor: (id: string) => req<void>('DELETE', `/monitors/${id}`),
 
   artifacts: (pid: string) => req<Artifact[]>('GET', `/projects/${pid}/artifacts`),
   uploadSourceMap: (pid: string, release: string, name: string, content: string) =>
