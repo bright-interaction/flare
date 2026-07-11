@@ -97,6 +97,20 @@ func (q *Queries) DeleteProjectLogs(ctx context.Context, arg DeleteProjectLogsPa
 	return err
 }
 
+const deleteProjectMetrics = `-- name: DeleteProjectMetrics :exec
+DELETE FROM metrics WHERE project_id = $1 AND org_id = $2
+`
+
+type DeleteProjectMetricsParams struct {
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+func (q *Queries) DeleteProjectMetrics(ctx context.Context, arg DeleteProjectMetricsParams) error {
+	_, err := q.db.Exec(ctx, deleteProjectMetrics, arg.ProjectID, arg.OrgID)
+	return err
+}
+
 const deleteProjectSpans = `-- name: DeleteProjectSpans :exec
 DELETE FROM spans WHERE project_id = $1 AND org_id = $2
 `
