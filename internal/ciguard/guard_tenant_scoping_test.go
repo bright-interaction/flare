@@ -127,7 +127,7 @@ func readsScopedTable(lowerBody string) bool {
 // the session-review caught). Any read of these must filter project_id too,
 // unless it is a by-id lookup where the id is itself project-unique (marked
 // with `-- ciguard:allow-no-project <reason>`).
-var telemetryTables = []string{"events", "logs", "spans", "issues"}
+var telemetryTables = []string{"events", "logs", "spans", "issues", "metrics"}
 
 func TestTelemetryReadsAreProjectScoped(t *testing.T) {
 	root := repoRoot(t)

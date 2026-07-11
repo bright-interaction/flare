@@ -38,3 +38,6 @@ DELETE FROM logs WHERE project_id = $1 AND org_id = $2;
 
 -- name: DeleteProjectSpans :exec
 DELETE FROM spans WHERE project_id = $1 AND org_id = $2;
+
+-- name: DeleteProjectMetrics :exec
+DELETE FROM metrics WHERE project_id = $1 AND org_id = $2;

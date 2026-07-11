@@ -51,6 +51,9 @@ func ParseOTLPMetrics(body []byte, asJSON bool) ([]MetricRecord, error) {
 
 func normalizeMetric(m *metricspb.Metric) []MetricRecord {
 	name := m.GetName()
+	if name == "" {
+		return nil // drop nameless metrics, matching the native path
+	}
 	var out []MetricRecord
 	switch data := m.GetData().(type) {
 	case *metricspb.Metric_Gauge:
