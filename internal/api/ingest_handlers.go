@@ -215,7 +215,7 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 		}
 		channels := make([]alerts.Channel, 0, len(chans))
 		for _, c := range chans {
-			channels = append(channels, alerts.Channel{Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
+			channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
 		}
 		s.dispatcher.Dispatch(ctx, channels, alerts.Notification{
 			ProjectName: project.Name,

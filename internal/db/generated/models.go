@@ -159,12 +159,15 @@ type LogsDefault struct {
 }
 
 type NotificationChannel struct {
-	ID        string             `json:"id"`
-	OrgID     string             `json:"org_id"`
-	Type      string             `json:"type"`
-	Config    json.RawMessage    `json:"config"`
-	Enabled   bool               `json:"enabled"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            string             `json:"id"`
+	OrgID         string             `json:"org_id"`
+	Type          string             `json:"type"`
+	Config        json.RawMessage    `json:"config"`
+	Enabled       bool               `json:"enabled"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+	LastOkAt      pgtype.Timestamptz `json:"last_ok_at"`
+	LastError     pgtype.Text        `json:"last_error"`
 }
 
 type OidcConfig struct {

@@ -103,6 +103,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Patch("/issues/{id}", s.handleUpdateIssueStatus)
 					r.Post("/issues/{id}/triage", s.handleTriageIssue)
 					r.Post("/channels", s.handleCreateChannel)
+					r.Post("/channels/{id}/test", s.handleTestChannel)
 					r.Delete("/channels/{id}", s.handleDeleteChannel)
 					r.Post("/keys", s.handleCreateAPIKey)
 					r.Delete("/keys/{id}", s.handleDeleteAPIKey)
