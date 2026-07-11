@@ -72,46 +72,18 @@ func (q *Queries) DeleteMonitor(ctx context.Context, arg DeleteMonitorParams) (i
 	return result.RowsAffected(), nil
 }
 
-const getMonitor = `-- name: GetMonitor :one
-SELECT id, org_id, project_id, slug, name, interval_seconds, grace_seconds, last_ping_at, last_status, state, last_alert_at, created_at FROM monitors WHERE id = $1 AND org_id = $2
-`
-
-type GetMonitorParams struct {
-	ID    string `json:"id"`
-	OrgID string `json:"org_id"`
-}
-
-func (q *Queries) GetMonitor(ctx context.Context, arg GetMonitorParams) (*Monitor, error) {
-	row := q.db.QueryRow(ctx, getMonitor, arg.ID, arg.OrgID)
-	var i Monitor
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.ProjectID,
-		&i.Slug,
-		&i.Name,
-		&i.IntervalSeconds,
-		&i.GraceSeconds,
-		&i.LastPingAt,
-		&i.LastStatus,
-		&i.State,
-		&i.LastAlertAt,
-		&i.CreatedAt,
-	)
-	return &i, err
-}
-
 const getMonitorBySlug = `-- name: GetMonitorBySlug :one
-SELECT id, org_id, project_id, slug, name, interval_seconds, grace_seconds, last_ping_at, last_status, state, last_alert_at, created_at FROM monitors WHERE project_id = $1 AND slug = $2
+SELECT id, org_id, project_id, slug, name, interval_seconds, grace_seconds, last_ping_at, last_status, state, last_alert_at, created_at FROM monitors WHERE project_id = $1 AND org_id = $2 AND slug = $3
 `
 
 type GetMonitorBySlugParams struct {
 	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
 	Slug      string `json:"slug"`
 }
 
 func (q *Queries) GetMonitorBySlug(ctx context.Context, arg GetMonitorBySlugParams) (*Monitor, error) {
-	row := q.db.QueryRow(ctx, getMonitorBySlug, arg.ProjectID, arg.Slug)
+	row := q.db.QueryRow(ctx, getMonitorBySlug, arg.ProjectID, arg.OrgID, arg.Slug)
 	var i Monitor
 	err := row.Scan(
 		&i.ID,

@@ -11,10 +11,7 @@ SET last_ping_at = EXCLUDED.last_ping_at,
 RETURNING *;
 
 -- name: GetMonitorBySlug :one
-SELECT * FROM monitors WHERE project_id = $1 AND slug = $2;
-
--- name: GetMonitor :one
-SELECT * FROM monitors WHERE id = $1 AND org_id = $2;
+SELECT * FROM monitors WHERE project_id = $1 AND org_id = $2 AND slug = $3;
 
 -- name: ListMonitorsByProject :many
 SELECT * FROM monitors WHERE project_id = $1 AND org_id = $2 ORDER BY slug;

@@ -23,7 +23,7 @@ import (
 // (directly or via a join the guard can see) unless explicitly allowlisted.
 var scopedTables = []string{
 	"events", "logs", "spans", "issues",
-	"projects", "api_keys", "alert_rules", "notification_channels",
+	"projects", "api_keys", "alert_rules", "notification_channels", "monitors",
 }
 
 func repoRoot(t *testing.T) string {
