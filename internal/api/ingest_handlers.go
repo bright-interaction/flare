@@ -36,19 +36,36 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	payloads, err := ingest.ParseEnvelope(body)
+	items, err := ingest.ParseEnvelope(body)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid envelope")
 		return
 	}
 	var lastID string
-	for _, p := range payloads {
-		eid, err := s.ingestOne(r.Context(), project, p)
-		if err != nil {
-			slog.Warn("envelope event ingest failed", "project_id", project.ID, "error", err)
-			continue
+	for _, item := range items {
+		switch item.Type {
+		case "transaction":
+			// Sentry-wire tracing: a transaction item carries the root span plus
+			// its children. Map to Flare spans and store via the same path OTLP
+			// traces use. Best-effort: a bad transaction never fails the ingest.
+			spans, perr := ingest.ParseSentryTransaction(item.Payload)
+			if perr != nil {
+				slog.Warn("envelope transaction parse failed", "project_id", project.ID, "error", perr)
+				continue
+			}
+			if perr := s.persistSpans(r.Context(), project, spans); perr != nil {
+				slog.Warn("persist transaction spans failed", "project_id", project.ID, "error", perr)
+			}
+		case "event":
+			eid, ierr := s.ingestOne(r.Context(), project, item.Payload)
+			if ierr != nil {
+				slog.Warn("envelope event ingest failed", "project_id", project.ID, "error", ierr)
+				continue
+			}
+			lastID = eid
+		default:
+			// sessions, attachments, client reports: not stored.
 		}
-		lastID = eid
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": lastID})
 }

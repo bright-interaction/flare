@@ -6,14 +6,23 @@ import (
 	"encoding/json"
 )
 
-// ParseEnvelope extracts the "event" item payloads from a Sentry envelope.
-// An envelope is newline-delimited: an envelope header, then alternating item
-// header / item payload lines. We read event items only (the error path);
-// other item types (sessions, attachments) are skipped.
+// EnvelopeItem is one item from a Sentry envelope: its type ("event",
+// "transaction", "session", ...) and raw JSON payload. Callers dispatch on Type
+// (event -> error path, transaction -> spans).
+type EnvelopeItem struct {
+	Type    string
+	Payload []byte
+}
+
+// ParseEnvelope splits a Sentry envelope into its items. An envelope is
+// newline-delimited: an envelope header, then alternating item header / item
+// payload lines. Every JSON item is returned with its Type; the caller decides
+// what to do with each (error path vs spans; sessions/attachments ignored).
 //
-// Limitation: length-prefixed binary items are not supported; event payloads
-// from the official SDKs are single-line JSON, which this handles.
-func ParseEnvelope(body []byte) ([][]byte, error) {
+// Limitation: length-prefixed binary items are not supported; event and
+// transaction payloads from the official SDKs are single-line JSON, which this
+// handles.
+func ParseEnvelope(body []byte) ([]EnvelopeItem, error) {
 	sc := bufio.NewScanner(bytes.NewReader(body))
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
@@ -30,12 +39,9 @@ func ParseEnvelope(body []byte) ([][]byte, error) {
 		return nil, nil
 	}
 
-	var events [][]byte
-	// lines[0] is the envelope header. Items start at index 1.
-	for i := 1; i+1 < len(lines) || i < len(lines); i += 2 {
-		if i >= len(lines) {
-			break
-		}
+	var items []EnvelopeItem
+	// lines[0] is the envelope header. Items are header/payload pairs from index 1.
+	for i := 1; i < len(lines); i += 2 {
 		var hdr struct {
 			Type string `json:"type"`
 		}
@@ -45,10 +51,7 @@ func ParseEnvelope(body []byte) ([][]byte, error) {
 		if i+1 >= len(lines) {
 			break
 		}
-		payload := lines[i+1]
-		if hdr.Type == "event" {
-			events = append(events, payload)
-		}
+		items = append(items, EnvelopeItem{Type: hdr.Type, Payload: lines[i+1]})
 	}
-	return events, nil
+	return items, nil
 }
