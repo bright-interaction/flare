@@ -73,7 +73,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	// Prior state drives transition-only failure alerting (see below).
 	priorState := ""
 	if prior, err := s.q.GetMonitorBySlug(r.Context(), generated.GetMonitorBySlugParams{
-		ProjectID: project.ID, Slug: slug,
+		ProjectID: project.ID, OrgID: project.OrgID, Slug: slug,
 	}); err == nil {
 		priorState = prior.State
 	}

@@ -45,18 +45,16 @@ func (s *Server) watchdogTick(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// Cache channels per org so N rules/monitors in one org do one channel load.
+	chanCache := map[string][]alerts.Channel{}
+	now := time.Now()
+
+	// Anomaly/silence rules. A list error is logged but not fatal to the tick:
+	// monitor checking below is independent and must still run.
 	rules, err := s.q.ListWatchdogRules(ctx)
 	if err != nil {
 		slog.Error("watchdog: list rules failed", "error", err)
-		return
 	}
-	if len(rules) == 0 {
-		return
-	}
-
-	// Cache channels per org so N rules in one org do one channel load.
-	chanCache := map[string][]alerts.Channel{}
-	now := time.Now()
 
 	for _, rule := range rules {
 		reason := s.watchdogReason(ctx, rule, now)
