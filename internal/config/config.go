@@ -111,6 +111,13 @@ func Load() (Config, error) {
 		if c.CSRFKey == "" {
 			missing = append(missing, "CSRF_KEY")
 		}
+		// FLARE_SECRET_KEY encrypts integration secrets (BYOAI key, OIDC client
+		// secret, GitHub token, webhook URLs) at rest. Without it those land in
+		// the DB as plaintext, so a DB dump or backup leak exposes live
+		// third-party credentials. Fail closed in production, never silently.
+		if c.SecretKey == "" {
+			missing = append(missing, "FLARE_SECRET_KEY")
+		}
 		if len(missing) > 0 {
 			return c, fmt.Errorf("production requires: %s", strings.Join(missing, ", "))
 		}
