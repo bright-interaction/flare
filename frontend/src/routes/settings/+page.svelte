@@ -198,7 +198,7 @@
         format: aiFormat,
         enabled: aiEnabled,
         auto_triage: aiAutoTriage,
-        triage_daily_budget: aiBudget
+        triage_daily_budget: Number.isFinite(aiBudget) ? aiBudget : 50
       });
       aiKey = '';
     } catch (err) {

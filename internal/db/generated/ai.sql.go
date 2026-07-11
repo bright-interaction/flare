@@ -23,7 +23,6 @@ type ClaimAITriageBudgetParams struct {
 	Budget int32  `json:"budget"`
 }
 
-// ciguard:allow-no-project per-org daily AI usage counter keyed by org_id; the claim below filters org_id
 // Atomically claim one triage against the org's daily budget. Returns the new
 // count when under budget; no row (pgx.ErrNoRows) when the budget is reached.
 func (q *Queries) ClaimAITriageBudget(ctx context.Context, arg ClaimAITriageBudgetParams) (int32, error) {
