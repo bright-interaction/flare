@@ -57,12 +57,30 @@ type sentryEvent struct {
 		Message   string `json:"message"`
 	} `json:"logentry"`
 	Exception *exceptionField `json:"exception"`
-	Contexts  *struct {
+	// Contexts is kept raw and parsed leniently: a client that sends contexts
+	// (or contexts.trace) as a non-object must not fail the whole event. Typing
+	// it as an object here would reintroduce the drop-on-unexpected-shape bug
+	// the exception decoder above exists to avoid.
+	Contexts json.RawMessage `json:"contexts"`
+}
+
+// parseTraceContext pulls trace_id/span_id from the event's contexts.trace,
+// tolerating any shape mismatch by returning empty ids rather than erroring, so
+// ingest never drops an event over an unexpected contexts payload.
+func parseTraceContext(raw json.RawMessage) (traceID, spanID string) {
+	if len(raw) == 0 {
+		return "", ""
+	}
+	var ctx struct {
 		Trace *struct {
 			TraceID string `json:"trace_id"`
 			SpanID  string `json:"span_id"`
 		} `json:"trace"`
-	} `json:"contexts"`
+	}
+	if json.Unmarshal(raw, &ctx) != nil || ctx.Trace == nil {
+		return "", ""
+	}
+	return ctx.Trace.TraceID, ctx.Trace.SpanID
 }
 
 type exceptionValue struct {
@@ -123,10 +141,7 @@ func ParseEvent(raw []byte) (NormalizedEvent, error) {
 		}
 	}
 
-	if se.Contexts != nil && se.Contexts.Trace != nil {
-		ev.TraceID = se.Contexts.Trace.TraceID
-		ev.SpanID = se.Contexts.Trace.SpanID
-	}
+	ev.TraceID, ev.SpanID = parseTraceContext(se.Contexts)
 
 	ev.Title = title(ev)
 	if ev.Culprit == "" {
