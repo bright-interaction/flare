@@ -153,6 +153,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "delete project spans", err)
 		return
 	}
+	if err := qtx.DeleteProjectMetrics(r.Context(), generated.DeleteProjectMetricsParams{ProjectID: pid, OrgID: org}); err != nil {
+		slogError(w, "delete project metrics", err)
+		return
+	}
 	rows, err := qtx.DeleteProject(r.Context(), generated.DeleteProjectParams{ID: pid, OrgID: org})
 	if err != nil {
 		slogError(w, "delete project", err)
