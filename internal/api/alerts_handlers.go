@@ -7,15 +7,34 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
 )
 
 type channelResponse struct {
-	ID      string          `json:"id"`
-	Type    string          `json:"type"`
-	Config  json.RawMessage `json:"config"`
-	Enabled bool            `json:"enabled"`
+	ID            string          `json:"id"`
+	Type          string          `json:"type"`
+	Config        json.RawMessage `json:"config"`
+	Enabled       bool            `json:"enabled"`
+	LastAttemptAt *string         `json:"last_attempt_at"`
+	LastOkAt      *string         `json:"last_ok_at"`
+	LastError     string          `json:"last_error"`
+}
+
+// toChannelResponse maps a stored channel row to the API shape, redacting the
+// secret and surfacing the delivery-health columns so the UI can show whether
+// the channel last succeeded or failed (and why).
+func (s *Server) toChannelResponse(c *generated.NotificationChannel) channelResponse {
+	return channelResponse{
+		ID:            c.ID,
+		Type:          c.Type,
+		Config:        s.redactChannelConfig(c.Type, c.Config),
+		Enabled:       c.Enabled,
+		LastAttemptAt: tsPtr(c.LastAttemptAt),
+		LastOkAt:      tsPtr(c.LastOkAt),
+		LastError:     textStr(c.LastError),
+	}
 }
 
 // channelSecretField returns the config key holding a bearer secret (a Slack
@@ -143,7 +162,7 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "create channel", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, channelResponse{ID: ch.ID, Type: ch.Type, Config: s.redactChannelConfig(ch.Type, ch.Config), Enabled: ch.Enabled})
+	writeJSON(w, http.StatusCreated, s.toChannelResponse(ch))
 }
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
@@ -154,9 +173,38 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]channelResponse, 0, len(chans))
 	for _, c := range chans {
-		out = append(out, channelResponse{ID: c.ID, Type: c.Type, Config: s.redactChannelConfig(c.Type, c.Config), Enabled: c.Enabled})
+		out = append(out, s.toChannelResponse(c))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleTestChannel sends a synthetic notification to one channel and returns
+// the real delivery outcome, so an operator can prove a channel actually
+// reaches a human before relying on it. The attempt is recorded like any real
+// delivery, so a test also refreshes the channel's health status.
+func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
+	ch, err := s.q.GetNotificationChannel(r.Context(), generated.GetNotificationChannelParams{
+		ID: chi.URLParam(r, "id"), OrgID: orgIDFrom(r.Context()),
+	})
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	n := alerts.Notification{
+		ProjectName: "Flare",
+		Title:       "Test notification from Flare",
+		Level:       "info",
+		Reason:      "Test",
+		EventCount:  1,
+		URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/settings",
+	}
+	if derr := s.dispatcher.DispatchOne(r.Context(), alerts.Channel{
+		ID: ch.ID, OrgID: ch.OrgID, Type: ch.Type, Config: s.decryptChannelConfig(ch.Type, ch.Config),
+	}, n); derr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": derr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 type alertRuleResponse struct {

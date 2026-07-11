@@ -8,7 +8,31 @@ package generated
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const countEnabledAlertRulesByOrg = `-- name: CountEnabledAlertRulesByOrg :one
+SELECT count(*) FROM alert_rules WHERE org_id = $1 AND enabled = true
+`
+
+func (q *Queries) CountEnabledAlertRulesByOrg(ctx context.Context, orgID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countEnabledAlertRulesByOrg, orgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countEnabledNotificationChannelsByOrg = `-- name: CountEnabledNotificationChannelsByOrg :one
+SELECT count(*) FROM notification_channels WHERE org_id = $1 AND enabled = true
+`
+
+func (q *Queries) CountEnabledNotificationChannelsByOrg(ctx context.Context, orgID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countEnabledNotificationChannelsByOrg, orgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const createAlertRule = `-- name: CreateAlertRule :one
 INSERT INTO alert_rules (id, project_id, org_id, name, type, threshold, window_minutes, enabled)
@@ -57,7 +81,7 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 const createNotificationChannel = `-- name: CreateNotificationChannel :one
 INSERT INTO notification_channels (id, org_id, type, config, enabled)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, org_id, type, config, enabled, created_at
+RETURNING id, org_id, type, config, enabled, created_at, last_attempt_at, last_ok_at, last_error
 `
 
 type CreateNotificationChannelParams struct {
@@ -84,6 +108,9 @@ func (q *Queries) CreateNotificationChannel(ctx context.Context, arg CreateNotif
 		&i.Config,
 		&i.Enabled,
 		&i.CreatedAt,
+		&i.LastAttemptAt,
+		&i.LastOkAt,
+		&i.LastError,
 	)
 	return &i, err
 }
@@ -121,6 +148,32 @@ func (q *Queries) DeleteNotificationChannel(ctx context.Context, arg DeleteNotif
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getNotificationChannel = `-- name: GetNotificationChannel :one
+SELECT id, org_id, type, config, enabled, created_at, last_attempt_at, last_ok_at, last_error FROM notification_channels WHERE id = $1 AND org_id = $2
+`
+
+type GetNotificationChannelParams struct {
+	ID    string `json:"id"`
+	OrgID string `json:"org_id"`
+}
+
+func (q *Queries) GetNotificationChannel(ctx context.Context, arg GetNotificationChannelParams) (*NotificationChannel, error) {
+	row := q.db.QueryRow(ctx, getNotificationChannel, arg.ID, arg.OrgID)
+	var i NotificationChannel
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Type,
+		&i.Config,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.LastAttemptAt,
+		&i.LastOkAt,
+		&i.LastError,
+	)
+	return &i, err
 }
 
 const listAlertRulesByProject = `-- name: ListAlertRulesByProject :many
@@ -204,7 +257,7 @@ func (q *Queries) ListEnabledAlertRulesByProject(ctx context.Context, arg ListEn
 }
 
 const listEnabledNotificationChannelsByOrg = `-- name: ListEnabledNotificationChannelsByOrg :many
-SELECT id, org_id, type, config, enabled, created_at FROM notification_channels WHERE org_id = $1 AND enabled = true
+SELECT id, org_id, type, config, enabled, created_at, last_attempt_at, last_ok_at, last_error FROM notification_channels WHERE org_id = $1 AND enabled = true
 `
 
 func (q *Queries) ListEnabledNotificationChannelsByOrg(ctx context.Context, orgID string) ([]*NotificationChannel, error) {
@@ -223,6 +276,9 @@ func (q *Queries) ListEnabledNotificationChannelsByOrg(ctx context.Context, orgI
 			&i.Config,
 			&i.Enabled,
 			&i.CreatedAt,
+			&i.LastAttemptAt,
+			&i.LastOkAt,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -235,7 +291,7 @@ func (q *Queries) ListEnabledNotificationChannelsByOrg(ctx context.Context, orgI
 }
 
 const listNotificationChannelsByOrg = `-- name: ListNotificationChannelsByOrg :many
-SELECT id, org_id, type, config, enabled, created_at FROM notification_channels WHERE org_id = $1 ORDER BY created_at DESC
+SELECT id, org_id, type, config, enabled, created_at, last_attempt_at, last_ok_at, last_error FROM notification_channels WHERE org_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListNotificationChannelsByOrg(ctx context.Context, orgID string) ([]*NotificationChannel, error) {
@@ -254,6 +310,9 @@ func (q *Queries) ListNotificationChannelsByOrg(ctx context.Context, orgID strin
 			&i.Config,
 			&i.Enabled,
 			&i.CreatedAt,
+			&i.LastAttemptAt,
+			&i.LastOkAt,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -263,4 +322,31 @@ func (q *Queries) ListNotificationChannelsByOrg(ctx context.Context, orgID strin
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordChannelDelivery = `-- name: RecordChannelDelivery :exec
+UPDATE notification_channels
+SET last_attempt_at = $1,
+    last_ok_at = CASE WHEN $2::boolean THEN $1 ELSE last_ok_at END,
+    last_error = CASE WHEN $2::boolean THEN NULL ELSE $3 END
+WHERE id = $4 AND org_id = $5
+`
+
+type RecordChannelDeliveryParams struct {
+	AttemptedAt pgtype.Timestamptz `json:"attempted_at"`
+	Ok          bool               `json:"ok"`
+	ErrorMsg    pgtype.Text        `json:"error_msg"`
+	ID          string             `json:"id"`
+	OrgID       string             `json:"org_id"`
+}
+
+func (q *Queries) RecordChannelDelivery(ctx context.Context, arg RecordChannelDeliveryParams) error {
+	_, err := q.db.Exec(ctx, recordChannelDelivery,
+		arg.AttemptedAt,
+		arg.Ok,
+		arg.ErrorMsg,
+		arg.ID,
+		arg.OrgID,
+	)
+	return err
 }

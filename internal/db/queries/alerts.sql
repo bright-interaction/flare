@@ -25,3 +25,19 @@ DELETE FROM alert_rules WHERE id = $1 AND project_id = $2 AND org_id = $3;
 
 -- name: DeleteNotificationChannel :execrows
 DELETE FROM notification_channels WHERE id = $1 AND org_id = $2;
+
+-- name: GetNotificationChannel :one
+SELECT * FROM notification_channels WHERE id = $1 AND org_id = $2;
+
+-- name: CountEnabledNotificationChannelsByOrg :one
+SELECT count(*) FROM notification_channels WHERE org_id = $1 AND enabled = true;
+
+-- name: CountEnabledAlertRulesByOrg :one
+SELECT count(*) FROM alert_rules WHERE org_id = $1 AND enabled = true;
+
+-- name: RecordChannelDelivery :exec
+UPDATE notification_channels
+SET last_attempt_at = @attempted_at,
+    last_ok_at = CASE WHEN @ok::boolean THEN @attempted_at ELSE last_ok_at END,
+    last_error = CASE WHEN @ok::boolean THEN NULL ELSE @error_msg END
+WHERE id = @id AND org_id = @org_id;

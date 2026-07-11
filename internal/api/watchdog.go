@@ -108,7 +108,7 @@ func (s *Server) orgChannels(ctx context.Context, org string, cache map[string][
 	}
 	channels := make([]alerts.Channel, 0, len(chans))
 	for _, c := range chans {
-		channels = append(channels, alerts.Channel{Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
+		channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
 	}
 	cache[org] = channels
 	return channels

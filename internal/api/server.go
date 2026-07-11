@@ -3,12 +3,15 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/alexedwards/scs/v2"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bright-interaction/flare/internal/ai"
@@ -68,7 +71,7 @@ type Server struct {
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
 	mailer := email.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom, cfg.SMTPFromName, cfg.SMTPTLS)
-	return &Server{
+	srv := &Server{
 		q:            generated.New(pool),
 		pool:         pool,
 		store:        pgstore.New(pool),
@@ -89,6 +92,34 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
 		secGlobalLimiter: ratelimit.New(60, time.Minute),   // <=60 per kind / min
+	}
+	// Persist each delivery outcome so a silently-failing channel becomes
+	// visible (last_ok_at / last_error) instead of vanishing into a log line.
+	srv.dispatcher.Recorder = srv.recordChannelDelivery
+	return srv
+}
+
+// recordChannelDelivery persists the outcome of one notification delivery
+// attempt. Best-effort: a failed write must never affect alert dispatch. Runs
+// in the dispatch goroutine (ingest/watchdog) or the test-send request.
+func (s *Server) recordChannelDelivery(ctx context.Context, orgID, channelID string, derr error) {
+	errMsg := pgtype.Text{}
+	ok := derr == nil
+	if !ok {
+		msg := derr.Error()
+		if len(msg) > 500 {
+			msg = msg[:500]
+		}
+		errMsg = pgtype.Text{String: msg, Valid: true}
+	}
+	if err := s.q.RecordChannelDelivery(ctx, generated.RecordChannelDeliveryParams{
+		AttemptedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		Ok:          ok,
+		ErrorMsg:    errMsg,
+		ID:          channelID,
+		OrgID:       orgID,
+	}); err != nil {
+		slog.Warn("record channel delivery", "channel_id", channelID, "error", err)
 	}
 }
 

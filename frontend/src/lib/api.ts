@@ -155,6 +155,7 @@ export const api = {
   channels: () => req<Channel[]>('GET', '/channels'),
   createChannel: (type: string, config: Record<string, unknown>) =>
     req<Channel>('POST', '/channels', { type, config }),
+  testChannel: (id: string) => req<{ ok: boolean; error?: string }>('POST', `/channels/${id}/test`),
   deleteChannel: (id: string) => req<void>('DELETE', `/channels/${id}`),
 
   alertRules: (pid: string) => req<AlertRule[]>('GET', `/projects/${pid}/alert-rules`),

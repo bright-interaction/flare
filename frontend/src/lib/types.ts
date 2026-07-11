@@ -172,6 +172,9 @@ export interface Channel {
   type: string;
   config: Record<string, unknown>;
   enabled: boolean;
+  last_attempt_at: string | null;
+  last_ok_at: string | null;
+  last_error: string;
 }
 
 export interface AlertRule {
@@ -214,4 +217,5 @@ export interface Overview {
   volume: OverviewHourBucket[];
   top_issues: OverviewIssue[];
   projects: OverviewProject[];
+  alerting_blind: boolean;
 }
