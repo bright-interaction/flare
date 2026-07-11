@@ -86,8 +86,15 @@ export const api = {
     req<{ github_url: string }>('POST', `/issues/${issueId}/github`),
 
   aiConfig: () => req<AiConfig>('GET', '/integrations/ai'),
-  setAiConfig: (cfg: { base_url: string; api_key: string; model: string; format: string; enabled: boolean }) =>
-    req<AiConfig>('PUT', '/integrations/ai', cfg),
+  setAiConfig: (cfg: {
+    base_url: string;
+    api_key: string;
+    model: string;
+    format: string;
+    enabled: boolean;
+    auto_triage: boolean;
+    triage_daily_budget: number;
+  }) => req<AiConfig>('PUT', '/integrations/ai', cfg),
   deleteAiConfig: () => req<void>('DELETE', '/integrations/ai'),
   triageIssue: (issueId: string, refresh = false) =>
     req<{ triage: string; cached: boolean }>('POST', `/issues/${issueId}/triage${refresh ? '?refresh=true' : ''}`),

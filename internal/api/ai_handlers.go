@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -17,35 +19,50 @@ import (
 )
 
 type aiConfigResponse struct {
-	Enabled bool   `json:"enabled"`
-	BaseURL string `json:"base_url"`
-	Model   string `json:"model"`
-	Format  string `json:"format"`
+	Enabled           bool   `json:"enabled"`
+	BaseURL           string `json:"base_url"`
+	Model             string `json:"model"`
+	Format            string `json:"format"`
+	AutoTriage        bool   `json:"auto_triage"`
+	TriageDailyBudget int32  `json:"triage_daily_budget"`
 }
+
+// defaultTriageDailyBudget bounds auto-triage BYOAI spend for an org that never
+// set an explicit budget.
+const defaultTriageDailyBudget = 50
 
 func (s *Server) handleGetAIConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.q.GetAIConfig(r.Context(), orgIDFrom(r.Context()))
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeJSON(w, http.StatusOK, aiConfigResponse{Format: "openai"})
+		writeJSON(w, http.StatusOK, aiConfigResponse{Format: "openai", TriageDailyBudget: defaultTriageDailyBudget})
 		return
 	}
 	if err != nil {
 		slogError(w, "get ai config", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, aiConfigResponse{Enabled: cfg.Enabled, BaseURL: cfg.BaseUrl, Model: cfg.Model, Format: cfg.Format})
+	writeJSON(w, http.StatusOK, aiConfigResponse{
+		Enabled: cfg.Enabled, BaseURL: cfg.BaseUrl, Model: cfg.Model, Format: cfg.Format,
+		AutoTriage: cfg.AutoTriage, TriageDailyBudget: cfg.TriageDailyBudget,
+	})
 }
 
 func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Model   string `json:"model"`
-		Format  string `json:"format"`
-		Enabled bool   `json:"enabled"`
+		BaseURL           string `json:"base_url"`
+		APIKey            string `json:"api_key"`
+		Model             string `json:"model"`
+		Format            string `json:"format"`
+		Enabled           bool   `json:"enabled"`
+		AutoTriage        bool   `json:"auto_triage"`
+		TriageDailyBudget int32  `json:"triage_daily_budget"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.TriageDailyBudget < 0 || req.TriageDailyBudget > 10000 {
+		writeErr(w, http.StatusBadRequest, "triage_daily_budget must be between 0 and 10000")
 		return
 	}
 	req.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
@@ -74,6 +91,7 @@ func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 	if err := s.q.UpsertAIConfig(r.Context(), generated.UpsertAIConfigParams{
 		OrgID: orgIDFrom(r.Context()), BaseUrl: req.BaseURL, ApiKey: s.secrets.Encrypt(req.APIKey),
 		Model: req.Model, Format: req.Format, Enabled: req.Enabled,
+		AutoTriage: req.AutoTriage, TriageDailyBudget: req.TriageDailyBudget,
 	}); err != nil {
 		slogError(w, "save ai config", err)
 		return
@@ -162,6 +180,36 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 	}
 	s.audit(ctx, "ai.triage", issue.Title)
 	return triage, false, nil
+}
+
+// maybeAutoTriage runs AI triage on a newly-seen issue in the background when
+// the org has auto-triage enabled and is under its daily budget. Fire-and-forget
+// with a detached context: it must never block or fail ingest. The budget is
+// claimed atomically BEFORE the model call, so a burst of new fingerprints
+// cannot run more than triage_daily_budget BYOAI completions in a day.
+func (s *Server) maybeAutoTriage(org, issueID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		cfg, err := s.q.GetAIConfig(ctx, org)
+		if err != nil || !cfg.Enabled || !cfg.AutoTriage || cfg.TriageDailyBudget <= 0 {
+			return
+		}
+		if _, err := s.q.ClaimAITriageBudget(ctx, generated.ClaimAITriageBudgetParams{
+			OrgID: org, Budget: cfg.TriageDailyBudget,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				slog.Info("auto-triage skipped: daily budget reached", "org", org, "budget", cfg.TriageDailyBudget)
+			} else {
+				slog.Warn("auto-triage budget claim failed", "org", org, "error", err)
+			}
+			return
+		}
+		if _, _, err := s.triageIssue(ctx, org, issueID, false); err != nil {
+			slog.Warn("auto-triage failed", "issue", issueID, "error", err)
+		}
+	}()
 }
 
 type triageFrame struct {

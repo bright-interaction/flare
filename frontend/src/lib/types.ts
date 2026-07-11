@@ -36,6 +36,8 @@ export interface AiConfig {
   base_url: string;
   model: string;
   format: string;
+  auto_triage: boolean;
+  triage_daily_budget: number;
 }
 
 export interface Release {

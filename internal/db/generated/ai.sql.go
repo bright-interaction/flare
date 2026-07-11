@@ -9,6 +9,30 @@ import (
 	"context"
 )
 
+const claimAITriageBudget = `-- name: ClaimAITriageBudget :one
+INSERT INTO ai_triage_usage (org_id, day, triage_count)
+VALUES ($1, CURRENT_DATE, 1)
+ON CONFLICT (org_id, day) DO UPDATE
+  SET triage_count = ai_triage_usage.triage_count + 1
+  WHERE ai_triage_usage.triage_count < $2
+RETURNING triage_count
+`
+
+type ClaimAITriageBudgetParams struct {
+	OrgID  string `json:"org_id"`
+	Budget int32  `json:"budget"`
+}
+
+// ciguard:allow-no-project per-org daily AI usage counter keyed by org_id; the claim below filters org_id
+// Atomically claim one triage against the org's daily budget. Returns the new
+// count when under budget; no row (pgx.ErrNoRows) when the budget is reached.
+func (q *Queries) ClaimAITriageBudget(ctx context.Context, arg ClaimAITriageBudgetParams) (int32, error) {
+	row := q.db.QueryRow(ctx, claimAITriageBudget, arg.OrgID, arg.Budget)
+	var triage_count int32
+	err := row.Scan(&triage_count)
+	return triage_count, err
+}
+
 const deleteAIConfig = `-- name: DeleteAIConfig :exec
 DELETE FROM ai_config WHERE org_id = $1
 `
@@ -19,7 +43,7 @@ func (q *Queries) DeleteAIConfig(ctx context.Context, orgID string) error {
 }
 
 const getAIConfig = `-- name: GetAIConfig :one
-SELECT org_id, base_url, api_key, model, format, enabled, created_at FROM ai_config WHERE org_id = $1
+SELECT org_id, base_url, api_key, model, format, enabled, created_at, auto_triage, triage_daily_budget FROM ai_config WHERE org_id = $1
 `
 
 func (q *Queries) GetAIConfig(ctx context.Context, orgID string) (*AiConfig, error) {
@@ -33,6 +57,8 @@ func (q *Queries) GetAIConfig(ctx context.Context, orgID string) (*AiConfig, err
 		&i.Format,
 		&i.Enabled,
 		&i.CreatedAt,
+		&i.AutoTriage,
+		&i.TriageDailyBudget,
 	)
 	return &i, err
 }
@@ -54,20 +80,23 @@ func (q *Queries) SetIssueTriage(ctx context.Context, arg SetIssueTriageParams) 
 }
 
 const upsertAIConfig = `-- name: UpsertAIConfig :exec
-INSERT INTO ai_config (org_id, base_url, api_key, model, format, enabled)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO ai_config (org_id, base_url, api_key, model, format, enabled, auto_triage, triage_daily_budget)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (org_id) DO UPDATE
   SET base_url = EXCLUDED.base_url, api_key = EXCLUDED.api_key,
-      model = EXCLUDED.model, format = EXCLUDED.format, enabled = EXCLUDED.enabled
+      model = EXCLUDED.model, format = EXCLUDED.format, enabled = EXCLUDED.enabled,
+      auto_triage = EXCLUDED.auto_triage, triage_daily_budget = EXCLUDED.triage_daily_budget
 `
 
 type UpsertAIConfigParams struct {
-	OrgID   string `json:"org_id"`
-	BaseUrl string `json:"base_url"`
-	ApiKey  string `json:"api_key"`
-	Model   string `json:"model"`
-	Format  string `json:"format"`
-	Enabled bool   `json:"enabled"`
+	OrgID             string `json:"org_id"`
+	BaseUrl           string `json:"base_url"`
+	ApiKey            string `json:"api_key"`
+	Model             string `json:"model"`
+	Format            string `json:"format"`
+	Enabled           bool   `json:"enabled"`
+	AutoTriage        bool   `json:"auto_triage"`
+	TriageDailyBudget int32  `json:"triage_daily_budget"`
 }
 
 func (q *Queries) UpsertAIConfig(ctx context.Context, arg UpsertAIConfigParams) error {
@@ -78,6 +107,8 @@ func (q *Queries) UpsertAIConfig(ctx context.Context, arg UpsertAIConfigParams) 
 		arg.Model,
 		arg.Format,
 		arg.Enabled,
+		arg.AutoTriage,
+		arg.TriageDailyBudget,
 	)
 	return err
 }

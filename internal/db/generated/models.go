@@ -11,13 +11,21 @@ import (
 )
 
 type AiConfig struct {
-	OrgID     string             `json:"org_id"`
-	BaseUrl   string             `json:"base_url"`
-	ApiKey    string             `json:"api_key"`
-	Model     string             `json:"model"`
-	Format    string             `json:"format"`
-	Enabled   bool               `json:"enabled"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	OrgID             string             `json:"org_id"`
+	BaseUrl           string             `json:"base_url"`
+	ApiKey            string             `json:"api_key"`
+	Model             string             `json:"model"`
+	Format            string             `json:"format"`
+	Enabled           bool               `json:"enabled"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	AutoTriage        bool               `json:"auto_triage"`
+	TriageDailyBudget int32              `json:"triage_daily_budget"`
+}
+
+type AiTriageUsage struct {
+	OrgID       string      `json:"org_id"`
+	Day         pgtype.Date `json:"day"`
+	TriageCount int32       `json:"triage_count"`
 }
 
 type AlertRule struct {
