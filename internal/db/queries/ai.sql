@@ -6,7 +6,6 @@ ON CONFLICT (org_id) DO UPDATE
       model = EXCLUDED.model, format = EXCLUDED.format, enabled = EXCLUDED.enabled,
       auto_triage = EXCLUDED.auto_triage, triage_daily_budget = EXCLUDED.triage_daily_budget;
 
--- ciguard:allow-no-project per-org daily AI usage counter keyed by org_id; the claim below filters org_id
 -- name: ClaimAITriageBudget :one
 -- Atomically claim one triage against the org's daily budget. Returns the new
 -- count when under budget; no row (pgx.ErrNoRows) when the budget is reached.
