@@ -183,6 +183,10 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 // reaches a human before relying on it. The attempt is recorded like any real
 // delivery, so a test also refreshes the channel's health status.
 func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
+	if !s.testLimiter.Allow("test:" + orgIDFrom(r.Context())) {
+		writeErr(w, http.StatusTooManyRequests, "too many test sends, wait a moment")
+		return
+	}
 	ch, err := s.q.GetNotificationChannel(r.Context(), generated.GetNotificationChannelParams{
 		ID: chi.URLParam(r, "id"), OrgID: orgIDFrom(r.Context()),
 	})

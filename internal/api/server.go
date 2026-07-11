@@ -56,6 +56,9 @@ type Server struct {
 	// resetLimiter caps password-reset requests per email+IP so /forgot-password
 	// cannot be used for account enumeration or reset-email bombing.
 	resetLimiter *ratelimit.Limiter
+	// testLimiter caps per-org "send test notification" calls so the test route
+	// cannot be looped to spam a configured recipient or probe public hosts.
+	testLimiter *ratelimit.Limiter
 
 	// Security-event recording: Flare's own security signals (ingest-auth
 	// rejections, login lockouts) become grouped issues in a per-org
@@ -88,6 +91,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
 		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
 		resetLimiter:  ratelimit.New(5, 15*time.Minute), // <=5 reset requests per (email, ip) / 15m
+		testLimiter:   ratelimit.New(10, time.Minute),   // <=10 test-sends per org / min
 
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
@@ -103,6 +107,12 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 // attempt. Best-effort: a failed write must never affect alert dispatch. Runs
 // in the dispatch goroutine (ingest/watchdog) or the test-send request.
 func (s *Server) recordChannelDelivery(ctx context.Context, orgID, channelID string, derr error) {
+	// Detach from the dispatch context, which a prior slow/hung channel in the
+	// same org may already have cancelled, with a fresh short deadline. Without
+	// this, the exact outcome the feature exists to record - a delivery timeout
+	// - could itself fail to persist ("context canceled").
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	errMsg := pgtype.Text{}
 	ok := derr == nil
 	if !ok {
