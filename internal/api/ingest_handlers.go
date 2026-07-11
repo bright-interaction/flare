@@ -151,6 +151,13 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 	}
 
 	s.evaluateAlerts(project, issue, issue.IsNew, reopened)
+
+	// A newly-seen issue gets AI triage automatically (background, budget-gated),
+	// so its root cause and fix are already waiting when a human or the AI
+	// operator opens it - not a manual step after the fact.
+	if issue.IsNew {
+		s.maybeAutoTriage(project.OrgID, issue.ID)
+	}
 	return eventID, nil
 }
 

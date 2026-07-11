@@ -38,6 +38,8 @@
   let aiModel = $state('');
   let aiFormat = $state('openai');
   let aiEnabled = $state(false);
+  let aiAutoTriage = $state(false);
+  let aiBudget = $state(50);
   let aiBusy = $state(false);
 
   let oidc = $state<OidcConfig | null>(null);
@@ -91,6 +93,8 @@
         aiModel = ai.model;
         aiFormat = ai.format || 'openai';
         aiEnabled = ai.enabled;
+        aiAutoTriage = ai.auto_triage;
+        aiBudget = ai.triage_daily_budget;
       }
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load settings';
@@ -192,7 +196,9 @@
         api_key: aiKey.trim(),
         model: aiModel.trim(),
         format: aiFormat,
-        enabled: aiEnabled
+        enabled: aiEnabled,
+        auto_triage: aiAutoTriage,
+        triage_daily_budget: aiBudget
       });
       aiKey = '';
     } catch (err) {
@@ -209,6 +215,8 @@
       ai = await api.aiConfig();
       aiBase = '';
       aiModel = '';
+      aiAutoTriage = false;
+      aiBudget = ai.triage_daily_budget;
       aiEnabled = false;
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to disconnect AI';
@@ -691,6 +699,21 @@
       <input type="checkbox" bind:checked={aiEnabled} class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 accent-amber-400" />
       Enable AI triage on issues
     </label>
+    <label class="flex items-center gap-2 text-sm text-zinc-300">
+      <input type="checkbox" bind:checked={aiAutoTriage} class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 accent-amber-400" />
+      Auto-triage every new issue on ingest
+    </label>
+    <div class="flex items-center gap-2 text-sm text-zinc-400">
+      <span>Daily triage budget</span>
+      <input
+        type="number"
+        min="0"
+        max="10000"
+        bind:value={aiBudget}
+        class="w-24 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+      />
+      <span class="text-xs text-zinc-600">completions per day, caps BYOAI spend</span>
+    </div>
     <div class="flex items-center gap-3">
       <button type="submit" disabled={aiBusy} class="rounded-md bg-amber-400 px-3.5 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-amber-300 active:translate-y-px disabled:opacity-60">
         {aiBusy ? 'Saving...' : 'Save AI'}
