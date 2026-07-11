@@ -103,6 +103,21 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 	return srv
 }
 
+// dispatchToOrg loads an org's enabled notification channels and dispatches one
+// notification, no-op when the org has none. Shared by the ad-hoc alert paths
+// (monitor check-in failures) that are not tied to a project alert rule.
+func (s *Server) dispatchToOrg(ctx context.Context, org string, n alerts.Notification) {
+	chans, err := s.q.ListEnabledNotificationChannelsByOrg(ctx, org)
+	if err != nil || len(chans) == 0 {
+		return
+	}
+	channels := make([]alerts.Channel, 0, len(chans))
+	for _, c := range chans {
+		channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
+	}
+	s.dispatcher.Dispatch(ctx, channels, n)
+}
+
 // recordChannelDelivery persists the outcome of one notification delivery
 // attempt. Best-effort: a failed write must never affect alert dispatch. Runs
 // in the dispatch goroutine (ingest/watchdog) or the test-send request.

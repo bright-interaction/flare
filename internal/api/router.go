@@ -43,6 +43,10 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 			r.Post("/{projectID}/store", s.handleStore)
 			r.Post("/{projectID}/events", s.handleStore)
 			r.Post("/{projectID}/logs", s.handleNativeLogs)
+			// Cron/job check-in: DSN-authed like ingest. GET too, so a bare
+			// `curl` from a cron works; ?status=error marks the run failed.
+			r.Post("/{projectID}/checkins/{slug}", s.handleCheckin)
+			r.Get("/{projectID}/checkins/{slug}", s.handleCheckin)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -79,6 +83,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/projects/{id}/analytics/log-volume", s.handleLogVolume)
 				r.Get("/projects/{id}/analytics/span-latency", s.handleSpanLatency)
 				r.Get("/projects/{id}/alert-rules", s.handleListAlertRules)
+				r.Get("/projects/{id}/monitors", s.handleListMonitors)
 				r.Get("/projects/{id}/artifacts", s.handleListSourceMaps)
 				r.Get("/projects/{id}/releases", s.handleListReleases)
 				r.Get("/issues/{id}", s.handleGetIssue)
@@ -97,6 +102,9 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Delete("/projects/{id}", s.handleDeleteProject)
 					r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
 					r.Delete("/projects/{id}/alert-rules/{ruleID}", s.handleDeleteAlertRule)
+					r.Post("/projects/{id}/monitors", s.handleCreateMonitor)
+					r.Patch("/monitors/{id}", s.handleUpdateMonitor)
+					r.Delete("/monitors/{id}", s.handleDeleteMonitor)
 					r.Post("/projects/{id}/artifacts", s.handleUploadSourceMap)
 					r.Delete("/projects/{id}/artifacts/{artifactID}", s.handleDeleteSourceMap)
 					r.Post("/projects/{id}/releases", s.handleCreateRelease)

@@ -5,7 +5,7 @@
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
   import { relativeTime, levelColor } from '$lib/format';
-  import type { AlertRule, Artifact, Issue, Project } from '$lib/types';
+  import type { AlertRule, Artifact, Issue, Monitor, Project } from '$lib/types';
 
   const id = $derived(page.params.id ?? '');
 
@@ -25,6 +25,14 @@
   let confirmName = $state('');
   let deleting = $state(false);
 
+  let monitors = $state<Monitor[]>([]);
+  let monSlug = $state('');
+  let monName = $state('');
+  let monEveryMin = $state(60);
+  let monGraceMin = $state(5);
+  let monErr = $state<string | null>(null);
+  let monEdits = $state<Record<string, { every: number; grace: number }>>({});
+
   let artifacts = $state<Artifact[]>([]);
   let smRelease = $state('');
   let smName = $state('');
@@ -41,6 +49,7 @@
     try {
       project = await api.project(id);
       rules = await api.alertRules(id);
+      monitors = await api.monitors(id);
       artifacts = await api.artifacts(id);
       hasChannel = (await api.channels()).some((c) => c.enabled);
     } catch (err) {
@@ -111,6 +120,69 @@
       rules = rules.filter((r) => r.id !== ruleId);
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to remove rule';
+    }
+  }
+
+  $effect(() => {
+    for (const m of monitors) {
+      monEdits[m.id] ??= { every: Math.round(m.interval_seconds / 60), grace: Math.round(m.grace_seconds / 60) };
+    }
+  });
+
+  async function addMonitor(e: SubmitEvent) {
+    e.preventDefault();
+    monErr = null;
+    if (!monSlug.trim()) return;
+    try {
+      const m = await api.createMonitor(id, {
+        slug: monSlug.trim(),
+        name: monName.trim(),
+        interval_seconds: Math.max(0, Math.round(monEveryMin * 60)),
+        grace_seconds: Math.max(0, Math.round(monGraceMin * 60))
+      });
+      monitors = [...monitors.filter((x) => x.id !== m.id), m].sort((a, b) => a.slug.localeCompare(b.slug));
+      monSlug = '';
+      monName = '';
+    } catch (err) {
+      monErr = err instanceof ApiError ? err.message : 'Failed to create monitor';
+    }
+  }
+
+  async function saveMonitor(m: Monitor) {
+    const e = monEdits[m.id];
+    if (!e) return;
+    try {
+      const updated = await api.updateMonitor(m.id, {
+        name: m.name,
+        interval_seconds: Math.max(0, Math.round(e.every * 60)),
+        grace_seconds: Math.max(0, Math.round(e.grace * 60))
+      });
+      monitors = monitors.map((x) => (x.id === updated.id ? updated : x));
+    } catch (err) {
+      monErr = err instanceof ApiError ? err.message : 'Failed to update monitor';
+    }
+  }
+
+  async function removeMonitor(mid: string) {
+    try {
+      await api.deleteMonitor(mid);
+      monitors = monitors.filter((m) => m.id !== mid);
+    } catch (err) {
+      monErr = err instanceof ApiError ? err.message : 'Failed to remove monitor';
+    }
+  }
+
+  function monitorDot(state: string): string {
+    if (state === 'ok') return 'bg-emerald-400';
+    if (state === 'missing' || state === 'failed') return 'bg-rose-400';
+    return 'bg-zinc-500';
+  }
+
+  async function copyText(t: string) {
+    try {
+      await navigator.clipboard.writeText(t);
+    } catch {
+      /* clipboard may be blocked; the URL is visible to select manually */
     }
   }
 
@@ -372,6 +444,120 @@
         </ul>
       {:else}
         <p class="mt-3 text-xs text-zinc-600">No source maps uploaded yet.</p>
+      {/if}
+    </div>
+
+    <div class="mb-8 rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-5">
+      <h3 class="text-sm font-medium">Cron monitors</h3>
+      <p class="mt-1 max-w-2xl text-xs text-zinc-500">
+        Have a scheduled job ping its check-in URL each run. If it stops pinging past its expected interval
+        plus grace, the watchdog fires a missing alert; a run that pings with
+        <code class="font-mono text-zinc-400">?status=error</code> pages immediately. Delivery goes to your
+        <a href="/settings" class="text-amber-400 hover:text-amber-300">channels</a>.
+      </p>
+      {#if monErr}
+        <p class="mt-2 text-xs text-rose-400">{monErr}</p>
+      {/if}
+      <form onsubmit={addMonitor} class="mt-3 flex flex-wrap items-end gap-2">
+        <div class="flex flex-col gap-1.5">
+          <label for="monslug" class="text-xs font-medium text-zinc-400">Slug</label>
+          <input
+            id="monslug"
+            bind:value={monSlug}
+            placeholder="nightly-backup"
+            class="w-40 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-amber-400/60"
+          />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="monname" class="text-xs font-medium text-zinc-400">Name (optional)</label>
+          <input
+            id="monname"
+            bind:value={monName}
+            placeholder="Nightly DB backup"
+            class="w-48 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-amber-400/60"
+          />
+        </div>
+        <div class="flex items-center gap-2 text-xs text-zinc-500">
+          <span>every</span>
+          <input
+            type="number"
+            min="0"
+            bind:value={monEveryMin}
+            class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+          />
+          <span>min, grace</span>
+          <input
+            type="number"
+            min="0"
+            bind:value={monGraceMin}
+            class="w-16 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-amber-400/60"
+          />
+          <span>min</span>
+        </div>
+        <button class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 transition-colors hover:bg-zinc-800 active:translate-y-px">Add monitor</button>
+      </form>
+      {#if monitors.length}
+        <ul class="mt-4 divide-y divide-zinc-800/60">
+          {#each monitors as m (m.id)}
+            <li class="py-3">
+              <div class="flex flex-wrap items-center gap-3">
+                <span class="inline-block h-2 w-2 shrink-0 rounded-full {monitorDot(m.state)}" title={m.state}></span>
+                <span class="font-mono text-sm text-zinc-200">{m.slug}</span>
+                {#if m.name}<span class="text-xs text-zinc-500">{m.name}</span>{/if}
+                <span class="text-xs text-zinc-600">
+                  {m.state === 'missing'
+                    ? 'overdue'
+                    : m.state === 'failed'
+                      ? 'last run failed'
+                      : m.state === 'ok'
+                        ? 'ok'
+                        : 'no pings yet'}
+                  {#if m.last_ping_at}· last ping {relativeTime(m.last_ping_at)}{/if}
+                </span>
+                <button
+                  onclick={() => removeMonitor(m.id)}
+                  class="ml-auto text-xs text-zinc-600 transition-colors hover:text-rose-400"
+                >
+                  Remove
+                </button>
+              </div>
+              {#if monEdits[m.id]}
+                <div class="mt-2 flex flex-wrap items-center gap-2 pl-5 text-xs text-zinc-500">
+                  <span>every</span>
+                  <input
+                    type="number"
+                    min="0"
+                    bind:value={monEdits[m.id].every}
+                    class="w-14 rounded-md border border-zinc-800 bg-zinc-950 px-1.5 py-1 text-xs text-zinc-200 outline-none focus:border-amber-400/60"
+                  />
+                  <span>min, grace</span>
+                  <input
+                    type="number"
+                    min="0"
+                    bind:value={monEdits[m.id].grace}
+                    class="w-14 rounded-md border border-zinc-800 bg-zinc-950 px-1.5 py-1 text-xs text-zinc-200 outline-none focus:border-amber-400/60"
+                  />
+                  <span>min</span>
+                  <button
+                    onclick={() => saveMonitor(m)}
+                    class="rounded border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                  >
+                    Save
+                  </button>
+                  {#if m.interval_seconds === 0}
+                    <span class="text-amber-400/80">set an interval to enable missing-detection</span>
+                  {/if}
+                </div>
+              {/if}
+              <div class="mt-2 flex items-center gap-2 pl-5">
+                <code class="truncate rounded bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-500">{m.checkin_url}</code>
+                <button onclick={() => copyText(m.checkin_url)} class="shrink-0 text-xs text-zinc-500 hover:text-amber-400">Copy</button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="mt-3 text-xs text-zinc-600">No monitors yet. Add one, then have your cron curl the check-in URL each run.</p>
       {/if}
     </div>
 

@@ -177,6 +177,18 @@ export interface Channel {
   last_error: string;
 }
 
+export interface Monitor {
+  id: string;
+  slug: string;
+  name: string;
+  interval_seconds: number;
+  grace_seconds: number;
+  last_ping_at: string | null;
+  last_status: string;
+  state: string; // new | ok | missing | failed
+  checkin_url: string;
+}
+
 export interface AlertRule {
   id: string;
   name: string;

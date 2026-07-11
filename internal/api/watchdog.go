@@ -91,6 +91,44 @@ func (s *Server) watchdogTick(ctx context.Context) {
 		})
 		slog.Info("watchdog: alert fired", "type", rule.Type, "project", rule.ProjectName, "reason", reason)
 	}
+
+	// Overdue cron/check-in monitors: a scheduled job that stopped pinging.
+	s.checkMonitors(ctx, chanCache, now)
+}
+
+// checkMonitors fires a "missing" alert for each configured monitor whose
+// check-in is overdue (interval + grace elapsed). Claims each atomically via
+// TrySetMonitorMissing so exactly one replica pages, and only once until the
+// job checks in again (which flips state back to ok).
+func (s *Server) checkMonitors(ctx context.Context, chanCache map[string][]alerts.Channel, now time.Time) {
+	due, err := s.q.ListDueMonitors(ctx, pgtype.Timestamptz{Time: now, Valid: true})
+	if err != nil {
+		slog.Error("watchdog: list due monitors failed", "error", err)
+		return
+	}
+	for _, m := range due {
+		channels := s.orgChannels(ctx, m.OrgID, chanCache)
+		if len(channels) == 0 {
+			continue
+		}
+		claimed, err := s.q.TrySetMonitorMissing(ctx, generated.TrySetMonitorMissingParams{
+			ID:          m.ID,
+			OrgID:       m.OrgID,
+			LastAlertAt: pgtype.Timestamptz{Time: now, Valid: true},
+		})
+		if err != nil || claimed == 0 {
+			continue
+		}
+		overdue := int64(now.Sub(m.LastPingAt.Time).Seconds())
+		s.dispatcher.Dispatch(ctx, channels, alerts.Notification{
+			ProjectName: m.ProjectName,
+			Title:       "Monitor overdue: " + m.Slug,
+			Level:       "warning",
+			Reason:      fmt.Sprintf("Check-in missing: no ping for ~%ds (expected every %ds + %ds grace)", overdue, m.IntervalSeconds, m.GraceSeconds),
+			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/projects/" + m.ProjectID,
+		})
+		slog.Info("watchdog: monitor missing", "monitor", m.Slug, "project", m.ProjectName)
+	}
 }
 
 // orgChannels returns an org's enabled notification channels, cached per tick.

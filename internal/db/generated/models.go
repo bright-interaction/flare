@@ -158,6 +158,21 @@ type LogsDefault struct {
 	ObservedAt pgtype.Timestamptz `json:"observed_at"`
 }
 
+type Monitor struct {
+	ID              string             `json:"id"`
+	OrgID           string             `json:"org_id"`
+	ProjectID       string             `json:"project_id"`
+	Slug            string             `json:"slug"`
+	Name            string             `json:"name"`
+	IntervalSeconds int32              `json:"interval_seconds"`
+	GraceSeconds    int32              `json:"grace_seconds"`
+	LastPingAt      pgtype.Timestamptz `json:"last_ping_at"`
+	LastStatus      string             `json:"last_status"`
+	State           string             `json:"state"`
+	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
 type NotificationChannel struct {
 	ID            string             `json:"id"`
 	OrgID         string             `json:"org_id"`
