@@ -36,3 +36,25 @@ func TestParseEventNoTraceContext(t *testing.T) {
 		t.Errorf("expected empty trace ids, got trace=%q span=%q", ev.TraceID, ev.SpanID)
 	}
 }
+
+// TestParseEventMalformedContextsNeverDrops confirms an unexpected contexts
+// shape (array, string, or a non-object trace) parses to empty ids instead of
+// failing the whole event: ingest must never 4xx-drop an event over payload
+// shape (same rule as the lenient exception decoder).
+func TestParseEventMalformedContextsNeverDrops(t *testing.T) {
+	cases := []string{
+		`{"event_id":"a","message":"hi","contexts":[]}`,
+		`{"event_id":"b","message":"hi","contexts":"nope"}`,
+		`{"event_id":"c","message":"hi","contexts":{"trace":"nope"}}`,
+		`{"event_id":"d","message":"hi","contexts":{"trace":[1,2]}}`,
+	}
+	for _, raw := range cases {
+		ev, err := ParseEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("parse must not error on %s: %v", raw, err)
+		}
+		if ev.TraceID != "" || ev.SpanID != "" {
+			t.Errorf("expected empty ids for %s, got trace=%q span=%q", raw, ev.TraceID, ev.SpanID)
+		}
+	}
+}
