@@ -62,6 +62,19 @@
     </div>
   </div>
 {:else}
+  {#if data.alerting_blind}
+    <div class="mb-6 flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+      <span class="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400"></span>
+      <div class="text-sm">
+        <p class="font-medium text-amber-300">Alerts have nowhere to go</p>
+        <p class="mt-0.5 text-amber-200/70">
+          You have active alert rules but no enabled notification channel, so alerts fire into the void and
+          reach no one. <a href="/settings" class="underline underline-offset-2 hover:text-amber-100">Add a
+          channel</a> in settings and send a test to confirm it delivers.
+        </p>
+      </div>
+    </div>
+  {/if}
   <!-- Headline stats: one divided panel, not three floating cards -->
   <div class="mb-6 grid grid-cols-3 overflow-hidden rounded-lg border border-zinc-800/80 bg-zinc-900/40">
     <div class="border-r border-zinc-800/80 p-5">

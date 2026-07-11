@@ -39,6 +39,11 @@ type overviewResponse struct {
 	Volume     []overviewHourBucket `json:"volume"`
 	TopIssues  []overviewIssue      `json:"top_issues"`
 	Projects   []overviewProject    `json:"projects"`
+	// AlertingBlind is true when the org has enabled alert rules but NO enabled
+	// notification channel: alerts would fire into the void and reach no human.
+	// This is the guardrail against the estate's "nothing could page a human"
+	// failure mode; the dashboard surfaces it as a banner.
+	AlertingBlind bool `json:"alerting_blind"`
 }
 
 // handleOverview returns the org-wide dashboard: 24h event volume, headline
@@ -166,9 +171,22 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return cards[i].Name < cards[j].Name
 	})
 
+	// Alerting-blind guardrail: rules exist but no channel can carry them.
+	enabledChannels, err := s.q.CountEnabledNotificationChannelsByOrg(ctx, org)
+	if err != nil {
+		slogError(w, "overview channel count", err)
+		return
+	}
+	enabledRules, err := s.q.CountEnabledAlertRulesByOrg(ctx, org)
+	if err != nil {
+		slogError(w, "overview rule count", err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, overviewResponse{
 		Events24h: events24h, Unresolved: unresolved, NewToday: newToday,
 		Volume: volume, TopIssues: top, Projects: cards,
+		AlertingBlind: enabledRules > 0 && enabledChannels == 0,
 	})
 }
 

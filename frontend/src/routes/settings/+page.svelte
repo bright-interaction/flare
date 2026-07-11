@@ -7,6 +7,7 @@
   import type { AiConfig, ApiKey, AuditEntry, Channel, GithubConfig, OidcConfig } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
+  let testResult = $state<Record<string, { ok: boolean; error?: string } | 'busy'>>({});
   let error = $state<string | null>(null);
   let type = $state('log');
   let url = $state('');
@@ -294,6 +295,25 @@
     }
   }
 
+  async function testChannel(chId: string) {
+    testResult[chId] = 'busy';
+    try {
+      testResult[chId] = await api.testChannel(chId);
+      // Refresh so the persistent delivery status (dot + last error) updates.
+      channels = await api.channels();
+    } catch (err) {
+      testResult[chId] = { ok: false, error: err instanceof ApiError ? err.message : 'Test failed' };
+    }
+  }
+
+  // channelHealth maps a channel's stored delivery columns to a status dot.
+  function channelHealth(ch: Channel): { color: string; label: string } {
+    if (!ch.enabled) return { color: 'bg-zinc-600', label: 'disabled' };
+    if (ch.last_error) return { color: 'bg-rose-400', label: 'last delivery failed' };
+    if (ch.last_ok_at) return { color: 'bg-emerald-400', label: 'delivering' };
+    return { color: 'bg-zinc-500', label: 'never tested' };
+  }
+
   async function revokeKey(keyId: string) {
     if (!confirm('Revoke this API key? Anything using it stops working immediately.')) return;
     try {
@@ -386,18 +406,41 @@
 {:else}
   <ul class="divide-y divide-zinc-800/60">
     {#each channels as ch (ch.id)}
-      <li class="flex items-center gap-3 py-3">
-        <span class="inline-block h-1.5 w-1.5 rounded-full {ch.enabled ? 'bg-emerald-400' : 'bg-zinc-600'}"></span>
+      {@const health = channelHealth(ch)}
+      {@const res = testResult[ch.id]}
+      <li class="flex flex-wrap items-center gap-3 py-3">
+        <span class="inline-block h-1.5 w-1.5 rounded-full {health.color}" title={health.label}></span>
         <span class="text-sm font-medium capitalize text-zinc-200">{ch.type}</span>
         {#if ch.config?.url}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.url)}</span>{/if}
         {#if ch.config?.to}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.to)}</span>{/if}
         {#if ch.config?.webhook_url}<span class="truncate font-mono text-xs text-zinc-500">{String(ch.config.webhook_url)}</span>{/if}
-        <button
-          onclick={() => removeChannel(ch.id)}
-          class="ml-auto shrink-0 text-xs text-zinc-600 transition-colors hover:text-rose-400"
-        >
-          Remove
-        </button>
+        <div class="ml-auto flex shrink-0 items-center gap-3">
+          {#if res === 'busy'}
+            <span class="text-xs text-zinc-500">Sending...</span>
+          {:else if res?.ok}
+            <span class="text-xs text-emerald-400">Delivered</span>
+          {:else if res}
+            <span class="max-w-56 truncate text-xs text-rose-400" title={res.error}>Failed: {res.error}</span>
+          {/if}
+          <button
+            onclick={() => testChannel(ch.id)}
+            disabled={res === 'busy'}
+            class="text-xs text-zinc-500 transition-colors hover:text-amber-400 disabled:opacity-50"
+          >
+            Send test
+          </button>
+          <button
+            onclick={() => removeChannel(ch.id)}
+            class="text-xs text-zinc-600 transition-colors hover:text-rose-400"
+          >
+            Remove
+          </button>
+        </div>
+        {#if ch.last_error}
+          <p class="w-full pl-5 font-mono text-xs text-rose-400/80">
+            Last delivery failed: {ch.last_error}
+          </p>
+        {/if}
       </li>
     {/each}
   </ul>

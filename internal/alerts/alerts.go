@@ -21,8 +21,11 @@ import (
 )
 
 // Channel is a destination for notifications, mapped from a stored
-// notification_channels row.
+// notification_channels row. ID/OrgID identify the row so per-channel delivery
+// status can be recorded (org-scoped); both may be empty for ad-hoc dispatch.
 type Channel struct {
+	ID     string
+	OrgID  string
 	Type   string
 	Config json.RawMessage
 }
@@ -44,6 +47,11 @@ type Notification struct {
 type Dispatcher struct {
 	client *http.Client
 	mailer *email.Mailer
+	// Recorder, when set, persists the outcome of each delivery attempt (nil
+	// err = success). Wired by the server to the notification_channels delivery
+	// columns so a silently-failing channel becomes visible. Kept as a hook so
+	// the alerts package stays free of any DB dependency.
+	Recorder func(ctx context.Context, orgID, channelID string, err error)
 }
 
 func NewDispatcher(mailer *email.Mailer) *Dispatcher {
@@ -77,46 +85,74 @@ func NewDispatcher(mailer *email.Mailer) *Dispatcher {
 }
 
 // Dispatch sends the notification to every channel, best-effort. Failures are
-// logged, never propagated: alerting must not block or fail ingest.
+// recorded and logged, never propagated: alerting must not block or fail ingest.
 func (d *Dispatcher) Dispatch(ctx context.Context, channels []Channel, n Notification) {
 	for _, ch := range channels {
-		switch ch.Type {
-		case "webhook":
-			d.webhook(ctx, ch.Config, n)
-		case "slack":
-			d.slack(ctx, ch.Config, n)
-		case "email":
-			d.emailAlert(ch.Config, n)
-		case "log":
-			slog.Info("flare alert", "reason", n.Reason, "title", n.Title, "level", n.Level, "events", n.EventCount, "url", n.URL)
-		default:
-			slog.Warn("alert channel type not supported", "type", ch.Type)
+		err := d.send(ctx, ch, n)
+		d.record(ctx, ch, err)
+		if err != nil {
+			slog.Warn("alert delivery failed", "type", ch.Type, "error", err)
 		}
+	}
+}
+
+// DispatchOne sends to a single channel and RETURNS the delivery result, so the
+// "send test" operator action can show the real HTTP/SMTP outcome. The outcome
+// is also recorded, so a test doubles as a live health check of the channel.
+func (d *Dispatcher) DispatchOne(ctx context.Context, ch Channel, n Notification) error {
+	err := d.send(ctx, ch, n)
+	d.record(ctx, ch, err)
+	return err
+}
+
+// send delivers to one channel and returns the delivery error (nil on success).
+func (d *Dispatcher) send(ctx context.Context, ch Channel, n Notification) error {
+	switch ch.Type {
+	case "webhook":
+		return d.webhook(ctx, ch.Config, n)
+	case "slack":
+		return d.slack(ctx, ch.Config, n)
+	case "email":
+		return d.emailAlert(ch.Config, n)
+	case "log":
+		slog.Info("flare alert", "reason", n.Reason, "title", n.Title, "level", n.Level, "events", n.EventCount, "url", n.URL)
+		return nil
+	default:
+		return fmt.Errorf("unsupported channel type %q", ch.Type)
+	}
+}
+
+// record persists a delivery outcome when a recorder is wired and the channel
+// has a stable id + org (ad-hoc dispatch may pass empty ids).
+func (d *Dispatcher) record(ctx context.Context, ch Channel, err error) {
+	if d.Recorder != nil && ch.ID != "" && ch.OrgID != "" {
+		d.Recorder(ctx, ch.OrgID, ch.ID, err)
 	}
 }
 
 // slack posts a Block Kit message to an incoming-webhook URL. Reuses the
 // SSRF-guarded client (hooks.slack.com is public, loopback/private blocked).
-func (d *Dispatcher) slack(ctx context.Context, cfgRaw json.RawMessage, n Notification) {
+func (d *Dispatcher) slack(ctx context.Context, cfgRaw json.RawMessage, n Notification) error {
 	var cfg struct {
 		WebhookURL string `json:"webhook_url"`
 	}
 	if err := json.Unmarshal(cfgRaw, &cfg); err != nil || cfg.WebhookURL == "" {
-		slog.Warn("slack channel misconfigured")
-		return
+		return errors.New("slack channel misconfigured (missing webhook_url)")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.WebhookURL, bytes.NewReader(slackPayload(n)))
 	if err != nil {
-		slog.Warn("slack build request", "error", err)
-		return
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := d.client.Do(req)
 	if err != nil {
-		slog.Warn("slack delivery failed", "error", err)
-		return
+		return err
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("slack webhook returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // slackPayload renders the notification as a Slack Block Kit message.
@@ -154,17 +190,15 @@ func slackEsc(s string) string {
 // emailAlert renders and sends a new-issue notification to an email channel's
 // recipient. Best-effort: a misconfigured channel or unconfigured mailer logs
 // and returns, never blocking ingest.
-func (d *Dispatcher) emailAlert(cfgRaw json.RawMessage, n Notification) {
+func (d *Dispatcher) emailAlert(cfgRaw json.RawMessage, n Notification) error {
 	if !d.mailer.Enabled() {
-		slog.Warn("email alert skipped: SMTP not configured")
-		return
+		return errors.New("email delivery not configured on this server (SMTP unset)")
 	}
 	var cfg struct {
 		To string `json:"to"`
 	}
 	if err := json.Unmarshal(cfgRaw, &cfg); err != nil || cfg.To == "" {
-		slog.Warn("email channel misconfigured")
-		return
+		return errors.New("email channel misconfigured (missing to)")
 	}
 	reason := n.Reason
 	if reason == "" {
@@ -174,9 +208,7 @@ func (d *Dispatcher) emailAlert(cfgRaw json.RawMessage, n Notification) {
 	text := fmt.Sprintf("%s in %s\n\n%s\n%s\nEvents: %d\n\nView: %s\n",
 		reason, n.ProjectName, n.Title, n.Culprit, n.EventCount, n.URL)
 	body := alertHTML(n, reason)
-	if err := d.mailer.Send(cfg.To, subject, body, text); err != nil {
-		slog.Warn("email alert delivery failed", "error", err)
-	}
+	return d.mailer.Send(cfg.To, subject, body, text)
 }
 
 func alertHTML(n Notification, reason string) string {
@@ -194,27 +226,28 @@ func alertHTML(n Notification, reason string) string {
 </div>`, esc(reason), esc(n.Title), culprit, esc(n.ProjectName), n.EventCount, esc(n.Level), esc(n.URL))
 }
 
-func (d *Dispatcher) webhook(ctx context.Context, cfgRaw json.RawMessage, n Notification) {
+func (d *Dispatcher) webhook(ctx context.Context, cfgRaw json.RawMessage, n Notification) error {
 	var cfg struct {
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(cfgRaw, &cfg); err != nil || cfg.URL == "" {
-		slog.Warn("webhook channel misconfigured")
-		return
+		return errors.New("webhook channel misconfigured (missing url)")
 	}
 	body, _ := json.Marshal(n)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		slog.Warn("webhook build request", "error", err)
-		return
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := d.client.Do(req)
 	if err != nil {
-		slog.Warn("webhook delivery failed", "error", err)
-		return
+		return err
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func isBlocked(ip net.IP) bool {
