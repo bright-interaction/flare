@@ -168,6 +168,28 @@ type LogsDefault struct {
 	ObservedAt pgtype.Timestamptz `json:"observed_at"`
 }
 
+type Metric struct {
+	ID         string             `json:"id"`
+	ProjectID  string             `json:"project_id"`
+	OrgID      string             `json:"org_id"`
+	Name       string             `json:"name"`
+	Kind       string             `json:"kind"`
+	Value      float64            `json:"value"`
+	Labels     json.RawMessage    `json:"labels"`
+	ObservedAt pgtype.Timestamptz `json:"observed_at"`
+}
+
+type MetricsDefault struct {
+	ID         string             `json:"id"`
+	ProjectID  string             `json:"project_id"`
+	OrgID      string             `json:"org_id"`
+	Name       string             `json:"name"`
+	Kind       string             `json:"kind"`
+	Value      float64            `json:"value"`
+	Labels     []byte             `json:"labels"`
+	ObservedAt pgtype.Timestamptz `json:"observed_at"`
+}
+
 type Monitor struct {
 	ID              string             `json:"id"`
 	OrgID           string             `json:"org_id"`

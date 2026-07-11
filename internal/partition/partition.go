@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var tables = []string{"events", "logs", "spans"}
+var tables = []string{"events", "logs", "spans", "metrics"}
 
 // Exporter archives a dated partition to the cold tier before it is dropped.
 // nil = no cold tier (just drop). analytics.Exporter satisfies this.

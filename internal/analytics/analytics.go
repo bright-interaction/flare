@@ -139,7 +139,7 @@ func (m *Manager) Healthy(ctx context.Context) bool {
 func escapeSQL(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 // coldTables are the tables whose aged partitions are exported to Parquet.
-var coldTables = []string{"events", "logs", "spans"}
+var coldTables = []string{"events", "logs", "spans", "metrics"}
 
 // PurgeColdScope physically erases every row matching column=value from the
 // Parquet cold tier, so a project/org deletion (right-to-erasure) also reaches

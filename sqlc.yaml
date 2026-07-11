@@ -27,3 +27,5 @@ sql:
             go_type: { type: "RawMessage", import: "encoding/json" }
           - column: "spans.attributes"
             go_type: { type: "RawMessage", import: "encoding/json" }
+          - column: "metrics.labels"
+            go_type: { type: "RawMessage", import: "encoding/json" }

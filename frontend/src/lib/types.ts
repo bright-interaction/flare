@@ -155,6 +155,19 @@ export interface ApiKeyCreated {
   key: string;
 }
 
+export interface MetricName {
+  name: string;
+  kind: string;
+  points: number;
+  last_seen: string;
+}
+
+export interface MetricPoint {
+  value: number;
+  labels: Record<string, unknown> | null;
+  observed_at: string;
+}
+
 export interface Span {
   span_id: string;
   parent_span_id: string;

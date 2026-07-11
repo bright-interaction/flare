@@ -43,6 +43,21 @@ type Event struct {
 	ReceivedAt     time.Time
 }
 
+// MetricName is one distinct metric series in a project (for the browser).
+type MetricName struct {
+	Name     string
+	Kind     string
+	Points   int64
+	LastSeen time.Time
+}
+
+// MetricPoint is one datapoint of a metric series.
+type MetricPoint struct {
+	Value      float64
+	Labels     json.RawMessage
+	ObservedAt time.Time
+}
+
 type Log struct {
 	ID         string
 	Severity   string
