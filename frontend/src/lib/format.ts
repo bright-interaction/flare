@@ -12,6 +12,13 @@ export function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+// relativeUnix is relativeTime for a unix-seconds timestamp. Returns '' for 0
+// (the "no pulse" sentinel) so callers can render an explicit dash instead.
+export function relativeUnix(sec: number): string {
+  if (!sec) return '';
+  return relativeTime(new Date(sec * 1000).toISOString());
+}
+
 // levelColor returns Tailwind text classes for an event/issue level.
 export function levelColor(level: string): string {
   switch (level) {
