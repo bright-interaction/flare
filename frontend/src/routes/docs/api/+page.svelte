@@ -77,7 +77,7 @@
   }
 </script>
 
-<article class="max-w-3xl">
+<article class="max-w-none">
   {#if error}
     <p class="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-300">{error}</p>
   {:else if !spec}
