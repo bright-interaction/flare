@@ -35,15 +35,22 @@ INSERT INTO events (id, project_id, org_id, issue_id, level, message, exception_
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now());
 
 -- name: ListIssues :many
+-- Excludes info/debug-level signals (liveness heartbeats, breadcrumbs, health
+-- check-ins) so the issues list shows incidents only, matching the overview
+-- queries. Those signals still ingest (they keep a project "active" for the
+-- watchdog) and remain openable by id; they just don't clutter the list.
 SELECT * FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  AND level NOT IN ('info', 'debug')
 ORDER BY last_seen DESC
 LIMIT $3 OFFSET $4;
 
 -- name: CountIssues :one
-SELECT count(*) FROM issues WHERE project_id = $1 AND org_id = $2;
+SELECT count(*) FROM issues
+WHERE project_id = $1 AND org_id = $2
+  AND level NOT IN ('info', 'debug');
 
 -- ciguard:allow-no-project issue id is project-unique (one issue belongs to one project)
 -- name: GetIssue :one
