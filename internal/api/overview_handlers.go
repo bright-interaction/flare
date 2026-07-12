@@ -28,8 +28,9 @@ type overviewProject struct {
 	Slug       string  `json:"slug"`
 	Events24h  int64   `json:"events_24h"`
 	Unresolved int64   `json:"unresolved"`
-	Status     string  `json:"status"` // ok | spike | quiet
-	Volume     []int64 `json:"volume"` // overviewBuckets hourly counts
+	Status     string  `json:"status"`         // healthy | alert | spike | silent
+	LastSeenUnix int64 `json:"last_seen_unix"` // newest signal of any level; 0 = no pulse in 7d
+	Volume     []int64 `json:"volume"`         // overviewBuckets hourly error counts
 }
 
 type overviewResponse struct {
@@ -53,6 +54,7 @@ type overviewResponse struct {
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	org := orgIDFrom(ctx)
+	now := time.Now()
 
 	// Bucket 0 is the oldest hour, bucket overviewBuckets-1 is the current
 	// (partial) hour. Everything aligns to the top of the hour in UTC.
@@ -143,6 +145,20 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		projUnres[row.ProjectID] = row.Count
 	}
 
+	// Liveness pulse: newest signal of ANY level (heartbeats included), so a
+	// service that is up but not erroring still reads as alive rather than dead.
+	projLastSeen := map[string]time.Time{}
+	lsRows, err := s.q.OverviewProjectLastSeen(ctx, org)
+	if err != nil {
+		slogError(w, "overview project last seen", err)
+		return
+	}
+	for _, row := range lsRows {
+		if row.LastSeen.Valid {
+			projLastSeen[row.ProjectID] = row.LastSeen.Time
+		}
+	}
+
 	projects, err := s.q.ListProjectsByOrg(ctx, org)
 	if err != nil {
 		slogError(w, "overview projects", err)
@@ -155,16 +171,27 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			vol = make([]int64, overviewBuckets)
 		}
 		total := projTotal[p.ID]
+		lastSeen := projLastSeen[p.ID]
+		alive := !lastSeen.IsZero() && now.Sub(lastSeen) <= livenessWindow
+		var lastSeenUnix int64
+		if !lastSeen.IsZero() {
+			lastSeenUnix = lastSeen.Unix()
+		}
 		cards = append(cards, overviewProject{
 			ID: p.ID, Name: p.Name, Slug: p.Slug,
-			Events24h:  total,
-			Unresolved: projUnres[p.ID],
-			Status:     projectStatus(vol, total),
-			Volume:     vol,
+			Events24h:    total,
+			Unresolved:   projUnres[p.ID],
+			Status:       projectHealth(alive, vol, total),
+			LastSeenUnix: lastSeenUnix,
+			Volume:       vol,
 		})
 	}
-	// Busiest projects first, then alphabetical for the quiet tail.
+	// Order by health (attention first, silent last), then busiest, then name.
+	// The dashboard groups by status too, but this keeps the raw list sensible.
 	sort.SliceStable(cards, func(i, j int) bool {
+		if ri, rj := healthRank(cards[i].Status), healthRank(cards[j].Status); ri != rj {
+			return ri < rj
+		}
 		if cards[i].Events24h != cards[j].Events24h {
 			return cards[i].Events24h > cards[j].Events24h
 		}
@@ -190,25 +217,63 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// projectStatus flags a project card. "quiet" = no events in 24h; "spike" =
-// the current hour is both meaningful (>=5) and at least 3x the trailing
-// hourly average; otherwise "ok". vol is the zero-filled hourly series with
-// the current (partial) hour last.
-func projectStatus(vol []int64, total int64) string {
-	if total == 0 {
-		return "quiet"
+// livenessWindow is how long a project can go with no signal of any level
+// (heartbeats included) before it counts as silent on the dashboard. The estate
+// heartbeats every ~2-3 minutes, so 15 minutes clears six missed beats before
+// flagging: fast enough to catch a real death, slack enough to never flicker on
+// a healthy service. A project whose heartbeat cadence is genuinely slower than
+// this would need a longer window (or an explicit check-in monitor).
+const livenessWindow = 15 * time.Minute
+
+// projectHealth classifies a project card from its liveness pulse and error
+// activity. States (most to least urgent):
+//
+//	spike   - alive AND the current hour is a meaningful error surge (>=5 events
+//	          and >=3x the trailing hourly average).
+//	alert   - alive AND producing errors in the window, but not spiking.
+//	healthy - alive AND no errors in the window. The reassuring default for a
+//	          service that is simply up and clean (most of the estate).
+//	silent  - no pulse within livenessWindow. This wins over every error state:
+//	          a process that is not reporting at all cannot be meaningfully
+//	          "erroring", and "is it even alive?" is the headline the operator
+//	          needs. Covers dead, retired, and never-wired projects alike.
+//
+// alive is whether the newest signal of any level landed within livenessWindow.
+// errTotal is the 24h error count (info/debug already excluded upstream); vol is
+// the zero-filled hourly error series with the current (partial) hour last.
+func projectHealth(alive bool, vol []int64, errTotal int64) string {
+	if !alive {
+		return "silent"
 	}
-	if len(vol) < 2 {
-		return "ok"
+	if errTotal == 0 {
+		return "healthy"
 	}
-	last := vol[len(vol)-1]
-	var prior int64
-	for _, c := range vol[:len(vol)-1] {
-		prior += c
+	if len(vol) >= 2 {
+		last := vol[len(vol)-1]
+		var prior int64
+		for _, c := range vol[:len(vol)-1] {
+			prior += c
+		}
+		avg := float64(prior) / float64(len(vol)-1)
+		if last >= 5 && float64(last) >= 3*avg {
+			return "spike"
+		}
 	}
-	avg := float64(prior) / float64(len(vol)-1)
-	if last >= 5 && float64(last) >= 3*avg {
-		return "spike"
+	return "alert"
+}
+
+// healthRank orders statuses from most to least urgent for the flat project list.
+func healthRank(status string) int {
+	switch status {
+	case "spike":
+		return 0
+	case "alert":
+		return 1
+	case "healthy":
+		return 2
+	case "silent":
+		return 3
+	default:
+		return 4
 	}
-	return "ok"
 }

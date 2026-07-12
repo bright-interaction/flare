@@ -230,13 +230,17 @@ export interface OverviewIssue {
   project_name: string;
 }
 
+export type ProjectHealth = 'healthy' | 'alert' | 'spike' | 'silent';
+
 export interface OverviewProject {
   id: string;
   name: string;
   slug: string;
   events_24h: number;
   unresolved: number;
-  status: 'ok' | 'spike' | 'quiet';
+  status: ProjectHealth;
+  /** Newest signal of any level (heartbeats included), unix seconds. 0 = no pulse in 7d. */
+  last_seen_unix: number;
   volume: number[];
 }
 
