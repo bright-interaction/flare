@@ -63,3 +63,16 @@ FROM issues
 WHERE org_id = $1 AND status = 'unresolved'
   AND level NOT IN ('info', 'debug')
 GROUP BY project_id;
+
+-- ciguard:allow-no-project org-wide dashboard aggregate (scoped by org_id)
+-- name: OverviewProjectLastSeen :many
+-- Liveness pulse: the newest signal of ANY level per project. This deliberately
+-- does NOT exclude info/debug: an info-level heartbeat ("service-up:<svc>") is
+-- exactly what proves a service is alive when it has no errors, so it must count
+-- here even though it is filtered out of every actionable count above. Bounded to
+-- the last 7 days so the scan stays on recent partitions; a project with no row
+-- has had no pulse in a week and is treated as silent.
+SELECT project_id, max(received_at)::timestamptz AS last_seen
+FROM events
+WHERE org_id = $1 AND received_at >= now() - interval '7 days'
+GROUP BY project_id;

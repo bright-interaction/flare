@@ -86,6 +86,45 @@ func (q *Queries) OverviewNewIssuesToday(ctx context.Context, orgID string) (int
 	return count, err
 }
 
+const overviewProjectLastSeen = `-- name: OverviewProjectLastSeen :many
+SELECT project_id, max(received_at)::timestamptz AS last_seen
+FROM events
+WHERE org_id = $1 AND received_at >= now() - interval '7 days'
+GROUP BY project_id
+`
+
+type OverviewProjectLastSeenRow struct {
+	ProjectID string             `json:"project_id"`
+	LastSeen  pgtype.Timestamptz `json:"last_seen"`
+}
+
+// ciguard:allow-no-project org-wide dashboard aggregate (scoped by org_id)
+// Liveness pulse: the newest signal of ANY level per project. This deliberately
+// does NOT exclude info/debug: an info-level heartbeat ("service-up:<svc>") is
+// exactly what proves a service is alive when it has no errors, so it must count
+// here even though it is filtered out of every actionable count above. Bounded to
+// the last 7 days so the scan stays on recent partitions; a project with no row
+// has had no pulse in a week and is treated as silent.
+func (q *Queries) OverviewProjectLastSeen(ctx context.Context, orgID string) ([]*OverviewProjectLastSeenRow, error) {
+	rows, err := q.db.Query(ctx, overviewProjectLastSeen, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*OverviewProjectLastSeenRow{}
+	for rows.Next() {
+		var i OverviewProjectLastSeenRow
+		if err := rows.Scan(&i.ProjectID, &i.LastSeen); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const overviewProjectUnresolved = `-- name: OverviewProjectUnresolved :many
 SELECT project_id, count(*) AS count
 FROM issues
