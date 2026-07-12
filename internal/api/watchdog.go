@@ -153,29 +153,64 @@ func (s *Server) orgChannels(ctx context.Context, org string, cache map[string][
 // watchdogReason evaluates one rule against live counts and returns a non-empty
 // reason when it should fire. It fetches the two windows it needs, then defers
 // to the pure decision functions (tested without a DB).
+// The two rule types deliberately count DIFFERENT things:
+//
+//	anomaly  counts only actionable events (error/warning/fatal). An
+//	         "error-rate anomaly" that counted info-level heartbeats would fire
+//	         on liveness traffic, which is exactly what happened: the whole
+//	         estate tripped it on 2026-07-11 when the heartbeat shipped, and
+//	         mesh-hub + mesh-cloud tripped it again the moment they were first
+//	         instrumented (0 events -> a steady beacon reads as an infinite
+//	         spike against the project's own zero baseline).
+//
+//	silence  counts EVERY event, heartbeats included. That is the whole point:
+//	         the beacon is what proves a healthy, error-free service is alive, so
+//	         filtering it out would make every quiet-but-healthy service look dead.
 func (s *Server) watchdogReason(ctx context.Context, rule *generated.ListWatchdogRulesRow, now time.Time) string {
 	if rule.WindowMinutes < 1 {
 		return ""
 	}
-	recent, err := s.countEventsSince(ctx, rule.ProjectID, rule.OrgID, now.Add(-time.Duration(rule.WindowMinutes)*time.Minute))
-	if err != nil {
-		return ""
-	}
-	day, err := s.countEventsSince(ctx, rule.ProjectID, rule.OrgID, now.Add(-24*time.Hour))
-	if err != nil {
-		return ""
-	}
+	windowStart := now.Add(-time.Duration(rule.WindowMinutes) * time.Minute)
+	dayStart := now.Add(-24 * time.Hour)
+
 	switch rule.Type {
 	case "anomaly":
+		recent, err := s.countActionableEventsSince(ctx, rule.ProjectID, rule.OrgID, windowStart)
+		if err != nil {
+			return ""
+		}
+		day, err := s.countActionableEventsSince(ctx, rule.ProjectID, rule.OrgID, dayStart)
+		if err != nil {
+			return ""
+		}
 		return anomalyReason(recent, day, rule.WindowMinutes, rule.Threshold)
 	case "silence":
+		recent, err := s.countEventsSince(ctx, rule.ProjectID, rule.OrgID, windowStart)
+		if err != nil {
+			return ""
+		}
+		day, err := s.countEventsSince(ctx, rule.ProjectID, rule.OrgID, dayStart)
+		if err != nil {
+			return ""
+		}
 		return silenceReason(recent, day, rule.Threshold)
 	}
 	return ""
 }
 
+// countEventsSince counts EVERY event (heartbeats included). Silence only.
 func (s *Server) countEventsSince(ctx context.Context, projectID, org string, since time.Time) (int64, error) {
 	return s.q.CountEventsForProjectSince(ctx, generated.CountEventsForProjectSinceParams{
+		ProjectID:  projectID,
+		OrgID:      org,
+		ReceivedAt: pgtype.Timestamptz{Time: since, Valid: true},
+	})
+}
+
+// countActionableEventsSince excludes info/debug (heartbeats, breadcrumbs).
+// Anomaly only.
+func (s *Server) countActionableEventsSince(ctx context.Context, projectID, org string, since time.Time) (int64, error) {
+	return s.q.CountActionableEventsForProjectSince(ctx, generated.CountActionableEventsForProjectSinceParams{
 		ProjectID:  projectID,
 		OrgID:      org,
 		ReceivedAt: pgtype.Timestamptz{Time: since, Valid: true},
