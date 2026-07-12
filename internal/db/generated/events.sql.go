@@ -31,7 +31,9 @@ func (q *Queries) CountEventsForIssueSince(ctx context.Context, arg CountEventsF
 }
 
 const countIssues = `-- name: CountIssues :one
-SELECT count(*) FROM issues WHERE project_id = $1 AND org_id = $2
+SELECT count(*) FROM issues
+WHERE project_id = $1 AND org_id = $2
+  AND level NOT IN ('info', 'debug')
 `
 
 type CountIssuesParams struct {
@@ -213,6 +215,7 @@ SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platf
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
+  AND level NOT IN ('info', 'debug')
 ORDER BY last_seen DESC
 LIMIT $3 OFFSET $4
 `
@@ -225,6 +228,10 @@ type ListIssuesParams struct {
 	Status    pgtype.Text `json:"status"`
 }
 
+// Excludes info/debug-level signals (liveness heartbeats, breadcrumbs, health
+// check-ins) so the issues list shows incidents only, matching the overview
+// queries. Those signals still ingest (they keep a project "active" for the
+// watchdog) and remain openable by id; they just don't clutter the list.
 func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issue, error) {
 	rows, err := q.db.Query(ctx, listIssues,
 		arg.ProjectID,
