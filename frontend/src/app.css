@@ -17,3 +17,118 @@ body {
 .font-mono {
   font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Menlo', monospace;
 }
+
+/* -------------------------------------------------------------------------
+   Light theme.
+
+   The app is dark-first and paints its neutrals with the Tailwind `zinc`
+   scale (high numbers = dark surfaces, low numbers = light text). Tailwind v4
+   emits color utilities as var(--color-zinc-N), so remapping those variables
+   flips every plain zinc utility to light with no component edits. Two things
+   need explicit handling: (1) zinc-950 is used both as a surface (bg, must go
+   light) and as dark text on amber buttons (must stay dark), so its variable
+   is left alone and only .bg-zinc-950 is overridden; (2) opacity-modified
+   classes (bg-zinc-900/40, border-zinc-800/80, ...) compile to literal
+   hex+alpha, so each is remapped to its light equivalent. Accent (amber) and
+   status colors (red/emerald) are shared across themes; amber text is nudged
+   darker for contrast on light.
+   ------------------------------------------------------------------------- */
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --color-zinc-100: #18181b; /* primary text  -> near-black   */
+  --color-zinc-200: #27272a; /* strong text                  */
+  --color-zinc-300: #3f3f46; /* body text                    */
+  --color-zinc-400: #52525b; /* secondary text               */
+  --color-zinc-500: #71717a; /* muted text (mid, unchanged)  */
+  --color-zinc-600: #a1a1aa; /* faint text                   */
+  --color-zinc-700: #d4d4d8; /* strong border                */
+  --color-zinc-800: #e4e4e7; /* border / subtle surface      */
+  --color-zinc-900: #ffffff; /* card surface -> white        */
+  /* --color-zinc-950 left dark on purpose (text-zinc-950 on amber buttons). */
+}
+
+html[data-theme='light'],
+html[data-theme='light'] body {
+  background-color: #f4f4f5; /* page: soft grey so white cards lift off it */
+}
+
+/* zinc-950 as a surface (page-matched recessed panels, code/DSN blocks). */
+html[data-theme='light'] .bg-zinc-950 {
+  background-color: #f4f4f5;
+}
+
+/* Opacity-modified neutrals compile to literal hex+alpha, so remap by class. */
+html[data-theme='light'] .bg-zinc-900\/60 {
+  background-color: #ffffffb3;
+}
+html[data-theme='light'] .bg-zinc-900\/40 {
+  background-color: #ffffff99;
+}
+html[data-theme='light'] .bg-zinc-900\/30 {
+  background-color: #ffffff80;
+}
+html[data-theme='light'] .bg-zinc-950\/85 {
+  background-color: #fbfbfce6; /* sticky, blurred header */
+}
+html[data-theme='light'] .bg-zinc-950\/40 {
+  background-color: #f4f4f566;
+}
+html[data-theme='light'] .bg-zinc-800\/80 {
+  background-color: #e4e4e7cc;
+}
+html[data-theme='light'] .bg-zinc-800\/40 {
+  background-color: #e4e4e766;
+}
+html[data-theme='light'] .bg-zinc-800\/30 {
+  background-color: #e4e4e74d;
+}
+html[data-theme='light'] .bg-zinc-700\/40 {
+  background-color: #d4d4d866;
+}
+html[data-theme='light'] .border-zinc-800\/80 {
+  border-color: #d4d4d8cc;
+}
+html[data-theme='light'] .border-zinc-800\/60 {
+  border-color: #d4d4d899;
+}
+html[data-theme='light'] .border-zinc-800\/40 {
+  border-color: #d4d4d866;
+}
+html[data-theme='light'] .divide-zinc-800\/60 > :not(:last-child) {
+  border-color: #e4e4e7;
+}
+html[data-theme='light'] .divide-zinc-800\/40 > :not(:last-child) {
+  border-color: #e8e8ea;
+}
+
+/* Amber accent: keep the bright fill (logo dot, buttons) but darken amber
+   TEXT so links stay legible on a light background. */
+html[data-theme='light'] .text-amber-400 {
+  color: #b45309;
+}
+html[data-theme='light'] .text-amber-300 {
+  color: #c2600a;
+}
+html[data-theme='light'] .text-amber-300\/90 {
+  color: #c2600ae6;
+}
+
+/* Status text (error rose / success emerald): the light 300/400 shades are made
+   for dark backgrounds; darken them so they stay legible on light. Tinted
+   status backgrounds (bg-rose-500/10 etc.) read fine as-is. */
+html[data-theme='light'] .text-rose-300,
+html[data-theme='light'] .text-rose-400 {
+  color: #e11d48;
+}
+html[data-theme='light'] .text-rose-300\/90,
+html[data-theme='light'] .text-rose-400\/80 {
+  color: #e11d48d9;
+}
+html[data-theme='light'] .text-emerald-300,
+html[data-theme='light'] .text-emerald-400 {
+  color: #059669;
+}
+html[data-theme='light'] .text-emerald-500\/70 {
+  color: #059669b3;
+}

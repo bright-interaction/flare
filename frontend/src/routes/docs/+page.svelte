@@ -38,7 +38,7 @@ curl -X POST "https://your-flare-host/api/<project-id>/releases" \\
   -d '{"version": "1.4.2"}'`;
 </script>
 
-<article class="prose-flare max-w-2xl">
+<article class="prose-flare max-w-none">
   <h1 class="text-2xl font-semibold tracking-tight">Flare docs</h1>
   <p class="mt-2 text-sm leading-relaxed text-zinc-400">
     Flare is sovereign, self-hostable observability: errors, logs and traces on one Postgres. Send data with any
