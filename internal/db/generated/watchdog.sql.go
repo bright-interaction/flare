@@ -11,6 +11,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActionableEventsForProjectSince = `-- name: CountActionableEventsForProjectSince :one
+SELECT count(*) FROM events
+WHERE project_id = $1 AND org_id = $2 AND received_at >= $3
+  AND level NOT IN ('info', 'debug')
+`
+
+type CountActionableEventsForProjectSinceParams struct {
+	ProjectID  string             `json:"project_id"`
+	OrgID      string             `json:"org_id"`
+	ReceivedAt pgtype.Timestamptz `json:"received_at"`
+}
+
+// Only ACTIONABLE events. This is the ANOMALY count.
+//
+// An "error-rate anomaly" must not fire on heartbeat volume. Both rules used to
+// share the unfiltered count above, so a project going from silent to
+// heartbeating looked like an infinite error spike against its own zero
+// baseline: the entire estate tripped this rule on 2026-07-11 (the day the
+// heartbeat shipped), and mesh-hub + mesh-cloud tripped it again the moment they
+// were first instrumented. Heartbeats are liveness, not errors.
+func (q *Queries) CountActionableEventsForProjectSince(ctx context.Context, arg CountActionableEventsForProjectSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActionableEventsForProjectSince, arg.ProjectID, arg.OrgID, arg.ReceivedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countEventsForProjectSince = `-- name: CountEventsForProjectSince :one
 SELECT count(*) FROM events
 WHERE project_id = $1 AND org_id = $2 AND received_at >= $3
@@ -22,6 +49,9 @@ type CountEventsForProjectSinceParams struct {
 	ReceivedAt pgtype.Timestamptz `json:"received_at"`
 }
 
+// EVERY event, including info/debug. This is the SILENCE count, and it must stay
+// unfiltered: the info-level "service-up" heartbeat is precisely the signal that
+// proves a healthy, low-error service is still alive.
 func (q *Queries) CountEventsForProjectSince(ctx context.Context, arg CountEventsForProjectSinceParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countEventsForProjectSince, arg.ProjectID, arg.OrgID, arg.ReceivedAt)
 	var count int64
