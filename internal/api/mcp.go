@@ -20,6 +20,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
@@ -348,8 +349,12 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				}
 				events, _ := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
 				return map[string]any{
-					"issue":  toIssueResponse(issue),
-					"events": s.toEventResponses(ctx, a.IssueID, org, events, issue.Sensitive != ""),
+					"issue": toIssueResponse(issue),
+					// MCP crosses the LLM boundary: scrub message, exception value AND the
+					// stack trace (frame locals/context lines routinely carry secrets/PII
+					// from the reporting service), unconditionally - not only when the issue
+					// was flagged sensitive. The REST dashboard keeps the raw stack.
+					"events": scrubEventsForMCP(s.toEventResponses(ctx, a.IssueID, org, events, true)),
 				}, nil
 			},
 		},
@@ -415,10 +420,17 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				}
 				out := make([]spanResponse, 0, len(spans))
 				for _, sp := range spans {
+					// Scrub span attributes before egress to the LLM: they carry request
+					// params, headers, and DB statements that can contain PII/secrets from
+					// the reporting service (mirror search_logs). MCP boundary only.
+					attrs := sp.Attributes
+					if len(attrs) > 0 {
+						attrs = json.RawMessage(ai.Scrub(string(attrs)))
+					}
 					out = append(out, spanResponse{
 						SpanID: sp.SpanID, ParentSpanID: sp.ParentSpanID, Name: sp.Name,
 						Kind: sp.Kind, Status: sp.Status,
-						StartUnixMs: sp.StartUnixMs, DurationMs: sp.DurationMs, Attributes: sp.Attributes,
+						StartUnixMs: sp.StartUnixMs, DurationMs: sp.DurationMs, Attributes: attrs,
 					})
 				}
 				return out, nil

@@ -54,6 +54,17 @@ func (s *Server) handleUploadSourceMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify the project belongs to the caller's org BEFORE upserting (mirror the
+	// monitors/metrics handlers). Without this a tenant could pass another org's project
+	// id in the URL and overwrite that project's sourcemap (cross-tenant write), since the
+	// upsert conflict targets (project_id, release, name).
+	if _, err := s.q.GetProjectByID(r.Context(), generated.GetProjectByIDParams{
+		ID: chi.URLParam(r, "id"), OrgScope: orgIDFrom(r.Context()),
+	}); err != nil {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+
 	row, err := s.q.UpsertSourceMap(r.Context(), generated.UpsertSourceMapParams{
 		ID:        id.New(),
 		ProjectID: chi.URLParam(r, "id"),
