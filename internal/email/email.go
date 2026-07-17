@@ -100,12 +100,21 @@ func (m *Mailer) sendImplicitTLS(addr string, auth smtp.Auth, to string, msg []b
 	return c.Quit()
 }
 
+// stripHeaderCRLF removes CR and LF so an interpolated header value cannot inject
+// additional SMTP headers or a message body (header injection).
+func stripHeaderCRLF(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
+}
+
 func (m *Mailer) build(to, subject, text, html string) []byte {
 	boundary := "flare-boundary-9d7f3a1c"
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s <%s>\r\n", m.fromName, m.from)
-	fmt.Fprintf(&b, "To: %s\r\n", to)
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	// Strip CR/LF from the recipient + subject so a value with an embedded newline cannot
+	// inject extra SMTP headers or a body (defense-in-depth; callers use constant subjects
+	// today, but header safety should not depend on that).
+	fmt.Fprintf(&b, "To: %s\r\n", stripHeaderCRLF(to))
+	fmt.Fprintf(&b, "Subject: %s\r\n", stripHeaderCRLF(subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", boundary)
 

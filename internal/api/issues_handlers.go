@@ -166,6 +166,22 @@ func (s *Server) toEventResponses(ctx context.Context, issueID, org string, even
 	return out
 }
 
+// scrubEventsForMCP runs the PII/secret scrubber over event fields that cross the LLM
+// boundary via the MCP get_issue tool: the message, the exception value, and the stack
+// trace (frame context lines + locals routinely carry request params, DSNs, and secrets
+// from the reporting service). Applied ONLY on the MCP path; the REST dashboard shows the
+// raw event to the authenticated operator of that org. Mirrors toLogResponsesScrubbed.
+func scrubEventsForMCP(events []eventResponse) []eventResponse {
+	for i := range events {
+		events[i].Message = ai.Scrub(events[i].Message)
+		events[i].ExceptionValue = ai.Scrub(events[i].ExceptionValue)
+		if len(events[i].Stacktrace) > 0 {
+			events[i].Stacktrace = json.RawMessage(ai.Scrub(string(events[i].Stacktrace)))
+		}
+	}
+	return events
+}
+
 // releaseSourceMaps loads the source maps (name -> content) for each distinct
 // release across the issue's events, keyed by release. Returns an empty map on
 // any error so symbolication simply no-ops.

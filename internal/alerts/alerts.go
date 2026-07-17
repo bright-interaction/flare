@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bright-interaction/flare/internal/netguard"
 	"html"
 	"log/slog"
 	"net"
@@ -251,6 +252,5 @@ func (d *Dispatcher) webhook(ctx context.Context, cfgRaw json.RawMessage, n Noti
 }
 
 func isBlocked(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+	return netguard.IsBlockedIP(ip)
 }

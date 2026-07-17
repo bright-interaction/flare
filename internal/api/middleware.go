@@ -108,11 +108,13 @@ func (s *Server) rateLimitIngest(next http.Handler) http.Handler {
 // clientIP returns the caller IP without the port. chi's RealIP middleware has
 // already resolved X-Forwarded-For into RemoteAddr upstream.
 func clientIP(r *http.Request) string {
-	addr := r.RemoteAddr
-	if i := strings.LastIndex(addr, ":"); i > 0 {
-		return addr[:i]
+	// Use SplitHostPort, not LastIndex(":"): a bare IPv6 literal (which realIP may store)
+	// has many colons, and chopping at the last one corrupts it, mangling the rate-limit /
+	// login-lockout bucket key.
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return addr
+	return r.RemoteAddr
 }
 
 // trustedProxyIP reports whether ip is an internal reverse-proxy address that

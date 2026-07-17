@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"errors"
+	"github.com/bright-interaction/flare/internal/netguard"
 	"net"
 	"net/http"
 	"net/url"
@@ -79,9 +80,7 @@ func (s *Server) handleSetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	if u, err := url.Parse(req.Issuer); err != nil || u.Hostname() == "" {
 		writeErr(w, http.StatusBadRequest, "issuer is not a valid URL")
 		return
-	} else if ip := net.ParseIP(u.Hostname()); ip != nil &&
-		(ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+	} else if ip := net.ParseIP(u.Hostname()); ip != nil && netguard.IsBlockedIP(ip) {
 		writeErr(w, http.StatusBadRequest, "issuer host must be a public address")
 		return
 	}
