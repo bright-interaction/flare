@@ -149,7 +149,7 @@ func (q *Queries) GetProjectByDsnID(ctx context.Context, dsnID string) (*Project
 const getProjectByID = `-- name: GetProjectByID :one
 SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects
 WHERE id = $1
-  AND ($2::text = '' OR org_id = $2)
+  AND org_id = $2
 `
 
 type GetProjectByIDParams struct {
@@ -157,6 +157,9 @@ type GetProjectByIDParams struct {
 	OrgScope string `json:"org_scope"`
 }
 
+// Tenant scope is MANDATORY: an empty org_scope now matches nothing (fail closed) rather
+// than returning any org's project (which leaks the project's ingest public_key/DSN). No
+// caller needs the unscoped form; a genuine global lookup would use a separate named query.
 func (q *Queries) GetProjectByID(ctx context.Context, arg GetProjectByIDParams) (*Project, error) {
 	row := q.db.QueryRow(ctx, getProjectByID, arg.ID, arg.OrgScope)
 	var i Project

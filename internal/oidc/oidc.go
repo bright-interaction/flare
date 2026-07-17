@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bright-interaction/flare/internal/netguard"
 	"io"
 	"net"
 	"net/http"
@@ -35,9 +36,7 @@ var httpClient = &http.Client{
 				if err != nil {
 					return err
 				}
-				ip := net.ParseIP(host)
-				if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-					ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				if netguard.IsBlockedIP(net.ParseIP(host)) {
 					return errors.New("blocked destination address")
 				}
 				return nil

@@ -13,9 +13,12 @@ ORDER BY created_at DESC;
 SELECT * FROM projects WHERE public_key = $1;
 
 -- name: GetProjectByID :one
+-- Tenant scope is MANDATORY: an empty org_scope now matches nothing (fail closed) rather
+-- than returning any org's project (which leaks the project's ingest public_key/DSN). No
+-- caller needs the unscoped form; a genuine global lookup would use a separate named query.
 SELECT * FROM projects
 WHERE id = $1
-  AND (sqlc.arg(org_scope)::text = '' OR org_id = sqlc.arg(org_scope));
+  AND org_id = sqlc.arg(org_scope);
 
 -- name: GetProjectBySlug :one
 SELECT * FROM projects WHERE org_id = $1 AND slug = $2;
