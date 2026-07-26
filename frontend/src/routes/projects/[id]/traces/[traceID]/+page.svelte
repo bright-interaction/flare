@@ -76,7 +76,11 @@
 
   <div class="overflow-hidden rounded-lg border border-zinc-800/80">
     <ul class="divide-y divide-zinc-800/40">
-      {#each spans as s (s.span_id)}
+      <!-- Index-keyed: span_id is NOT unique within a trace (the spans table
+           has no unique constraint on it, and a retried or mis-instrumented
+           client can emit the same id twice), and a duplicate key throws and
+           blanks the whole waterfall. -->
+      {#each spans as s, i (i)}
         {@const left = ((s.start_unix_ms - t0) / total) * 100}
         {@const width = Math.max(0.5, (s.duration_ms / total) * 100)}
         {@const err = s.status === 'error'}

@@ -57,9 +57,16 @@ async function req<T>(method: string, path: string, body?: unknown, retriedCSRF 
   // The CSRF cookie outlives nothing: it expires while a long-lived tab is
   // still open, and the token was cached for the page's whole lifetime, so
   // every write failed until a manual reload. Refetch once and retry.
+  // Only retry a CSRF rejection, not an RBAC one. Retrying every 403 replayed
+  // authorization-denied writes a second time, which doubles the server-side
+  // work and the audit noise for a viewer clicking a button they cannot use.
+  // gorilla/csrf answers "Forbidden - CSRF token invalid".
   if (res.status === 403 && method !== 'GET' && !retriedCSRF) {
-    await csrf(true);
-    return req<T>(method, path, body, true);
+    const body403 = await res.clone().text();
+    if (/csrf/i.test(body403)) {
+      await csrf(true);
+      return req<T>(method, path, body, true);
+    }
   }
   // An expired or revoked session used to surface as a red error banner on
   // whatever page the user was on, with no way forward. Send them to the login

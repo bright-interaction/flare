@@ -116,14 +116,20 @@
       {:else if canWrite}
         <button onclick={makeGithubIssue} disabled={ghBusy} class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 active:translate-y-px disabled:opacity-60">{ghBusy ? 'Creating...' : 'Create GitHub issue'}</button>
       {/if}
-      {#if issue.status !== 'resolved'}
-        <button onclick={() => setStatus('resolved')} class="rounded-md border border-emerald-500/40 px-3 py-1.5 text-sm text-emerald-300 transition-colors hover:bg-emerald-500/10 active:translate-y-px">Resolve</button>
-      {/if}
-      {#if issue.status !== 'ignored'}
-        <button onclick={() => setStatus('ignored')} class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 active:translate-y-px">Ignore</button>
-      {/if}
-      {#if issue.status !== 'unresolved'}
-        <button onclick={() => setStatus('unresolved')} class="rounded-md border border-amber-400/40 px-3 py-1.5 text-sm text-amber-300 transition-colors hover:bg-amber-400/10 active:translate-y-px">Reopen</button>
+      <!-- Status changes are member+ on the server. A viewer used to see all
+           three buttons and get a 403 on every click, with no explanation. -->
+      {#if canWrite}
+        {#if issue.status !== 'resolved'}
+          <button onclick={() => setStatus('resolved')} class="rounded-md border border-emerald-500/40 px-3 py-1.5 text-sm text-emerald-300 transition-colors hover:bg-emerald-500/10 active:translate-y-px">Resolve</button>
+        {/if}
+        {#if issue.status !== 'ignored'}
+          <button onclick={() => setStatus('ignored')} class="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 active:translate-y-px">Ignore</button>
+        {/if}
+        {#if issue.status !== 'unresolved'}
+          <button onclick={() => setStatus('unresolved')} class="rounded-md border border-amber-400/40 px-3 py-1.5 text-sm text-amber-300 transition-colors hover:bg-amber-400/10 active:translate-y-px">Reopen</button>
+        {/if}
+      {:else}
+        <span class="self-center text-xs text-zinc-600">Read-only access</span>
       {/if}
     </div>
   </div>

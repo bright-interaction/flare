@@ -55,6 +55,24 @@ func (q *Queries) DeleteOrg(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteSessionsForUsers = `-- name: DeleteSessionsForUsers :exec
+DELETE FROM sessions
+WHERE EXISTS (
+    SELECT 1 FROM unnest($1::text[]) AS u(id)
+    WHERE position(u.id in encode(data, 'escape')) > 0
+)
+`
+
+// ciguard:allow-unscoped the scs session table is keyed by opaque token with no org column; the caller matches on the encoded user ids it is erasing
+// The sessions table is the one store holding tenant data that no foreign key
+// reaches: scs writes an opaque token plus a gob blob, so an org delete used to
+// leave every one of its members' live session rows behind. Matching on the
+// encoded user id inside the payload is the only handle available.
+func (q *Queries) DeleteSessionsForUsers(ctx context.Context, userIds []string) error {
+	_, err := q.db.Exec(ctx, deleteSessionsForUsers, userIds)
+	return err
+}
+
 const getFirstOrg = `-- name: GetFirstOrg :one
 SELECT id, name, slug, created_at FROM orgs ORDER BY created_at ASC LIMIT 1
 `

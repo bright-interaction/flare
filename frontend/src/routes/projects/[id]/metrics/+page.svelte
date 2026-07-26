@@ -49,29 +49,66 @@
     if (selected) select(selected);
   }
 
-  // Chart geometry (viewBox 100x30, padded), computed from the loaded points.
-  const stats = $derived.by(() => {
-    if (!points.length) return null;
-    const vals = points.map((p) => p.value);
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    return { min, max, avg, latest: vals[vals.length - 1], count: vals.length };
+  // One metric NAME can carry many independent series, one per label set
+  // (http_requests{route=/a} and {route=/b} are different things). Drawing all
+  // their points as a single line produced a sawtooth that belonged to no
+  // series, and min/max/avg/latest computed over the mixture were meaningless.
+  // Split by label set and chart each one.
+  function labelKey(labels: unknown): string {
+    if (!labels || typeof labels !== 'object') return '';
+    const entries = Object.entries(labels as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
+    return entries.map(([k, v]) => `${k}=${String(v)}`).join(', ');
+  }
+
+  // Muted, distinguishable, and consistent with the dashboard's amber accent.
+  const seriesColors = ['#fbbf24', '#38bdf8', '#34d399', '#f472b6', '#a3a3a3', '#fb923c'];
+
+  const series = $derived.by(() => {
+    const groups = new Map<string, MetricPoint[]>();
+    for (const p of points) {
+      const k = labelKey(p.labels);
+      const g = groups.get(k);
+      if (g) g.push(p);
+      else groups.set(k, [p]);
+    }
+    // Global y-scale so the series are visually comparable.
+    const all = points.map((p) => p.value);
+    const gMin = all.length ? Math.min(...all) : 0;
+    const gMax = all.length ? Math.max(...all) : 1;
+    const span = gMax - gMin || 1;
+
+    return [...groups.entries()].map(([key, pts], idx) => {
+      const vals = pts.map((p) => p.value);
+      const n = pts.length;
+      const path =
+        n < 2
+          ? ''
+          : pts
+              .map((p, i) => {
+                const x = (i / (n - 1)) * 98 + 1;
+                const y = 29 - ((p.value - gMin) / span) * 28;
+                return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+              })
+              .join(' ');
+      return {
+        key,
+        label: key || 'no labels',
+        color: seriesColors[idx % seriesColors.length],
+        path,
+        min: Math.min(...vals),
+        max: Math.max(...vals),
+        avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+        latest: vals[vals.length - 1],
+        count: n
+      };
+    });
   });
 
-  const path = $derived.by(() => {
-    if (points.length < 2 || !stats) return '';
-    const { min, max } = stats;
-    const span = max - min || 1;
-    const n = points.length;
-    return points
-      .map((p, i) => {
-        const x = (i / (n - 1)) * 98 + 1;
-        const y = 29 - ((p.value - min) / span) * 28;
-        return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
-      })
-      .join(' ');
-  });
+  // Summary stats stay honest: for a single series they describe it; with more
+  // than one, the per-series legend below is the truth.
+  const stats = $derived(series.length === 1 ? series[0] : null);
 
   function fmt(n: number): string {
     if (Math.abs(n) >= 1000 || (n !== 0 && Math.abs(n) < 0.01)) return n.toExponential(2);
@@ -148,20 +185,59 @@
 
             {#if loadingSeries}
               <div class="h-40 animate-pulse rounded bg-zinc-900/40"></div>
-            {:else if !stats}
+            {:else if series.length === 0}
               <p class="py-12 text-center text-sm text-zinc-500">No points in this window.</p>
             {:else}
               <svg viewBox="0 0 100 30" preserveAspectRatio="none" class="h-40 w-full">
-                <path d={path} fill="none" stroke="#f59e0b" stroke-width="0.5" vector-effect="non-scaling-stroke" />
-              </svg>
-              <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-                {#each [['latest', stats.latest], ['min', stats.min], ['max', stats.max], ['avg', stats.avg], ['points', stats.count]] as [label, value] (label)}
-                  <div class="rounded-md border border-zinc-800/80 px-3 py-2">
-                    <div class="text-[10px] uppercase tracking-wide text-zinc-500">{label}</div>
-                    <div class="mt-0.5 font-mono text-sm text-zinc-200">{label === 'points' ? value : fmt(value as number)}</div>
-                  </div>
+                {#each series as s (s.key)}
+                  <path d={s.path} fill="none" stroke={s.color} stroke-width="0.5" vector-effect="non-scaling-stroke" />
                 {/each}
-              </div>
+              </svg>
+
+              {#if stats}
+                <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+                  {#each [['latest', stats.latest], ['min', stats.min], ['max', stats.max], ['avg', stats.avg], ['points', stats.count]] as [label, value] (label)}
+                    <div class="rounded-md border border-zinc-800/80 px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">{label}</div>
+                      <div class="mt-0.5 font-mono text-sm text-zinc-200">{label === 'points' ? value : fmt(value as number)}</div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <!-- More than one label set: a single summary would average
+                     across unrelated series, so break it out per series. -->
+                <div class="mt-4 overflow-x-auto">
+                  <table class="w-full min-w-[32rem] text-left text-xs">
+                    <thead class="text-[10px] uppercase tracking-wide text-zinc-500">
+                      <tr class="border-b border-zinc-800/80">
+                        <th class="py-1.5 pr-3 font-medium">Series</th>
+                        <th class="py-1.5 pr-3 text-right font-medium">Latest</th>
+                        <th class="py-1.5 pr-3 text-right font-medium">Min</th>
+                        <th class="py-1.5 pr-3 text-right font-medium">Max</th>
+                        <th class="py-1.5 pr-3 text-right font-medium">Avg</th>
+                        <th class="py-1.5 text-right font-medium">Points</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-zinc-800/40">
+                      {#each series as s (s.key)}
+                        <tr>
+                          <td class="py-1.5 pr-3">
+                            <span class="inline-flex items-center gap-2">
+                              <span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background-color: {s.color}"></span>
+                              <span class="truncate font-mono text-zinc-300">{s.label}</span>
+                            </span>
+                          </td>
+                          <td class="py-1.5 pr-3 text-right font-mono text-zinc-200">{fmt(s.latest)}</td>
+                          <td class="py-1.5 pr-3 text-right font-mono text-zinc-400">{fmt(s.min)}</td>
+                          <td class="py-1.5 pr-3 text-right font-mono text-zinc-400">{fmt(s.max)}</td>
+                          <td class="py-1.5 pr-3 text-right font-mono text-zinc-400">{fmt(s.avg)}</td>
+                          <td class="py-1.5 text-right font-mono text-zinc-500">{s.count}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
             {/if}
           </div>
         {/if}

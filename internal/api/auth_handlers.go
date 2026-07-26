@@ -134,7 +134,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// signal worth surfacing (the throttle in recordSecurityEvent keeps a
 		// sustained attack from flooding).
 		if s.loginLimiter.Blocked(lockKey) {
-			s.recordSecurityEvent("", "login-lockout", "repeated failed logins for "+req.Email+" from "+clientIP(r), clientIP(r))
+			// Record against the TARGETED user's org, never the fallback
+			// system org. An empty org resolves to GetFirstOrg (the oldest
+			// workspace), so every tenant's lockouts were written into one
+			// unrelated org's security project, leaking that user's email and
+			// IP across the tenant boundary.
+			//
+			// When the email does not resolve to an account there is no org to
+			// attribute it to, and req.Email is then unauthenticated
+			// attacker-controlled text, so it must not be turned into an issue
+			// title in anyone's workspace. Log it and stop.
+			if err == nil {
+				s.recordSecurityEvent(user.OrgID, "login-lockout",
+					"repeated failed logins for "+req.Email+" from "+clientIP(r), clientIP(r))
+			} else {
+				slog.Warn("login lockout for unknown account", "ip", clientIP(r))
+			}
 		}
 		// Same message either way: never reveal which half failed.
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
@@ -164,6 +179,16 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	user, err := s.q.GetUserByID(ctx, uid)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	// This route sits OUTSIDE requireAuth, so it must repeat requireAuth's
+	// revocation check itself. Without it, a session predating a password reset
+	// still resolved here, so the SPA kept rendering as signed in (name, role,
+	// org) for an attacker whose session was supposed to be dead.
+	epoch := s.sessions.GetInt64(ctx, "auth_epoch")
+	if epoch > 0 && user.SessionsValidFrom.Valid && user.SessionsValidFrom.Time.Unix() > epoch {
+		_ = s.sessions.Destroy(ctx)
+		writeErr(w, http.StatusUnauthorized, "session expired, please sign in again")
 		return
 	}
 	writeJSON(w, http.StatusOK, toUserResponse(user))
