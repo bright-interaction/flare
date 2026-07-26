@@ -173,12 +173,28 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	// Erase the project's telemetry from the Parquet cold tier too (aged-out
 	// data the hot-tier delete above cannot reach). Best-effort: the hot delete
 	// is already committed, so a cold-purge failure is logged, not fatal.
+	coldErr := ""
 	if s.analytics != nil {
 		if err := s.analytics.PurgeColdScope(r.Context(), "project_id", pid); err != nil {
 			slog.Error("cold-tier purge failed on project delete", "project", pid, "err", err)
+			coldErr = err.Error()
 		}
 	}
+	// The deleted project may BE the org's flare-security project, whose id is
+	// cached for the process lifetime; a stale pointer would silently swallow
+	// every subsequent security event for this org.
+	s.invalidateSecCaches(orgIDFrom(r.Context()))
 	s.audit(r.Context(), "project.delete", pid)
+	// Report the cold tier honestly rather than a bare 204: on S3 the purge is
+	// unsupported, so the telemetry is still there and the operator has to
+	// erase it in the bucket themselves.
+	if coldErr != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "partial", "hot_tier": "erased",
+			"cold_tier": "NOT erased", "cold_tier_note": coldErr,
+		})
+		return
+	}
 	writeJSON(w, http.StatusNoContent, nil)
 }
 

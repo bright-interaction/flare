@@ -43,11 +43,18 @@ SELECT * FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
+  -- "%" matches every issue and "_" matches any character, so the search box
+  -- silently lies about what it found.
   AND (sqlc.narg(q)::text IS NULL
-       OR title ILIKE '%' || sqlc.narg(q) || '%'
-       OR culprit ILIKE '%' || sqlc.narg(q) || '%')
+       OR title ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\'
+       OR culprit ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\')
   AND level NOT IN ('info', 'debug')
-ORDER BY last_seen DESC
+-- id is the tiebreaker, and it is required: last_seen is not unique and it
+-- MUTATES on every ingested event, so a bare ORDER BY last_seen with OFFSET
+-- let rows shift between page requests, which silently duplicated some issues
+-- across pages and skipped others entirely.
+ORDER BY last_seen DESC, id DESC
 LIMIT $3 OFFSET $4;
 
 -- name: CountIssues :one
@@ -58,9 +65,12 @@ LIMIT $3 OFFSET $4;
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
+  -- "%" matches every issue and "_" matches any character, so the search box
+  -- silently lies about what it found.
   AND (sqlc.narg(q)::text IS NULL
-       OR title ILIKE '%' || sqlc.narg(q) || '%'
-       OR culprit ILIKE '%' || sqlc.narg(q) || '%')
+       OR title ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\'
+       OR culprit ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\')
   AND level NOT IN ('info', 'debug');
 
 -- ciguard:allow-no-project issue id is project-unique (one issue belongs to one project)

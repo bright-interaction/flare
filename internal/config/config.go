@@ -36,6 +36,14 @@ type Config struct {
 	// It cannot be inferred: FLARE_PARQUET_DIR always has a default value, so
 	// "cold tier configured" is indistinguishable from "cold tier defaulted".
 	AllowDropWithoutExport bool
+
+	// AllowPrivateAIEndpoint disables the SSRF guard on the tenant-supplied
+	// BYOAI base_url. The guard used to be tied to ENVIRONMENT=production, which
+	// is backwards: development is the DEFAULT for a self-hosted deployment, so
+	// the protection was off exactly where it was least likely to be noticed.
+	// It is now on everywhere unless this is explicitly set, which is what a
+	// developer pointing at a local Ollama/vLLM needs.
+	AllowPrivateAIEndpoint bool
 	S3Endpoint             string
 	S3Bucket               string
 	S3AccessKey            string
@@ -76,21 +84,25 @@ func (c Config) EmailEnabled() bool { return c.SMTPHost != "" && c.SMTPFrom != "
 
 func Load() (Config, error) {
 	c := Config{
-		Environment:            env("ENVIRONMENT", "development"),
-		Port:                   env("PORT", "8080"),
-		BaseURL:                env("BASE_URL", "http://localhost:8080"),
-		DatabaseURL:            env("DATABASE_URL", ""),
-		DBMaxConns:             int32(envInt("DB_MAX_CONNS", 20)),
-		DBMinConns:             int32(envInt("DB_MIN_CONNS", 2)),
-		RetentionDays:          envInt("RETENTION_DAYS", 30),
-		IngestRatePerMin:       envInt("INGEST_RATE_PER_MIN", 1200),
-		ParquetDir:             env("FLARE_PARQUET_DIR", "data/parquet"),
-		S3Endpoint:             env("FLARE_PARQUET_S3_ENDPOINT", ""),
-		S3Bucket:               env("FLARE_PARQUET_S3_BUCKET", "flare"),
-		S3AccessKey:            env("FLARE_PARQUET_S3_ACCESS_KEY", ""),
-		S3SecretKey:            env("FLARE_PARQUET_S3_SECRET_KEY", ""),
-		S3Region:               env("FLARE_PARQUET_S3_REGION", "us-east-1"),
-		S3UseSSL:               env("FLARE_PARQUET_S3_USE_SSL", "true") == "true",
+		Environment:      env("ENVIRONMENT", "development"),
+		Port:             env("PORT", "8080"),
+		BaseURL:          env("BASE_URL", "http://localhost:8080"),
+		DatabaseURL:      env("DATABASE_URL", ""),
+		DBMaxConns:       int32(envInt("DB_MAX_CONNS", 20)),
+		DBMinConns:       int32(envInt("DB_MIN_CONNS", 2)),
+		RetentionDays:    envInt("RETENTION_DAYS", 30),
+		IngestRatePerMin: envInt("INGEST_RATE_PER_MIN", 1200),
+		ParquetDir:       env("FLARE_PARQUET_DIR", "data/parquet"),
+		S3Endpoint:       env("FLARE_PARQUET_S3_ENDPOINT", ""),
+		S3Bucket:         env("FLARE_PARQUET_S3_BUCKET", "flare"),
+		S3AccessKey:      env("FLARE_PARQUET_S3_ACCESS_KEY", ""),
+		S3SecretKey:      env("FLARE_PARQUET_S3_SECRET_KEY", ""),
+		S3Region:         env("FLARE_PARQUET_S3_REGION", "us-east-1"),
+		// Fail CLOSED: any spelling other than an explicit false keeps TLS on.
+		// Comparing against "true" meant "TRUE", "1" or a typo silently sent
+		// object-storage credentials in the clear.
+		S3UseSSL:               !isFalse(env("FLARE_PARQUET_S3_USE_SSL", "true")),
+		AllowPrivateAIEndpoint: isTrue(env("FLARE_ALLOW_PRIVATE_AI_ENDPOINT", "")),
 		SessionKey:             env("SESSION_KEY", ""),
 		CSRFKey:                env("CSRF_KEY", ""),
 		SessionLifetime:        time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,
@@ -150,6 +162,24 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// isTrue / isFalse accept the spellings operators actually type, so a boolean
+// flag never silently takes the unsafe branch on a capitalisation difference.
+func isTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func isFalse(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no", "off":
+		return true
+	}
+	return false
 }
 
 func envInt(key string, def int) int {

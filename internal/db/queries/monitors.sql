@@ -56,6 +56,11 @@ WHERE m.interval_seconds > 0
 UPDATE monitors
 SET state = 'missing', last_alert_at = $3
 WHERE id = $1 AND org_id = $2
+  -- Must mirror ListDueMonitors exactly, interval_seconds > 0 included: an
+  -- unconfigured monitor (interval 0) is auto-created on first check-in and is
+  -- not overdue by definition, so claiming it here would page for a monitor the
+  -- listing query would never surface.
+  AND interval_seconds > 0
   AND EXTRACT(EPOCH FROM ($3::timestamptz - COALESCE(last_ping_at, created_at)))
       > (interval_seconds + grace_seconds)
   AND (state <> 'missing'

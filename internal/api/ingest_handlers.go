@@ -72,11 +72,13 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// A 200 tells the SDK the payload was accepted, so it drops it. Answering
-	// 200 when EVERY event in the envelope failed silently discarded the data
-	// instead of letting the SDK retry. Partial success still returns 200: the
-	// SDK has no way to retry only the failed items.
+	// 200 when EVERY event in the envelope failed silently discarded the data.
+	// 5xx, not 4xx: Sentry SDKs treat 4xx as "this payload is bad, discard it"
+	// and only retry/back off on 5xx, and a total failure here is a server-side
+	// problem, not a malformed request. Partial success still returns 200,
+	// because the SDK cannot retry individual items.
 	if events > 0 && stored == 0 {
-		writeErr(w, http.StatusBadRequest, "no event in the envelope could be stored")
+		writeErr(w, http.StatusServiceUnavailable, "no event in the envelope could be stored")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": lastID})
@@ -238,9 +240,15 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 		if err != nil || len(rules) == 0 {
 			return
 		}
+		// Keep the MOST SENSITIVE rule of each type rather than whichever the
+		// query happened to return last. Two spike rules on one project (say
+		// 10-in-5min and 100-in-5min) used to collapse to a nondeterministic
+		// winner, so the tighter rule could silently never evaluate.
 		byType := make(map[string]*generated.AlertRule, len(rules))
 		for _, r := range rules {
-			byType[r.Type] = r
+			if cur, ok := byType[r.Type]; !ok || moreSensitiveRule(r, cur) {
+				byType[r.Type] = r
+			}
 		}
 
 		var reason string
@@ -284,6 +292,16 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/issues/" + issue.ID,
 		})
 	})
+}
+
+// moreSensitiveRule reports whether a would fire earlier than b: a lower
+// threshold first, then a longer window at the same threshold. Kept pure so the
+// tie-break is testable.
+func moreSensitiveRule(a, b *generated.AlertRule) bool {
+	if a.Threshold != b.Threshold {
+		return a.Threshold < b.Threshold
+	}
+	return a.WindowMinutes > b.WindowMinutes
 }
 
 // spikeReason returns a non-empty reason when the issue has crossed the rule's

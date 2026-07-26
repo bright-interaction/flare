@@ -34,9 +34,12 @@ const countIssues = `-- name: CountIssues :one
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
   AND ($3::text IS NULL OR status = $3)
+  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
+  -- "%" matches every issue and "_" matches any character, so the search box
+  -- silently lies about what it found.
   AND ($4::text IS NULL
-       OR title ILIKE '%' || $4 || '%'
-       OR culprit ILIKE '%' || $4 || '%')
+       OR title ILIKE '%' || $4 || '%' ESCAPE '\'
+       OR culprit ILIKE '%' || $4 || '%' ESCAPE '\')
   AND level NOT IN ('info', 'debug')
 `
 
@@ -230,11 +233,14 @@ SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platf
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
+  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
+  -- "%" matches every issue and "_" matches any character, so the search box
+  -- silently lies about what it found.
   AND ($6::text IS NULL
-       OR title ILIKE '%' || $6 || '%'
-       OR culprit ILIKE '%' || $6 || '%')
+       OR title ILIKE '%' || $6 || '%' ESCAPE '\'
+       OR culprit ILIKE '%' || $6 || '%' ESCAPE '\')
   AND level NOT IN ('info', 'debug')
-ORDER BY last_seen DESC
+ORDER BY last_seen DESC, id DESC
 LIMIT $3 OFFSET $4
 `
 
@@ -251,6 +257,10 @@ type ListIssuesParams struct {
 // check-ins) so the issues list shows incidents only, matching the overview
 // queries. Those signals still ingest (they keep a project "active" for the
 // watchdog) and remain openable by id; they just don't clutter the list.
+// id is the tiebreaker, and it is required: last_seen is not unique and it
+// MUTATES on every ingested event, so a bare ORDER BY last_seen with OFFSET
+// let rows shift between page requests, which silently duplicated some issues
+// across pages and skipped others entirely.
 func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issue, error) {
 	rows, err := q.db.Query(ctx, listIssues,
 		arg.ProjectID,

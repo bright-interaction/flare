@@ -23,6 +23,7 @@ import (
 
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/ingest"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
@@ -344,6 +345,8 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				}
 				var qFilter *string
 				if q := strings.TrimSpace(a.Q); q != "" {
+					// Same bounds and LIKE escaping as the REST sibling.
+					q = escapeLike(ingest.SanitizeText(truncateRunes(q, 200)))
 					qFilter = &q
 				}
 				issues, err := s.store.ListIssues(ctx, proj.ID, org, a.Limit, 0, statusFilter, qFilter)
@@ -459,7 +462,12 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 						attrs = json.RawMessage(ai.ScrubJSON(attrs))
 					}
 					out = append(out, spanResponse{
-						SpanID: sp.SpanID, ParentSpanID: sp.ParentSpanID, Name: sp.Name,
+						SpanID: sp.SpanID, ParentSpanID: sp.ParentSpanID,
+						// The span NAME is as attacker-controlled as the
+						// attributes: OTLP names routinely embed the SQL
+						// statement or the request URL, so it carries the same
+						// PII/secrets and must cross the LLM boundary scrubbed.
+						Name: ai.Scrub(sp.Name),
 						Kind: sp.Kind, Status: sp.Status,
 						StartUnixMs: sp.StartUnixMs, DurationMs: sp.DurationMs, Attributes: attrs,
 					})
@@ -560,7 +568,10 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
-				return map[string]any{"triage": text, "cached": cached}, nil
+				// Stored triage is model output over ingested telemetry, so it
+				// can quote a secret straight back out. Scrub it here too, the
+				// same way scrubIssueForMCP does for the issue's copy.
+				return map[string]any{"triage": ai.Scrub(text), "cached": cached}, nil
 			},
 		},
 	}
