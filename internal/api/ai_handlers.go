@@ -79,17 +79,28 @@ func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "format must be openai or anthropic")
 		return
 	}
-	// Blank key on update keeps the stored one.
+	// The api_key column has two possible origins and they are NOT the same trust
+	// level, so they take separate paths. A supplied key is client input and is
+	// always encrypted. A blank key means "keep the stored one", and that value
+	// is already encrypted at rest, so it is carried through untouched.
+	//
+	// Do not collapse these into a single Encrypt call that decides by looking at
+	// the string. Letting a prefix on client input skip encryption is a
+	// decryption oracle, and here it is an exfiltration primitive: base_url is
+	// client-controlled too, so the decrypted victim key would be sent as a
+	// Bearer token to a host the attacker picked.
+	storedAPIKey := ""
 	if req.APIKey == "" {
 		existing, err := s.q.GetAIConfig(r.Context(), orgIDFrom(r.Context()))
 		if err != nil || existing.ApiKey == "" {
 			writeErr(w, http.StatusBadRequest, "an api key is required")
 			return
 		}
-		req.APIKey = existing.ApiKey
+		storedAPIKey = existing.ApiKey
 	}
+	apiKeyColumn := secretColumnForUpdate(s.secrets, req.APIKey, storedAPIKey)
 	if err := s.q.UpsertAIConfig(r.Context(), generated.UpsertAIConfigParams{
-		OrgID: orgIDFrom(r.Context()), BaseUrl: req.BaseURL, ApiKey: s.secrets.Encrypt(req.APIKey),
+		OrgID: orgIDFrom(r.Context()), BaseUrl: req.BaseURL, ApiKey: apiKeyColumn,
 		Model: req.Model, Format: req.Format, Enabled: req.Enabled,
 		AutoTriage: req.AutoTriage, TriageDailyBudget: req.TriageDailyBudget,
 	}); err != nil {
