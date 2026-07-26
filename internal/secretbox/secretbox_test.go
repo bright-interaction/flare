@@ -15,9 +15,12 @@ func TestRoundTrip(t *testing.T) {
 	if got := c.Decrypt(ct); got != "sk-live-supersecret-123" {
 		t.Fatalf("round-trip failed: %q", got)
 	}
-	// Idempotent: encrypting an already-encrypted value is a no-op.
-	if again := c.Encrypt(ct); again != ct {
-		t.Errorf("double-encryption changed the value")
+	// Encrypt is NOT idempotent, deliberately. It must re-encrypt even something
+	// that already looks encrypted, or a client can post lifted ciphertext and
+	// have the server decrypt it (see TestEncryptIsNotADecryptionOracle). Keeping
+	// an existing secret is the caller's job via api.secretColumnForUpdate.
+	if viaRequest := c.Encrypt(ct); viaRequest == ct {
+		t.Errorf("Encrypt passed ciphertext through: decryption oracle")
 	}
 	// Legacy plaintext (no prefix) and empty pass through unchanged.
 	if got := c.Decrypt("legacy-plaintext"); got != "legacy-plaintext" {
