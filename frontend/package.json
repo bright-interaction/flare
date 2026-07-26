@@ -10,17 +10,18 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.8",
-    "@sveltejs/kit": "^2.68.0",
-    "@sveltejs/vite-plugin-svelte": "^5.0.3",
-    "@tailwindcss/vite": "^4.0.0",
-    "svelte": "^5.16.0",
-    "svelte-check": "^4.1.1",
-    "tailwindcss": "^4.0.0",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.7"
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.70.1",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "svelte": "^5.56.8",
+    "svelte-check": "^4.7.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
   },
   "overrides": {
-    "cookie": "^0.7.2"
+    "cookie": "^0.7.2",
+    "postcss": "^8.5.18"
   }
 }
