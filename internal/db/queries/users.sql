@@ -12,10 +12,12 @@ RETURNING *;
 SELECT * FROM users
 WHERE sso_issuer = $1 AND sso_subject = $2 AND sso_subject <> '';
 
+-- ciguard:allow-unscoped SSO callback only; the id comes from GetUserBySSOIdentity, whose row the handler has already checked belongs to the org that started the flow
 -- name: UpdateUserEmail :exec
 -- Keeps the local email in step with the IdP after a rename.
 UPDATE users SET email = $2 WHERE id = $1;
 
+-- ciguard:allow-unscoped SSO callback only; same org-verified id, and the WHERE sso_subject = '' clause is itself the safety predicate
 -- name: LinkUserSSOIdentity :execrows
 -- Binds an account to the IdP identity that just authenticated it. Only ever
 -- fills an EMPTY binding: an account already bound to an issuer+subject can
@@ -24,19 +26,24 @@ UPDATE users SET email = $2 WHERE id = $1;
 UPDATE users SET sso_issuer = $2, sso_subject = $3
 WHERE id = $1 AND sso_subject = '';
 
+-- ciguard:allow-unscoped pre-auth login/SSO lookup; email is globally UNIQUE so there is no org to filter by yet
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1;
 
+-- ciguard:allow-unscoped session-scoped (the id IS the authenticated user) or pre-auth reset; never takes a caller-supplied id
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1;
 
+-- ciguard:allow-unscoped password-reset flow; the user id is resolved from the secret reset token
 -- name: BumpUserSessionsValidFrom :exec
 -- Invalidates every session established before now (called on password reset).
 UPDATE users SET sessions_valid_from = now() WHERE id = $1;
 
+-- ciguard:allow-unscoped pre-auth bootstrap check (is this a fresh install); returns a count, no rows
 -- name: CountUsers :one
 SELECT count(*) FROM users;
 
+-- ciguard:allow-unscoped password-reset flow; the user id is resolved from the secret reset token
 -- name: UpdateUserPassword :exec
 UPDATE users SET password_hash = $2 WHERE id = $1;
 

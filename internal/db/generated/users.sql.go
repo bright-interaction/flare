@@ -15,6 +15,7 @@ const bumpUserSessionsValidFrom = `-- name: BumpUserSessionsValidFrom :exec
 UPDATE users SET sessions_valid_from = now() WHERE id = $1
 `
 
+// ciguard:allow-unscoped password-reset flow; the user id is resolved from the secret reset token
 // Invalidates every session established before now (called on password reset).
 func (q *Queries) BumpUserSessionsValidFrom(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, bumpUserSessionsValidFrom, id)
@@ -36,6 +37,7 @@ const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
 `
 
+// ciguard:allow-unscoped pre-auth bootstrap check (is this a fresh install); returns a count, no rows
 func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, countUsers)
 	var count int64
@@ -143,6 +145,7 @@ const getUserByEmail = `-- name: GetUserByEmail :one
 SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users WHERE email = $1
 `
 
+// ciguard:allow-unscoped pre-auth login/SSO lookup; email is globally UNIQUE so there is no org to filter by yet
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
 	var i User
@@ -164,6 +167,7 @@ const getUserByID = `-- name: GetUserByID :one
 SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users WHERE id = $1
 `
 
+// ciguard:allow-unscoped session-scoped (the id IS the authenticated user) or pre-auth reset; never takes a caller-supplied id
 func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
 	var i User
@@ -260,6 +264,7 @@ type LinkUserSSOIdentityParams struct {
 	SsoSubject string `json:"sso_subject"`
 }
 
+// ciguard:allow-unscoped SSO callback only; same org-verified id, and the WHERE sso_subject = ” clause is itself the safety predicate
 // Binds an account to the IdP identity that just authenticated it. Only ever
 // fills an EMPTY binding: an account already bound to an issuer+subject can
 // never be silently rebound to a different IdP identity (which would let anyone
@@ -326,6 +331,7 @@ type UpdateUserEmailParams struct {
 	Email string `json:"email"`
 }
 
+// ciguard:allow-unscoped SSO callback only; the id comes from GetUserBySSOIdentity, whose row the handler has already checked belongs to the org that started the flow
 // Keeps the local email in step with the IdP after a rename.
 func (q *Queries) UpdateUserEmail(ctx context.Context, arg UpdateUserEmailParams) error {
 	_, err := q.db.Exec(ctx, updateUserEmail, arg.ID, arg.Email)
@@ -341,6 +347,7 @@ type UpdateUserPasswordParams struct {
 	PasswordHash string `json:"password_hash"`
 }
 
+// ciguard:allow-unscoped password-reset flow; the user id is resolved from the secret reset token
 func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
 	_, err := q.db.Exec(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
 	return err

@@ -140,10 +140,13 @@ export interface TraceSummary {
   started: string;
 }
 
+export type ApiKeyRole = 'viewer' | 'member';
+
 export interface ApiKey {
   id: string;
   name: string;
   prefix: string;
+  role: ApiKeyRole;
   created_at: string;
   last_used_at: string | null;
 }
@@ -152,6 +155,7 @@ export interface ApiKeyCreated {
   id: string;
   name: string;
   prefix: string;
+  role: ApiKeyRole;
   key: string;
 }
 

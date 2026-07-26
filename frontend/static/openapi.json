@@ -1360,6 +1360,14 @@
                 "properties": {
                   "name": {
                     "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "viewer",
+                      "member"
+                    ],
+                    "default": "viewer"
                   }
                 }
               }
@@ -1370,7 +1378,8 @@
           "201": {
             "description": "Created"
           }
-        }
+        },
+        "description": "role selects what the key may do and defaults to viewer (read-only). member adds writes, including DELETE /api/projects/{id}, which erases a project and all of its telemetry. owner and admin are not mintable as keys: team management and SSO configuration stay interactive."
       }
     },
     "/api/auth/register": {

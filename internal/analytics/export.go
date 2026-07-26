@@ -28,7 +28,15 @@ func NewExporter(duck *Manager, pool *pgxpool.Pool) *Exporter {
 // export_log. Idempotent: a (table, day) already logged is skipped. Returns nil
 // when there is nothing to export (partition missing or empty). The caller
 // (partition retention) must only DROP after this returns nil.
+// The whole body runs under holdColdTier (the SHARED analytics lock), so an
+// export can never interleave with PurgeColdScope, which erases the cold tier
+// for a right-to-erasure request under the exclusive lock. See holdColdTier for
+// the interleaving that used to resurrect erased telemetry.
 func (e *Exporter) ExportDay(ctx context.Context, table string, day time.Time) error {
+	return e.duck.holdColdTier(func() error { return e.exportDay(ctx, table, day) })
+}
+
+func (e *Exporter) exportDay(ctx context.Context, table string, day time.Time) error {
 	day = day.UTC()
 	dayStr := day.Format("2006-01-02")
 	child := fmt.Sprintf("%s_%s", table, day.Format("2006_01_02"))

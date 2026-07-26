@@ -12,6 +12,7 @@ package analytics
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -133,6 +134,45 @@ func (m *Manager) Healthy(ctx context.Context) bool {
 		return false
 	}
 	return true
+}
+
+// ErrClosed is returned by cold-tier work that could not run because the
+// manager is shut down. It must be an error and never a nil "nothing to do":
+// partition retention drops a partition once the export reports success, so a
+// silent skip here is permanent telemetry loss.
+var ErrClosed = errors.New("analytics: manager is closed")
+
+// holdColdTier runs fn while holding the SHARED analytics lock.
+//
+// It exists so writers to the Parquet cold tier (the partition exporter) are
+// mutually exclusive with the eraser (PurgeColdScope, which takes the exclusive
+// lock). Without it the export ran on e.duck.db with no lock at all, and a
+// right-to-erasure request could interleave like this:
+//
+//	exporter reads the hot partition, project P still present
+//	handler commits DELETE project P
+//	handler purges the cold tier: dt=D holds only part.parquet.tmp, which the
+//	  purge's glob does not match, so it finds nothing to erase
+//	exporter renames part.parquet.tmp -> part.parquet
+//
+// and P's telemetry is back in the cold tier after Flare answered 204 to an
+// erasure request. Holding the shared lock across the whole export closes that
+// window: the purge waits for the rename, then erases the file it produced.
+//
+// Shared and not exclusive on purpose. An export COPY of a full day is slow,
+// and blocking every analytics read for its duration would be a worse bug than
+// the one being fixed. Exports of different days write different files, so they
+// do not conflict with each other, only with the eraser.
+func (m *Manager) holdColdTier(fn func() error) error {
+	if m == nil {
+		return ErrClosed
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return ErrClosed
+	}
+	return fn()
 }
 
 // escapeSQL escapes single quotes for embedding in a DuckDB string literal.

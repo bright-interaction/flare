@@ -195,13 +195,21 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 
 		// API key: org-scoped programmatic access (provisioning, source-map
-		// upload, ingest). Acts at member level, never team management.
+		// upload, ingest). Carries the role stored ON THE KEY, never team
+		// management.
+		//
+		// This used to stamp "member" for every key, so a token minted for a
+		// read-only integration could DELETE a project and all its telemetry.
+		// The role now comes from the key itself, and anything that is not an
+		// explicitly mintable key role is clamped to read-only: a key must
+		// never be able to escalate past member even if the column is somehow
+		// written with "owner" or "admin".
 		if key := bearerToken(r); key != "" {
 			ak, err := s.q.GetAPIKeyByHash(ctx, auth.HashAPIKey(key))
 			if err == nil && (!ak.ExpiresAt.Valid || ak.ExpiresAt.Time.After(time.Now())) {
 				_ = s.q.TouchAPIKey(ctx, ak.ID)
 				ctx = context.WithValue(ctx, ctxOrgID, ak.OrgID)
-				ctx = context.WithValue(ctx, ctxRole, "member")
+				ctx = context.WithValue(ctx, ctxRole, apiKeyRole(ak.Role))
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -213,6 +221,21 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 
 // requireRole returns middleware that rejects callers below min in the role
 // hierarchy with 403.
+// apiKeyRole resolves the authority a stored API key row actually gets.
+//
+// Only the two mintable key roles are honoured. Anything else, including a
+// role written directly into the database, a value from a future migration, or
+// an empty string on a row created before the column existed, collapses to
+// read-only. A long-lived token must never be able to reach owner or admin,
+// because those roles gate team membership, SSO and workspace deletion, so the
+// safe direction on any surprise is down, not up.
+func apiKeyRole(stored string) string {
+	if stored == "viewer" || stored == "member" {
+		return stored
+	}
+	return "viewer"
+}
+
 func (s *Server) requireRole(min string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -176,16 +176,31 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 		return "", false, err
 	}
 
-	prompt := s.buildTriageContext(ctx, issue, org)
-	system := "You are a senior software engineer triaging a production error from an observability tool. " +
-		"The stack trace has been de-minified to original source. Reply in concise GitHub-flavored markdown with three short sections: " +
-		"**What happened** (plain language), **Likely root cause**, and **Suggested fix** (concrete, code-level where possible). " +
-		"Only use what the report supports; do not invent details."
-
-	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: s.secrets.Decrypt(cfg.ApiKey), Model: cfg.Model, Format: cfg.Format}, system, prompt)
+	// The report is written by whoever sent the event, not by us: a DSN public
+	// key lives in a browser bundle, so the exception message and every stack
+	// frame are anonymous input. Fence it and tell the model what the fence
+	// means, because the answer does not stop at the dashboard: it is served
+	// back through the MCP tools to the operator's own agent, which can write.
+	report := s.buildTriageContext(ctx, issue, org)
+	fenced, untrustedRule, err := ai.Fence(report)
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", errTriageEndpoint, err)
 	}
+	system := "You are a senior software engineer triaging a production error from an observability tool. " +
+		"The stack trace has been de-minified to original source. Reply in concise GitHub-flavored markdown with three short sections: " +
+		"**What happened** (plain language), **Likely root cause**, and **Suggested fix** (concrete, code-level where possible). " +
+		"Only use what the report supports; do not invent details. " +
+		untrustedRule
+
+	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: s.secrets.Decrypt(cfg.ApiKey), Model: cfg.Model, Format: cfg.Format}, system, fenced)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: %v", errTriageEndpoint, err)
+	}
+	// The reply is untrusted too, and for a second reason on top of the
+	// injected-telemetry one: base_url is org-configurable, so the endpoint
+	// answering is not necessarily a model at all. Strip control characters and
+	// cap the size before it is persisted and re-served.
+	triage = ai.Block(triage)
 	if err := s.q.SetIssueTriage(ctx, generated.SetIssueTriageParams{ID: issue.ID, OrgID: org, AiTriage: triage}); err != nil {
 		return "", false, err
 	}
@@ -232,17 +247,21 @@ type triageFrame struct {
 // nothing personal leaves the tenant boundary.
 func (s *Server) buildTriageContext(ctx context.Context, issue telemetry.Issue, org string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Error: %s\n", issue.Title)
-	fmt.Fprintf(&b, "Level: %s   Release: %s\n", issue.Level, issue.FirstRelease)
+	// Every value below arrives on the ingest endpoint, so each one is flattened
+	// to a single line first. Otherwise a title of "boom\n\nLocation: ..." lets
+	// the sender forge additional report sections, which is the cheapest version
+	// of the injection: text that reads as though Flare wrote it.
+	fmt.Fprintf(&b, "Error: %s\n", ai.Line(issue.Title))
+	fmt.Fprintf(&b, "Level: %s   Release: %s\n", ai.Line(issue.Level), ai.Line(issue.FirstRelease))
 	if issue.Culprit != "" {
-		fmt.Fprintf(&b, "Location: %s\n", issue.Culprit)
+		fmt.Fprintf(&b, "Location: %s\n", ai.Line(issue.Culprit))
 	}
 
 	events, _ := s.store.ListEventsByIssue(ctx, issue.ID, org, 1)
 	if len(events) > 0 {
 		e := events[0]
 		if e.ExceptionType != "" || e.ExceptionValue != "" {
-			fmt.Fprintf(&b, "Exception: %s: %s\n", e.ExceptionType, e.ExceptionValue)
+			fmt.Fprintf(&b, "Exception: %s: %s\n", ai.Line(e.ExceptionType), ai.Line(e.ExceptionValue))
 		}
 		stack := e.Stacktrace
 		if maps := s.releaseSourceMaps(ctx, issue.ID, org, events)[e.Release]; len(maps) > 0 {
@@ -258,16 +277,19 @@ func (s *Server) buildTriageContext(ctx context.Context, issue telemetry.Issue, 
 				frames = frames[len(frames)-30:]
 			}
 			for _, f := range frames {
-				fn := f.Function
+				fn := ai.Line(f.Function)
 				if fn == "" {
 					fn = "?"
 				}
-				fmt.Fprintf(&b, "  %s at %s:%d\n", fn, f.Filename, f.Lineno)
-				if f.ContextLine != "" {
-					fmt.Fprintf(&b, "      > %s\n", strings.TrimSpace(f.ContextLine))
+				fmt.Fprintf(&b, "  %s at %s:%d\n", fn, ai.Line(f.Filename), f.Lineno)
+				if cl := ai.Line(f.ContextLine); cl != "" {
+					fmt.Fprintf(&b, "      > %s\n", cl)
 				}
 			}
 		}
 	}
-	return ai.Scrub(b.String())
+	// Scrub last so PII never leaves the tenant boundary, then cap the whole
+	// region: 30 frames of attacker-sized context lines would otherwise be an
+	// unbounded prompt on the tenant's own BYOAI key.
+	return ai.Block(ai.Scrub(b.String()))
 }

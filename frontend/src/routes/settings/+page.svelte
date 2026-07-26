@@ -4,7 +4,15 @@
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
   import { relativeTime } from '$lib/format';
-  import type { AiConfig, ApiKey, AuditEntry, Channel, GithubConfig, OidcConfig } from '$lib/types';
+  import type {
+    AiConfig,
+    ApiKey,
+    ApiKeyRole,
+    AuditEntry,
+    Channel,
+    GithubConfig,
+    OidcConfig
+  } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
   let testResult = $state<Record<string, { ok: boolean; error?: string } | 'busy'>>({});
@@ -17,6 +25,10 @@
 
   let apiKeys = $state<ApiKey[] | null>(null);
   let keyName = $state('');
+  // Read-only is the default so the easy path is the safe one. A member key can
+  // delete a project and everything it ever recorded, so that has to be chosen
+  // on purpose rather than inherited by clicking Create.
+  let keyRole = $state<ApiKeyRole>('viewer');
   let newKey = $state<string | null>(null);
   let keyBusy = $state(false);
 
@@ -254,13 +266,21 @@
     keyBusy = true;
     error = null;
     try {
-      const k = await api.createApiKey(keyName.trim() || 'API key');
+      const k = await api.createApiKey(keyName.trim() || 'API key', keyRole);
       newKey = k.key;
       apiKeys = [
-        { id: k.id, name: k.name, prefix: k.prefix, created_at: new Date().toISOString(), last_used_at: null },
+        {
+          id: k.id,
+          name: k.name,
+          prefix: k.prefix,
+          role: k.role,
+          created_at: new Date().toISOString(),
+          last_used_at: null
+        },
         ...(apiKeys ?? [])
       ];
       keyName = '';
+      keyRole = 'viewer';
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to create key';
     } finally {
@@ -472,6 +492,17 @@
       class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
     />
   </div>
+  <div class="flex flex-col gap-1.5">
+    <label for="keyrole" class="text-xs font-medium text-zinc-400">Access</label>
+    <select
+      id="keyrole"
+      bind:value={keyRole}
+      class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+    >
+      <option value="viewer">Read-only</option>
+      <option value="member">Read and write</option>
+    </select>
+  </div>
   <button
     type="submit"
     disabled={keyBusy}
@@ -494,6 +525,13 @@
       <li class="flex items-center gap-3 py-3">
         <span class="text-sm font-medium text-zinc-200">{k.name}</span>
         <span class="font-mono text-xs text-zinc-500">{k.prefix}...</span>
+        <span
+          class="rounded border px-1.5 py-0.5 text-[11px] font-medium {k.role === 'member'
+            ? 'border-amber-400/30 bg-amber-400/10 text-amber-200'
+            : 'border-zinc-700 bg-zinc-800/60 text-zinc-400'}"
+        >
+          {k.role === 'member' ? 'read + write' : 'read-only'}
+        </span>
         <span class="ml-auto text-xs text-zinc-600">
           {k.last_used_at ? 'used' : 'never used'}
         </span>

@@ -2,6 +2,7 @@ import type {
   AlertRule,
   ApiKey,
   ApiKeyCreated,
+  ApiKeyRole,
   Artifact,
   AiConfig,
   AuditEntry,
@@ -198,7 +199,8 @@ export const api = {
   trace: (pid: string, traceID: string) => req<Span[]>('GET', `/projects/${pid}/traces/${traceID}`),
 
   apiKeys: () => req<ApiKey[]>('GET', '/keys'),
-  createApiKey: (name: string) => req<ApiKeyCreated>('POST', '/keys', { name }),
+  createApiKey: (name: string, role: ApiKeyRole = 'viewer') =>
+    req<ApiKeyCreated>('POST', '/keys', { name, role }),
   deleteApiKey: (id: string) => req<void>('DELETE', `/keys/${id}`),
 
   channels: () => req<Channel[]>('GET', '/channels'),
