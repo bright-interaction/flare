@@ -54,10 +54,29 @@ func New(secret string) *Cipher {
 // Enabled reports whether a usable key is configured.
 func (c *Cipher) Enabled() bool { return c != nil && c.enabled }
 
-// Encrypt returns a versioned base64 ciphertext. Empty input, an
-// already-encrypted value, and the disabled cipher all pass through unchanged.
+// Encrypt returns a versioned base64 ciphertext. Empty input and the disabled
+// cipher pass through unchanged.
+//
+// This is the REQUEST-side helper: it ALWAYS encrypts non-empty input, including
+// input that already carries the prefix. Anything a client can influence must
+// come through here.
+//
+// It used to skip input that already looked encrypted, which made the write path
+// trust a string the client controls. Integration secrets are client-settable
+// (a GitHub token, an AI provider key, an OIDC client secret), so an attacker
+// holding ciphertext lifted from a stolen database could submit it prefixed,
+// have it stored verbatim, and have the server decrypt it for them. The AI
+// config makes that a clean exfiltration: the client picks BOTH base_url and
+// api_key, so the decrypted victim key gets sent as a Bearer token to a host the
+// attacker chose. See TestEncryptIsNotADecryptionOracle.
+//
+// There is deliberately NO idempotent counterpart here. An update that keeps an
+// existing secret must carry the stored value through untouched rather than
+// re-encrypt it; see api.secretColumnForUpdate. Exporting a "skip it if it
+// already looks encrypted" helper from this package would just be the oracle
+// again, one call site away.
 func (c *Cipher) Encrypt(plaintext string) string {
-	if !c.Enabled() || plaintext == "" || strings.HasPrefix(plaintext, prefix) {
+	if !c.Enabled() || plaintext == "" {
 		return plaintext
 	}
 	nonce := make([]byte, c.aead.NonceSize())

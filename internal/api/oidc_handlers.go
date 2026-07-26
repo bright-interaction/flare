@@ -88,15 +88,21 @@ func (s *Server) handleSetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A blank secret on update keeps the stored one (so admins can toggle
-	// enabled or change the role without re-entering it).
+	// enabled or change the role without re-entering it). That stored value is
+	// already encrypted at rest and is carried through untouched, while a
+	// supplied secret is client input and is always encrypted. Different trust
+	// levels, different paths: never one call that decides by inspecting the
+	// string, which is the decryption oracle described on secretbox.Encrypt.
+	storedClientSecret := ""
 	if req.ClientSecret == "" {
 		existing, err := s.q.GetOIDCConfig(r.Context(), orgIDFrom(r.Context()))
 		if err != nil || existing.ClientSecret == "" {
 			writeErr(w, http.StatusBadRequest, "a client_secret is required")
 			return
 		}
-		req.ClientSecret = existing.ClientSecret
+		storedClientSecret = existing.ClientSecret
 	}
+	clientSecretColumn := secretColumnForUpdate(s.secrets, req.ClientSecret, storedClientSecret)
 	if req.DefaultRole == "" {
 		req.DefaultRole = "member"
 	}
@@ -109,7 +115,7 @@ func (s *Server) handleSetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		OrgID:        orgIDFrom(r.Context()),
 		Issuer:       req.Issuer,
 		ClientID:     req.ClientID,
-		ClientSecret: s.secrets.Encrypt(req.ClientSecret),
+		ClientSecret: clientSecretColumn,
 		DefaultRole:  req.DefaultRole,
 		Enabled:      req.Enabled,
 	}); err != nil {
