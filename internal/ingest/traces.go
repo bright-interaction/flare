@@ -52,11 +52,20 @@ func ParseOTLPTraces(body []byte, asJSON bool) ([]SpanRecord, error) {
 }
 
 func normalizeSpan(sp *tracepb.Span) SpanRecord {
-	start := time.Unix(0, int64(sp.GetStartTimeUnixNano())).UTC()
-	end := time.Unix(0, int64(sp.GetEndTimeUnixNano())).UTC()
+	// Duration comes from the RAW client times so a clamp cannot distort it; the
+	// stored start/end are clamped because start_time is the partition key and an
+	// out-of-window value lands in the unprunable DEFAULT partition.
+	rawStart := time.Unix(0, int64(sp.GetStartTimeUnixNano())).UTC()
+	rawEnd := time.Unix(0, int64(sp.GetEndTimeUnixNano())).UTC()
 	durMs := 0.0
-	if end.After(start) {
-		durMs = float64(end.Sub(start).Microseconds()) / 1000.0
+	if rawEnd.After(rawStart) {
+		durMs = float64(rawEnd.Sub(rawStart).Microseconds()) / 1000.0
+	}
+	now := time.Now().UTC()
+	start := ClampTime(rawStart, now)
+	end := ClampTime(rawEnd, now)
+	if end.Before(start) {
+		end = start
 	}
 	return SpanRecord{
 		TraceID:      hexOrEmpty(sp.GetTraceId()),

@@ -70,6 +70,41 @@ type Server struct {
 	secProjects      map[string]*generated.Project
 	secIPLimiter     *ratelimit.Limiter
 	secGlobalLimiter *ratelimit.Limiter
+
+	// bgSlots bounds the detached goroutines ingest spawns per event (alert
+	// evaluation, auto-triage). Ingest used to fire one unbounded `go func` per
+	// event, so a single large envelope could create tens of thousands of
+	// goroutines all queueing on a ~20-connection pgx pool and starving every
+	// other tenant on the instance. Acquire is non-blocking: when the pool is
+	// saturated the work is DROPPED rather than queued, because ingest must never
+	// block and a backlog of stale alert evaluations has no value.
+	bgSlots chan struct{}
+}
+
+// bgWorkers is the ceiling on concurrent detached ingest-side background jobs.
+const bgWorkers = 32
+
+// goBackground runs fn on a bounded worker slot with its own detached, deadlined
+// context. Returns false (and drops fn) when every slot is busy.
+func (s *Server) goBackground(name string, timeout time.Duration, fn func(context.Context)) bool {
+	select {
+	case s.bgSlots <- struct{}{}:
+	default:
+		slog.Warn("background work dropped: all worker slots busy", "job", name, "workers", bgWorkers)
+		return false
+	}
+	go func() {
+		defer func() { <-s.bgSlots }()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("background job panicked", "job", name, "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		fn(ctx)
+	}()
+	return true
 }
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
@@ -96,6 +131,8 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
 		secGlobalLimiter: ratelimit.New(60, time.Minute),   // <=60 per kind / min
+
+		bgSlots: make(chan struct{}, bgWorkers),
 	}
 	// Persist each delivery outcome so a silently-failing channel becomes
 	// visible (last_ok_at / last_error) instead of vanishing into a log line.

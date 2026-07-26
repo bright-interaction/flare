@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -67,6 +68,58 @@ func Scrub(s string) string {
 		s = sc.re.ReplaceAllString(s, sc.with)
 	}
 	return s
+}
+
+// ScrubJSON scrubs a JSON document by walking it and applying Scrub to string
+// leaves only, then re-marshalling.
+//
+// Never run Scrub over serialized JSON directly: the number rules
+// (\b\d{13,19}\b -> [number] and the Luhn card rule) rewrite UNQUOTED numeric
+// values, so {"duration_ns":1712345678901234567} became
+// {"duration_ns":[number]}, which is not valid JSON. Callers wrap the result in
+// json.RawMessage, and encoding/json then fails on the whole response; the MCP
+// layer's marshal fallback rendered the []byte as a decimal byte dump. Nanosecond
+// timestamps are 19 digits, so this fired on ordinary OTLP traffic.
+//
+// Input that is not valid JSON is scrubbed as plain text, so a malformed stored
+// blob still gets redacted rather than passed through raw.
+func ScrubJSON(raw []byte) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return []byte(Scrub(string(raw)))
+	}
+	out, err := json.Marshal(scrubValue(v))
+	if err != nil {
+		// Unreachable for a tree that just unmarshalled, but never emit
+		// something a caller would embed as invalid JSON.
+		return []byte(`{"_scrub_error":"redacted"}`)
+	}
+	return out
+}
+
+// scrubValue rewrites string leaves (and object keys, which can themselves carry
+// a secret) in place. Numbers, bools and null are left as typed JSON values.
+func scrubValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return Scrub(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[Scrub(k)] = scrubValue(val)
+		}
+		return out
+	case []any:
+		for i := range t {
+			t[i] = scrubValue(t[i])
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 func onlyDigits(s string) string {

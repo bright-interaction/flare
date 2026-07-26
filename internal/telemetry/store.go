@@ -13,8 +13,11 @@ import (
 // deliberately do NOT go through Store; they stay on the generated queries.
 // Store is read-only, mirroring the atomicsite analyticsdb split.
 type Store interface {
-	ListIssues(ctx context.Context, projectID, orgID string, limit, offset int32, status *string) ([]Issue, error)
-	CountIssues(ctx context.Context, projectID, orgID string) (int64, error)
+	// q is an optional case-insensitive substring match on title/culprit.
+	// CountIssues MUST apply the same status+q filter as ListIssues, or the
+	// total contradicts the page.
+	ListIssues(ctx context.Context, projectID, orgID string, limit, offset int32, status, q *string) ([]Issue, error)
+	CountIssues(ctx context.Context, projectID, orgID string, status, q *string) (int64, error)
 	GetIssue(ctx context.Context, issueID, orgID string) (Issue, error)
 	ListEventsByIssue(ctx context.Context, issueID, orgID string, limit int32) ([]Event, error)
 	SearchLogs(ctx context.Context, projectID, orgID string, f LogFilter) ([]Log, error)

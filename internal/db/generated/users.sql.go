@@ -68,7 +68,7 @@ func (q *Queries) CreatePasswordResetToken(ctx context.Context, arg CreatePasswo
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, org_id, email, password_hash, role)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, org_id, email, password_hash, role, created_at, sessions_valid_from
+RETURNING id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject
 `
 
 type CreateUserParams struct {
@@ -96,6 +96,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (*User, 
 		&i.Role,
 		&i.CreatedAt,
 		&i.SessionsValidFrom,
+		&i.SsoIssuer,
+		&i.SsoSubject,
 	)
 	return &i, err
 }
@@ -138,7 +140,7 @@ func (q *Queries) GetPasswordResetToken(ctx context.Context, tokenHash string) (
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from FROM users WHERE email = $1
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (*User, error) {
@@ -152,12 +154,14 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (*User, erro
 		&i.Role,
 		&i.CreatedAt,
 		&i.SessionsValidFrom,
+		&i.SsoIssuer,
+		&i.SsoSubject,
 	)
 	return &i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from FROM users WHERE id = $1
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
@@ -171,12 +175,14 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
 		&i.Role,
 		&i.CreatedAt,
 		&i.SessionsValidFrom,
+		&i.SsoIssuer,
+		&i.SsoSubject,
 	)
 	return &i, err
 }
 
 const getUserInOrg = `-- name: GetUserInOrg :one
-SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from FROM users WHERE id = $1 AND org_id = $2
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users WHERE id = $1 AND org_id = $2
 `
 
 type GetUserInOrgParams struct {
@@ -195,6 +201,8 @@ func (q *Queries) GetUserInOrg(ctx context.Context, arg GetUserInOrgParams) (*Us
 		&i.Role,
 		&i.CreatedAt,
 		&i.SessionsValidFrom,
+		&i.SsoIssuer,
+		&i.SsoSubject,
 	)
 	return &i, err
 }
@@ -207,6 +215,29 @@ UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at 
 func (q *Queries) InvalidatePasswordResetTokensForUser(ctx context.Context, userID string) error {
 	_, err := q.db.Exec(ctx, invalidatePasswordResetTokensForUser, userID)
 	return err
+}
+
+const linkUserSSOIdentity = `-- name: LinkUserSSOIdentity :execrows
+UPDATE users SET sso_issuer = $2, sso_subject = $3
+WHERE id = $1 AND sso_subject = ''
+`
+
+type LinkUserSSOIdentityParams struct {
+	ID         string `json:"id"`
+	SsoIssuer  string `json:"sso_issuer"`
+	SsoSubject string `json:"sso_subject"`
+}
+
+// Binds an account to the IdP identity that just authenticated it. Only ever
+// fills an EMPTY binding: an account already bound to an issuer+subject can
+// never be silently rebound to a different IdP identity (which would let anyone
+// who can reconfigure SSO take over an existing, higher-privileged account).
+func (q *Queries) LinkUserSSOIdentity(ctx context.Context, arg LinkUserSSOIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, linkUserSSOIdentity, arg.ID, arg.SsoIssuer, arg.SsoSubject)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listUsersByOrg = `-- name: ListUsersByOrg :many

@@ -59,9 +59,10 @@ func normalizeOTLPLog(lr *logspb.LogRecord) LogRecord {
 	if ts == 0 {
 		ts = lr.GetObservedTimeUnixNano()
 	}
-	when := time.Now()
+	now := time.Now().UTC()
+	when := now
 	if ts != 0 {
-		when = time.Unix(0, int64(ts)).UTC()
+		when = ClampTime(time.Unix(0, int64(ts)).UTC(), now)
 	}
 	return LogRecord{
 		Severity:   strings.ToLower(sev),
@@ -99,10 +100,11 @@ func ParseNativeLogs(body []byte) ([]LogRecord, error) {
 
 	out := make([]LogRecord, 0, len(arr))
 	for _, l := range arr {
-		when := time.Now()
+		now := time.Now().UTC()
+		when := now
 		if l.Timestamp != "" {
 			if t, err := time.Parse(time.RFC3339, l.Timestamp); err == nil {
-				when = t
+				when = ClampTime(t, now)
 			}
 		}
 		out = append(out, LogRecord{

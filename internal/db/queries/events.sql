@@ -43,13 +43,24 @@ SELECT * FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  AND (sqlc.narg(q)::text IS NULL
+       OR title ILIKE '%' || sqlc.narg(q) || '%'
+       OR culprit ILIKE '%' || sqlc.narg(q) || '%')
   AND level NOT IN ('info', 'debug')
 ORDER BY last_seen DESC
 LIMIT $3 OFFSET $4;
 
 -- name: CountIssues :one
+-- MUST carry the same status/search predicates as ListIssues. It used to count
+-- every issue regardless of filter, so the total shown beside the tabs
+-- contradicted the list on every tab except "all", and paging computed from it
+-- offered pages that were always empty.
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
+  AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  AND (sqlc.narg(q)::text IS NULL
+       OR title ILIKE '%' || sqlc.narg(q) || '%'
+       OR culprit ILIKE '%' || sqlc.narg(q) || '%')
   AND level NOT IN ('info', 'debug');
 
 -- ciguard:allow-no-project issue id is project-unique (one issue belongs to one project)

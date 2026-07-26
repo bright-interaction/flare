@@ -33,16 +33,31 @@ func (q *Queries) CountEventsForIssueSince(ctx context.Context, arg CountEventsF
 const countIssues = `-- name: CountIssues :one
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
+  AND ($3::text IS NULL OR status = $3)
+  AND ($4::text IS NULL
+       OR title ILIKE '%' || $4 || '%'
+       OR culprit ILIKE '%' || $4 || '%')
   AND level NOT IN ('info', 'debug')
 `
 
 type CountIssuesParams struct {
-	ProjectID string `json:"project_id"`
-	OrgID     string `json:"org_id"`
+	ProjectID string      `json:"project_id"`
+	OrgID     string      `json:"org_id"`
+	Status    pgtype.Text `json:"status"`
+	Q         pgtype.Text `json:"q"`
 }
 
+// MUST carry the same status/search predicates as ListIssues. It used to count
+// every issue regardless of filter, so the total shown beside the tabs
+// contradicted the list on every tab except "all", and paging computed from it
+// offered pages that were always empty.
 func (q *Queries) CountIssues(ctx context.Context, arg CountIssuesParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssues, arg.ProjectID, arg.OrgID)
+	row := q.db.QueryRow(ctx, countIssues,
+		arg.ProjectID,
+		arg.OrgID,
+		arg.Status,
+		arg.Q,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -215,6 +230,9 @@ SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platf
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
+  AND ($6::text IS NULL
+       OR title ILIKE '%' || $6 || '%'
+       OR culprit ILIKE '%' || $6 || '%')
   AND level NOT IN ('info', 'debug')
 ORDER BY last_seen DESC
 LIMIT $3 OFFSET $4
@@ -226,6 +244,7 @@ type ListIssuesParams struct {
 	Limit     int32       `json:"limit"`
 	Offset    int32       `json:"offset"`
 	Status    pgtype.Text `json:"status"`
+	Q         pgtype.Text `json:"q"`
 }
 
 // Excludes info/debug-level signals (liveness heartbeats, breadcrumbs, health
@@ -239,6 +258,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]*Issu
 		arg.Limit,
 		arg.Offset,
 		arg.Status,
+		arg.Q,
 	)
 	if err != nil {
 		return nil, err

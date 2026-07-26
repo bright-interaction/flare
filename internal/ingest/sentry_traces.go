@@ -107,6 +107,11 @@ func ParseSentryTransaction(payload []byte) ([]SpanRecord, error) {
 
 	out := make([]SpanRecord, 0, len(tx.Spans)+1)
 
+	// start_time is the partition key and is fully client-supplied, so it is
+	// clamped into the partitioned window. DurationMs still comes from the raw
+	// pair below, so a clamp never distorts the reported latency.
+	now := time.Now().UTC()
+
 	rootName := firstNonEmpty(tx.Transaction, tr.Description, tr.Op)
 	out = append(out, SpanRecord{
 		TraceID:      tr.TraceID,
@@ -115,8 +120,8 @@ func ParseSentryTransaction(payload []byte) ([]SpanRecord, error) {
 		Name:         rootName,
 		Kind:         opKind(tr.Op),
 		Status:       normSpanStatus(tr.Status),
-		Start:        tx.StartTS.Time,
-		End:          tx.Timestamp.Time,
+		Start:        ClampTime(tx.StartTS.Time, now),
+		End:          ClampTime(tx.Timestamp.Time, now),
 		DurationMs:   durationMs(tx.StartTS.Time, tx.Timestamp.Time),
 		Attributes:   spanAttrs(tr.Op, tr.Description, tr.Tags, tr.Data, tx.Environment, tx.Release),
 	})
@@ -132,8 +137,8 @@ func ParseSentryTransaction(payload []byte) ([]SpanRecord, error) {
 			Name:         firstNonEmpty(sp.Description, sp.Op),
 			Kind:         opKind(sp.Op),
 			Status:       normSpanStatus(sp.Status),
-			Start:        sp.StartTS.Time,
-			End:          sp.Timestamp.Time,
+			Start:        ClampTime(sp.StartTS.Time, now),
+			End:          ClampTime(sp.Timestamp.Time, now),
 			DurationMs:   durationMs(sp.StartTS.Time, sp.Timestamp.Time),
 			Attributes:   spanAttrs(sp.Op, sp.Description, sp.Tags, sp.Data, "", ""),
 		})

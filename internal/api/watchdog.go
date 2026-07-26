@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -19,6 +20,11 @@ import (
 // waking someone for clears this AND the baseline multiplier.
 const anomalyMinEvents = 5
 
+// monitorRenotifySeconds is how long a monitor stays claimed as "missing"
+// before it is eligible to page again. Without a re-notify window, the claim is
+// taken before dispatch, so one dropped delivery silences a dead cron forever.
+const monitorRenotifySeconds int64 = 24 * 60 * 60
+
 // RunWatchdog periodically evaluates the "anomaly" and "silence" alert rules,
 // which cannot ride on ingest: silence is the ABSENCE of events, and anomaly
 // needs a baseline window. It reuses the same notification channels + dispatch
@@ -31,12 +37,35 @@ func (s *Server) RunWatchdog(ctx context.Context, interval time.Duration) {
 	slog.Info("watchdog started", "interval", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// The tick runs in its own goroutine guarded by an in-flight flag, so a slow
+	// or hung dispatch (mail, webhook, Slack) can never park the ticker itself.
+	// Overlapping ticks are skipped rather than queued: the work is idempotent
+	// and claim-gated, so skipping is always safer than piling up.
+	var inFlight atomic.Bool
+	var skipped atomic.Int64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.watchdogTick(ctx)
+			if !inFlight.CompareAndSwap(false, true) {
+				if n := skipped.Add(1); n%10 == 1 {
+					slog.Warn("watchdog: previous tick still running, skipping", "skipped_total", n)
+				}
+				continue
+			}
+			go func() {
+				defer inFlight.Store(false)
+				// A panic in a detached goroutine takes the whole process down,
+				// and this one is the alerting loop. Contain it.
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("watchdog: tick panicked", "panic", r)
+					}
+				}()
+				s.watchdogTick(ctx)
+			}()
 		}
 	}
 }
@@ -99,7 +128,10 @@ func (s *Server) watchdogTick(ctx context.Context) {
 // TrySetMonitorMissing so exactly one replica pages, and only once until the
 // job checks in again (which flips state back to ok).
 func (s *Server) checkMonitors(ctx context.Context, chanCache map[string][]alerts.Channel, now time.Time) {
-	due, err := s.q.ListDueMonitors(ctx, pgtype.Timestamptz{Time: now, Valid: true})
+	due, err := s.q.ListDueMonitors(ctx, generated.ListDueMonitorsParams{
+		Column1:         pgtype.Timestamptz{Time: now, Valid: true},
+		RenotifySeconds: monitorRenotifySeconds,
+	})
 	if err != nil {
 		slog.Error("watchdog: list due monitors failed", "error", err)
 		return
@@ -110,19 +142,27 @@ func (s *Server) checkMonitors(ctx context.Context, chanCache map[string][]alert
 			continue
 		}
 		claimed, err := s.q.TrySetMonitorMissing(ctx, generated.TrySetMonitorMissingParams{
-			ID:          m.ID,
-			OrgID:       m.OrgID,
-			LastAlertAt: pgtype.Timestamptz{Time: now, Valid: true},
+			ID:              m.ID,
+			OrgID:           m.OrgID,
+			LastAlertAt:     pgtype.Timestamptz{Time: now, Valid: true},
+			RenotifySeconds: monitorRenotifySeconds,
 		})
 		if err != nil || claimed == 0 {
 			continue
 		}
-		overdue := int64(now.Sub(m.LastPingAt.Time).Seconds())
+		// Mirror the query's COALESCE: a monitor that has never checked in is
+		// measured from creation, and says so, rather than reporting a nonsense
+		// age off a zero-value timestamp.
+		since, reason := m.LastPingAt.Time, "Check-in missing"
+		if !m.LastPingAt.Valid {
+			since, reason = m.CreatedAt.Time, "Never checked in since it was created"
+		}
+		overdue := int64(now.Sub(since).Seconds())
 		s.dispatcher.Dispatch(ctx, channels, alerts.Notification{
 			ProjectName: m.ProjectName,
 			Title:       "Monitor overdue: " + m.Slug,
 			Level:       "warning",
-			Reason:      fmt.Sprintf("Check-in missing: no ping for ~%ds (expected every %ds + %ds grace)", overdue, m.IntervalSeconds, m.GraceSeconds),
+			Reason:      fmt.Sprintf("%s: nothing for ~%ds (expected every %ds + %ds grace)", reason, overdue, m.IntervalSeconds, m.GraceSeconds),
 			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/projects/" + m.ProjectID,
 		})
 		slog.Info("watchdog: monitor missing", "monitor", m.Slug, "project", m.ProjectName)
@@ -177,20 +217,31 @@ func (s *Server) watchdogReason(ctx context.Context, rule *generated.ListWatchdo
 	case "anomaly":
 		recent, err := s.countActionableEventsSince(ctx, rule.ProjectID, rule.OrgID, windowStart)
 		if err != nil {
+			// Swallowing this silently disabled every anomaly and silence alert
+			// for as long as the count query kept failing, with nothing in the
+			// logs to say so.
+			slog.Error("watchdog: baseline count failed, rule skipped",
+				"rule", rule.ID, "type", rule.Type, "project", rule.ProjectID, "error", err)
 			return ""
 		}
 		day, err := s.countActionableEventsSince(ctx, rule.ProjectID, rule.OrgID, dayStart)
 		if err != nil {
+			slog.Error("watchdog: baseline count failed, rule skipped",
+				"rule", rule.ID, "type", rule.Type, "project", rule.ProjectID, "error", err)
 			return ""
 		}
 		return anomalyReason(recent, day, rule.WindowMinutes, rule.Threshold)
 	case "silence":
 		recent, err := s.countEventsSince(ctx, rule.ProjectID, rule.OrgID, windowStart)
 		if err != nil {
+			slog.Error("watchdog: baseline count failed, rule skipped",
+				"rule", rule.ID, "type", rule.Type, "project", rule.ProjectID, "error", err)
 			return ""
 		}
 		day, err := s.countEventsSince(ctx, rule.ProjectID, rule.OrgID, dayStart)
 		if err != nil {
+			slog.Error("watchdog: baseline count failed, rule skipped",
+				"rule", rule.ID, "type", rule.Type, "project", rule.ProjectID, "error", err)
 			return ""
 		}
 		return silenceReason(recent, day, rule.Threshold)
