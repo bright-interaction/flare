@@ -3,6 +3,19 @@ INSERT INTO users (id, org_id, email, password_hash, role)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
+-- ciguard:allow-unscoped the SSO callback resolves the account from the IdP's issuer+subject, which IS the identity assertion; the org is then checked against the one that started the flow
+-- name: GetUserBySSOIdentity :one
+-- Primary SSO lookup. Resolving by email first was wrong: `sub` is the IdP's
+-- stable identifier and the email is not, so an IdP-side email change made the
+-- email lookup miss, JIT-provision a second account, and then collide on the
+-- (sso_issuer, sso_subject) unique index, locking the user out for good.
+SELECT * FROM users
+WHERE sso_issuer = $1 AND sso_subject = $2 AND sso_subject <> '';
+
+-- name: UpdateUserEmail :exec
+-- Keeps the local email in step with the IdP after a rename.
+UPDATE users SET email = $2 WHERE id = $1;
+
 -- name: LinkUserSSOIdentity :execrows
 -- Binds an account to the IdP identity that just authenticated it. Only ever
 -- fills an EMPTY binding: an account already bound to an issuer+subject can

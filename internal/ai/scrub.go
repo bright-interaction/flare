@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -78,30 +79,40 @@ func Scrub(s string) string {
 // values, so {"duration_ns":1712345678901234567} became
 // {"duration_ns":[number]}, which is not valid JSON. Callers wrap the result in
 // json.RawMessage, and encoding/json then fails on the whole response; the MCP
-// layer's marshal fallback rendered the []byte as a decimal byte dump. Nanosecond
-// timestamps are 19 digits, so this fired on ordinary OTLP traffic.
+// layer's marshal fallback rendered the []byte as a decimal byte dump.
+// Nanosecond timestamps are 19 digits, so this fired on ordinary OTLP traffic.
 //
-// Input that is not valid JSON is scrubbed as plain text, so a malformed stored
-// blob still gets redacted rather than passed through raw.
+// The return value is ALWAYS valid JSON, including for input that was not JSON
+// to begin with: callers embed it as a json.RawMessage, so returning anything
+// else would reintroduce the same failure by another route.
 func ScrubJSON(raw []byte) []byte {
 	if len(raw) == 0 {
 		return raw
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// Numbers stay as their literal text. Decoding into float64 silently rounds
+	// every integer above 2^53, so a 19-digit id or nanosecond timestamp would
+	// come back to the operator as 1.7123456789012346e+18.
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return []byte(Scrub(string(raw)))
+	if err := dec.Decode(&v); err != nil {
+		// Not JSON. Scrub it as text and return it as a JSON *string*, which is
+		// still valid JSON and safe to embed.
+		if out, merr := marshalJSON(Scrub(string(raw))); merr == nil {
+			return out
+		}
+		return []byte(`"[unserializable]"`)
 	}
-	out, err := json.Marshal(scrubValue(v))
+	out, err := marshalJSON(scrubValue(v))
 	if err != nil {
-		// Unreachable for a tree that just unmarshalled, but never emit
-		// something a caller would embed as invalid JSON.
 		return []byte(`{"_scrub_error":"redacted"}`)
 	}
 	return out
 }
 
-// scrubValue rewrites string leaves (and object keys, which can themselves carry
-// a secret) in place. Numbers, bools and null are left as typed JSON values.
+// scrubValue rewrites string leaves. Object KEYS are deliberately left alone:
+// they are structure, not payload, and scrubbing them can map two distinct keys
+// onto the same string, which silently drops one of the values.
 func scrubValue(v any) any {
 	switch t := v.(type) {
 	case string:
@@ -109,7 +120,7 @@ func scrubValue(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			out[Scrub(k)] = scrubValue(val)
+			out[k] = scrubValue(val)
 		}
 		return out
 	case []any:
@@ -120,6 +131,18 @@ func scrubValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// marshalJSON encodes without HTML-escaping so <, > and & inside a stack trace
+// or a log body are not mangled into \u003c on their way to the model.
+func marshalJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 func onlyDigits(s string) string {

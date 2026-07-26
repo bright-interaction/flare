@@ -26,13 +26,22 @@ type Config struct {
 	IngestRatePerMin int
 
 	// Cold-tier Parquet. Local dir by default (self-host friendly); S3/MinIO opt-in.
-	ParquetDir  string
-	S3Endpoint  string
-	S3Bucket    string
-	S3AccessKey string
-	S3SecretKey string
-	S3Region    string
-	S3UseSSL    bool
+	ParquetDir string
+
+	// AllowDropWithoutExport lets retention drop aged partitions even when the
+	// cold tier is unreachable. Default false, which is fail-closed: partitions
+	// pile up (disk grows, loudly logged) rather than telemetry being destroyed
+	// without ever being archived. An operator running deliberately without a
+	// cold tier sets FLARE_ALLOW_DROP_WITHOUT_EXPORT=true to restore pruning.
+	// It cannot be inferred: FLARE_PARQUET_DIR always has a default value, so
+	// "cold tier configured" is indistinguishable from "cold tier defaulted".
+	AllowDropWithoutExport bool
+	S3Endpoint             string
+	S3Bucket               string
+	S3AccessKey            string
+	S3SecretKey            string
+	S3Region               string
+	S3UseSSL               bool
 
 	SessionKey         string
 	CSRFKey            string
@@ -67,35 +76,36 @@ func (c Config) EmailEnabled() bool { return c.SMTPHost != "" && c.SMTPFrom != "
 
 func Load() (Config, error) {
 	c := Config{
-		Environment:        env("ENVIRONMENT", "development"),
-		Port:               env("PORT", "8080"),
-		BaseURL:            env("BASE_URL", "http://localhost:8080"),
-		DatabaseURL:        env("DATABASE_URL", ""),
-		DBMaxConns:         int32(envInt("DB_MAX_CONNS", 20)),
-		DBMinConns:         int32(envInt("DB_MIN_CONNS", 2)),
-		RetentionDays:      envInt("RETENTION_DAYS", 30),
-		IngestRatePerMin:   envInt("INGEST_RATE_PER_MIN", 1200),
-		ParquetDir:         env("FLARE_PARQUET_DIR", "data/parquet"),
-		S3Endpoint:         env("FLARE_PARQUET_S3_ENDPOINT", ""),
-		S3Bucket:           env("FLARE_PARQUET_S3_BUCKET", "flare"),
-		S3AccessKey:        env("FLARE_PARQUET_S3_ACCESS_KEY", ""),
-		S3SecretKey:        env("FLARE_PARQUET_S3_SECRET_KEY", ""),
-		S3Region:           env("FLARE_PARQUET_S3_REGION", "us-east-1"),
-		S3UseSSL:           env("FLARE_PARQUET_S3_USE_SSL", "true") == "true",
-		SessionKey:         env("SESSION_KEY", ""),
-		CSRFKey:            env("CSRF_KEY", ""),
-		SessionLifetime:    time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,
-		SessionIdleTimeout: time.Duration(envInt("SESSION_IDLE_HOURS", 168)) * time.Hour,
-		DisableCSRF:        env("DISABLE_CSRF", "") == "true",
-		RedisURL:           env("REDIS_URL", ""),
-		SMTPHost:           env("SMTP_HOST", ""),
-		SMTPPort:           envInt("SMTP_PORT", 587),
-		SMTPUser:           env("SMTP_USER", ""),
-		SMTPPass:           env("SMTP_PASS", ""),
-		SMTPFrom:           env("SMTP_FROM", ""),
-		SMTPFromName:       env("SMTP_FROM_NAME", "Flare"),
-		SMTPTLS:            env("SMTP_TLS", "starttls"),
-		SecretKey:          env("FLARE_SECRET_KEY", ""),
+		Environment:            env("ENVIRONMENT", "development"),
+		Port:                   env("PORT", "8080"),
+		BaseURL:                env("BASE_URL", "http://localhost:8080"),
+		DatabaseURL:            env("DATABASE_URL", ""),
+		DBMaxConns:             int32(envInt("DB_MAX_CONNS", 20)),
+		DBMinConns:             int32(envInt("DB_MIN_CONNS", 2)),
+		RetentionDays:          envInt("RETENTION_DAYS", 30),
+		IngestRatePerMin:       envInt("INGEST_RATE_PER_MIN", 1200),
+		ParquetDir:             env("FLARE_PARQUET_DIR", "data/parquet"),
+		S3Endpoint:             env("FLARE_PARQUET_S3_ENDPOINT", ""),
+		S3Bucket:               env("FLARE_PARQUET_S3_BUCKET", "flare"),
+		S3AccessKey:            env("FLARE_PARQUET_S3_ACCESS_KEY", ""),
+		S3SecretKey:            env("FLARE_PARQUET_S3_SECRET_KEY", ""),
+		S3Region:               env("FLARE_PARQUET_S3_REGION", "us-east-1"),
+		S3UseSSL:               env("FLARE_PARQUET_S3_USE_SSL", "true") == "true",
+		SessionKey:             env("SESSION_KEY", ""),
+		CSRFKey:                env("CSRF_KEY", ""),
+		SessionLifetime:        time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,
+		SessionIdleTimeout:     time.Duration(envInt("SESSION_IDLE_HOURS", 168)) * time.Hour,
+		DisableCSRF:            env("DISABLE_CSRF", "") == "true",
+		RedisURL:               env("REDIS_URL", ""),
+		SMTPHost:               env("SMTP_HOST", ""),
+		SMTPPort:               envInt("SMTP_PORT", 587),
+		SMTPUser:               env("SMTP_USER", ""),
+		SMTPPass:               env("SMTP_PASS", ""),
+		SMTPFrom:               env("SMTP_FROM", ""),
+		SMTPFromName:           env("SMTP_FROM_NAME", "Flare"),
+		SMTPTLS:                env("SMTP_TLS", "starttls"),
+		SecretKey:              env("FLARE_SECRET_KEY", ""),
+		AllowDropWithoutExport: env("FLARE_ALLOW_DROP_WITHOUT_EXPORT", "") == "true",
 	}
 
 	if c.DatabaseURL == "" {

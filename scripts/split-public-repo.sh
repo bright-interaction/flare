@@ -30,6 +30,15 @@ SPLIT_BRANCH="flare-public-split"
 # deploy/helm instead, which are generic.
 STRIP_PATHS=(
   docker-compose.yml
+  # Internal audit reports. They cite maintainer laptop paths, the internal
+  # deploy pipeline, and an inventory of findings that are still open against a
+  # running instance. Belt and braces: these live outside flare/ now, but a
+  # future one dropped in here must never reach the public mirror.
+  AUDIT.md
+)
+# Any AUDIT-*.md at any depth.
+STRIP_GLOBS=(
+  'regex:.*AUDIT-.*\.md$'
 )
 
 for arg in "$@"; do
@@ -81,10 +90,19 @@ CLONE="$WORK/flare-public"
 echo "Cloning $SPLIT_BRANCH -> $CLONE (single-branch) ..."
 git clone --quiet --single-branch --no-tags --branch "$SPLIT_BRANCH" "file://$ROOT" "$CLONE"
 
-if [ "${#STRIP_PATHS[@]}" -gt 0 ]; then
-  FR_ARGS=(); for p in "${STRIP_PATHS[@]}"; do FR_ARGS+=(--path "$p"); done
-  echo "Stripping internal-only paths from all history: ${STRIP_PATHS[*]}"
+if [ "${#STRIP_PATHS[@]}" -gt 0 ] || [ "${#STRIP_GLOBS[@]}" -gt 0 ]; then
+  FR_ARGS=()
+  for p in "${STRIP_PATHS[@]}"; do FR_ARGS+=(--path "$p"); done
+  for g in "${STRIP_GLOBS[@]}"; do FR_ARGS+=(--path-regex "${g#regex:}"); done
+  echo "Stripping internal-only paths from all history: ${STRIP_PATHS[*]} ${STRIP_GLOBS[*]}"
   ( cd "$CLONE" && git filter-repo --force --invert-paths "${FR_ARGS[@]}" )
+fi
+
+# Fail closed: no audit report may survive into the publish payload.
+if find "$CLONE" -name 'AUDIT*.md' -not -path '*/.git/*' | grep -q .; then
+  echo "ERROR: an audit report survived the strip step; refusing to publish." >&2
+  find "$CLONE" -name 'AUDIT*.md' -not -path '*/.git/*' >&2
+  exit 1
 fi
 
 # Redact internal infra references from ALL history (file contents + commit

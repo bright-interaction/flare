@@ -89,10 +89,16 @@ func run() error {
 
 	// Partition manager: pre-create daily telemetry partitions, export aged ones
 	// to the Parquet cold tier, then drop (retention = export-then-DROP).
-	coldConfigured := cfg.ParquetDir != "" || cfg.S3Endpoint != ""
-	go partition.New(pool, cfg.RetentionDays, exporter, coldConfigured).Run(ctx)
+	// FLARE_PARQUET_DIR always has a default, so a non-empty value proves
+	// nothing about intent. Treat the cold tier as required unless the operator
+	// explicitly opts out, and refuse to drop unarchived partitions otherwise.
+	requireExport := !cfg.AllowDropWithoutExport
+	go partition.New(pool, cfg.RetentionDays, exporter, requireExport).Run(ctx)
 	slog.Info("partition manager started", "retention_days", cfg.RetentionDays,
-		"cold_tier_configured", coldConfigured, "cold_tier_available", exporter != nil)
+		"cold_tier_available", exporter != nil, "require_export_before_drop", requireExport)
+	if requireExport && exporter == nil {
+		slog.Error("cold tier unavailable and FLARE_ALLOW_DROP_WITHOUT_EXPORT is not set: retention is PAUSED, telemetry partitions will accumulate. Fix analytics/DuckDB, or set FLARE_ALLOW_DROP_WITHOUT_EXPORT=true to prune without archiving")
+	}
 
 	sessions := auth.NewSessionManager(cfg.SessionLifetime, cfg.SessionIdleTimeout, cfg.IsProduction())
 	sessions.Store = pgxstore.New(pool)

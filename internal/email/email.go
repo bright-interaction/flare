@@ -69,7 +69,14 @@ func (m *Mailer) Send(to, subject, htmlBody, textBody string) error {
 		auth = smtp.PlainAuth("", m.user, m.pass, m.host)
 	}
 
-	conn, err := m.dial(addr)
+	// Normalize once: the mode is operator-supplied config, so "STARTTLS" and
+	// " starttls " must behave like "starttls".
+	mode := strings.ToLower(strings.TrimSpace(m.tlsMode))
+	if mode == "" {
+		mode = "starttls"
+	}
+
+	conn, err := m.dial(mode, addr)
 	if err != nil {
 		return err
 	}
@@ -86,14 +93,30 @@ func (m *Mailer) Send(to, subject, htmlBody, textBody string) error {
 	}
 	defer c.Close()
 
-	if m.tlsMode == "starttls" {
+	// Opportunistic STARTTLS on every non-implicit-TLS mode, which is what the
+	// previous smtp.SendMail path did. Gating it on the exact literal
+	// "starttls" silently downgraded tlsMode "none" (and any other spelling) to
+	// cleartext, including for the password-reset mail.
+	encrypted := mode == "tls"
+	if !encrypted {
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err := c.StartTLS(&tls.Config{ServerName: m.host}); err != nil {
 				return err
 			}
+			encrypted = true
+		} else if mode == "starttls" {
+			// The operator asked for STARTTLS and the server does not offer it.
+			// Failing is the only safe answer: silently continuing in cleartext
+			// is how reset tokens end up on the wire.
+			return fmt.Errorf("email: SMTP_TLS=starttls but %s does not advertise STARTTLS", m.host)
 		}
 	}
 	if auth != nil {
+		// net/smtp refuses PLAIN over an unencrypted connection for this exact
+		// reason; keep that guarantee now that the client is built by hand.
+		if !encrypted {
+			return fmt.Errorf("email: refusing to send SMTP credentials over an unencrypted connection to %s", m.host)
+		}
 		if err := c.Auth(auth); err != nil {
 			return err
 		}
@@ -119,9 +142,9 @@ func (m *Mailer) Send(to, subject, htmlBody, textBody string) error {
 
 // dial opens the transport: implicit TLS (SMTPS, port 465) for "tls", plain TCP
 // otherwise, with STARTTLS negotiated afterwards when the mode asks for it.
-func (m *Mailer) dial(addr string) (net.Conn, error) {
+func (m *Mailer) dial(mode, addr string) (net.Conn, error) {
 	d := &net.Dialer{Timeout: dialTimeout}
-	if m.tlsMode == "tls" {
+	if mode == "tls" {
 		return tls.DialWithDialer(d, "tcp", addr, &tls.Config{ServerName: m.host})
 	}
 	return d.Dial("tcp", addr)

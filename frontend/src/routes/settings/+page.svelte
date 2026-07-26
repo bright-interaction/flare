@@ -617,6 +617,14 @@
     </div>
   {/if}
 
+  {#if !isOwner}
+    <!-- Reads stay at admin+, but writing the SSO config decides who can
+         authenticate as whom, so the endpoint is owner-only. Showing an
+         editable form to an admin would just 403 on save. -->
+    <p class="rounded-md border border-zinc-800/80 bg-zinc-900/40 px-4 py-3 text-sm text-zinc-400">
+      Only the workspace owner can change single sign-on. Ask them to update it.
+    </p>
+  {:else}
   <form onsubmit={saveOidc} class="space-y-3">
     <div class="flex flex-wrap gap-3">
       <div class="flex flex-1 flex-col gap-1.5">
@@ -655,6 +663,7 @@
       {/if}
     </div>
   </form>
+  {/if}
 
   <h2 class="mt-14 text-xl font-semibold tracking-tight">AI triage</h2>
   <p class="mt-1 mb-4 text-sm text-zinc-500">

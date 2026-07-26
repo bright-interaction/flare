@@ -29,7 +29,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/* The Postgres DATABASE_URL: bundled service or external. */}}
 {{- define "flare.databaseURL" -}}
 {{- if .Values.postgres.bundled -}}
-postgres://flare:{{ required "postgres.password is required (the chart ships no default; set a strong value)" .Values.postgres.password }}@{{ include "flare.fullname" . }}-db:5432/flare?sslmode=disable
+postgres://flare:{{ required "postgres.password is required when postgres.bundled=true and you are not supplying secrets.existingSecret (the chart ships no default; set a strong value). NOTE: on an EXISTING install this does not rotate the database password, which was fixed at initdb; change it in Postgres first with ALTER USER flare PASSWORD ..." .Values.postgres.password }}@{{ include "flare.fullname" . }}-db:5432/flare?sslmode=disable
 {{- else -}}
 {{ required "postgres.externalUrl is required when postgres.bundled=false" .Values.postgres.externalUrl }}
 {{- end -}}

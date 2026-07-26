@@ -64,7 +64,12 @@
     loadIssues();
   });
 
+  // Monotonic request id: a slow response from an earlier keystroke must never
+  // overwrite the results of a newer one.
+  let issuesSeq = 0;
+
   async function loadIssues() {
+    const seq = ++issuesSeq;
     issues = null;
     try {
       const res = await api.issues(id, status === 'all' ? undefined : status, {
@@ -72,9 +77,18 @@
         limit: perPage,
         offset: page_ * perPage
       });
+      if (seq !== issuesSeq) return; // superseded
       issues = res.issues;
       total = res.total;
+      // Rows can be resolved or ignored between page loads, so the offset we
+      // asked for may now be past the end. Step back instead of stranding the
+      // user on an empty page.
+      if (issues.length === 0 && page_ > 0) {
+        page_ = Math.max(0, Math.min(page_ - 1, Math.ceil(total / perPage) - 1));
+        loadIssues();
+      }
     } catch (err) {
+      if (seq !== issuesSeq) return;
       error = err instanceof ApiError ? err.message : 'Failed to load issues';
       issues = [];
     }

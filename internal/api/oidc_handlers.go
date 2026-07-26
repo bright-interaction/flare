@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
-	"github.com/bright-interaction/flare/internal/netguard"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +16,7 @@ import (
 	"github.com/bright-interaction/flare/internal/auth"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
+	"github.com/bright-interaction/flare/internal/netguard"
 	"github.com/bright-interaction/flare/internal/oidc"
 )
 
@@ -126,6 +129,49 @@ func (s *Server) handleDeleteOIDCConfig(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
+// provisionSSOUser creates a JIT account and binds it to the IdP identity in
+// ONE transaction. Doing the two steps separately left an orphan account behind
+// whenever the bind failed (most obviously on a `sub` collision), and that
+// orphan then matched the email lookup on every later attempt, so the user was
+// locked out permanently with no way to recover through the UI.
+func (s *Server) provisionSSOUser(ctx context.Context, org, email, issuer, subject, role string) (*generated.User, error) {
+	token, err := id.Token(24)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := auth.HashPassword(token) // unusable random password; SSO only
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
+
+	q := s.q.WithTx(tx)
+	user, err := q.CreateUser(ctx, generated.CreateUserParams{
+		ID: id.New(), OrgID: org, Email: email, PasswordHash: hash, Role: role,
+	})
+	if err != nil {
+		return nil, err
+	}
+	n, err := q.LinkUserSSOIdentity(ctx, generated.LinkUserSSOIdentityParams{
+		ID: user.ID, SsoIssuer: issuer, SsoSubject: subject,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, fmt.Errorf("sso: identity bind affected no rows for %s", user.ID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 // ssoError redirects the browser back to the login page with an error code.
 func ssoError(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/login?error="+code, http.StatusFound)
@@ -198,64 +244,79 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.ToLower(strings.TrimSpace(info.Email))
 
-	user, err := s.q.GetUserByEmail(ctx, email)
-	if err == nil {
-		// Email is globally unique; it must belong to the org that started SSO.
+	// Resolve by the IdP's STABLE identifier first. `sub` is immutable; the
+	// email is not, and it is asserted by whoever controls this org's SSO
+	// config. Looking up by email first meant an IdP-side rename missed the
+	// existing account, JIT-provisioned a duplicate, and then collided on the
+	// (sso_issuer, sso_subject) unique index, locking the user out permanently.
+	user, err := s.q.GetUserBySSOIdentity(ctx, generated.GetUserBySSOIdentityParams{
+		SsoIssuer: cfg.Issuer, SsoSubject: info.Subject,
+	})
+	switch {
+	case err == nil:
 		if user.OrgID != sessOrg {
 			ssoError(w, r, "sso_other_org")
 			return
 		}
-		// Identity binding. An email alone is not proof of identity here: it is
-		// asserted by whoever controls this org's SSO config. Once an account
-		// has signed in through a given issuer+subject, only that same identity
-		// may match it again, so re-pointing SSO at another IdP cannot take over
-		// an existing account.
+		// Keep the local email in step with the IdP after a rename. Best-effort:
+		// a clash with another local account must not block a valid sign-in.
+		if !strings.EqualFold(user.Email, email) {
+			if uerr := s.q.UpdateUserEmail(ctx, generated.UpdateUserEmailParams{ID: user.ID, Email: email}); uerr != nil {
+				slog.Warn("sso: could not sync renamed email", "user", user.ID, "error", uerr)
+			}
+		}
+
+	case errors.Is(err, pgx.ErrNoRows):
+		// No account bound to this identity yet. Fall back to email.
+		user, err = s.q.GetUserByEmail(ctx, email)
 		switch {
-		case user.SsoSubject == "":
-			// First SSO sign-in for this account: bind it now.
-			if _, lerr := s.q.LinkUserSSOIdentity(ctx, generated.LinkUserSSOIdentityParams{
+		case err == nil:
+			// Email is globally unique; it must belong to the org that started SSO.
+			if user.OrgID != sessOrg {
+				ssoError(w, r, "sso_other_org")
+				return
+			}
+			if user.SsoSubject != "" {
+				// Already bound to a DIFFERENT identity (we missed on the
+				// identity lookup above). Re-pointing SSO at another IdP must
+				// not take over an existing, possibly higher-privileged account.
+				s.recordSecurityEvent(user.OrgID, "sso-identity-mismatch",
+					"SSO sign-in rejected: account is bound to a different IdP identity", "")
+				ssoError(w, r, "sso_identity_mismatch")
+				return
+			}
+			// First SSO sign-in for this account: bind it now. The row count
+			// matters - 0 rows means someone bound it concurrently, so the
+			// binding this request would rely on is not the one in the DB.
+			n, lerr := s.q.LinkUserSSOIdentity(ctx, generated.LinkUserSSOIdentityParams{
 				ID: user.ID, SsoIssuer: cfg.Issuer, SsoSubject: info.Subject,
-			}); lerr != nil {
+			})
+			if lerr != nil || n == 0 {
+				slog.Warn("sso: identity bind did not apply", "user", user.ID, "rows", n, "error", lerr)
 				ssoError(w, r, "sso_link")
 				return
 			}
 			s.audit(ctx, "sso.link", email)
-		case user.SsoIssuer != cfg.Issuer ||
-			subtle.ConstantTimeCompare([]byte(user.SsoSubject), []byte(info.Subject)) != 1:
-			s.recordSecurityEvent(user.OrgID, "sso-identity-mismatch",
-				"SSO sign-in rejected: account is bound to a different IdP identity", "")
-			ssoError(w, r, "sso_identity_mismatch")
+
+		case errors.Is(err, pgx.ErrNoRows):
+			// Just-in-time provisioning with the configured default role.
+			// CreateUser + the identity bind run in ONE transaction: a bind
+			// failure used to leave an orphan account behind that then blocked
+			// every later attempt on the email lookup.
+			user, err = s.provisionSSOUser(ctx, sessOrg, email, cfg.Issuer, info.Subject, cfg.DefaultRole)
+			if err != nil {
+				slog.Warn("sso: provisioning failed", "email", email, "error", err)
+				ssoError(w, r, "sso_provision")
+				return
+			}
+			s.audit(ctx, "sso.provision", email)
+
+		default:
+			ssoError(w, r, "sso_lookup")
 			return
 		}
-	} else if errors.Is(err, pgx.ErrNoRows) {
-		// Just-in-time provisioning with the configured default role.
-		token, terr := id.Token(24)
-		if terr != nil {
-			ssoError(w, r, "sso_provision")
-			return
-		}
-		hash, herr := auth.HashPassword(token) // unusable random password; SSO only
-		if herr != nil {
-			ssoError(w, r, "sso_provision")
-			return
-		}
-		user, err = s.q.CreateUser(ctx, generated.CreateUserParams{
-			ID: id.New(), OrgID: sessOrg, Email: email, PasswordHash: hash, Role: cfg.DefaultRole,
-		})
-		if err != nil {
-			ssoError(w, r, "sso_provision")
-			return
-		}
-		// Bind the fresh account to the identity that provisioned it, so a later
-		// IdP change cannot claim it by email.
-		if _, lerr := s.q.LinkUserSSOIdentity(ctx, generated.LinkUserSSOIdentityParams{
-			ID: user.ID, SsoIssuer: cfg.Issuer, SsoSubject: info.Subject,
-		}); lerr != nil {
-			ssoError(w, r, "sso_link")
-			return
-		}
-		s.audit(ctx, "sso.provision", email)
-	} else {
+
+	default:
 		ssoError(w, r, "sso_lookup")
 		return
 	}
