@@ -115,14 +115,19 @@ func TestSanitizeText(t *testing.T) {
 	}
 }
 
-// Postgres rejects the \u0000 escape inside a jsonb value, so an attribute
-// carrying one poisons the batch exactly like a raw NUL byte. These use Go raw
-// string literals, so the six characters \ u 0 0 0 0 reach the function as-is.
+// SanitizeJSON must PARSE, not text-replace. The escape can itself be escaped,
+// so {"k":"\\u0000"} is a valid document whose value is the literal six
+// characters; a text replace leaves {"k":"\\"}, which is invalid.
 func TestSanitizeJSONStaysValidJSON(t *testing.T) {
 	tests := []string{
 		`{"k":"v"}`,
 		`{"k":"before\u0000after"}`,
 		`{"nested":{"a":["\u0000",1,true,null]}}`,
+		// The regression case: an ESCAPED backslash followed by u0000.
+		`{"k":"\\u0000"}`,
+		`{"win":"C:\\u0000path"}`,
+		// Lone surrogate: Postgres rejects it in jsonb; the decoder folds it.
+		`{"k":"\ud800"}`,
 		`{"unicode":"åäö"}`,
 		`[]`,
 	}
@@ -131,15 +136,42 @@ func TestSanitizeJSONStaysValidJSON(t *testing.T) {
 		if !json.Valid(out) {
 			t.Fatalf("SanitizeJSON(%s) = %s, which is not valid JSON", in, out)
 		}
-		if strings.Contains(string(out), `\u0000`) {
-			t.Fatalf("SanitizeJSON(%s) left a raw NUL escape: %s", in, out)
-		}
 		if strings.IndexByte(string(out), 0) >= 0 {
 			t.Fatalf("SanitizeJSON(%s) left a raw NUL byte: %q", in, out)
 		}
 	}
 	if got := SanitizeJSON(nil); got != nil {
 		t.Fatalf("SanitizeJSON(nil) = %v, want nil", got)
+	}
+}
+
+// Guards against a SanitizeJSON that "passes" by returning {} for everything:
+// clean input must survive semantically intact, including large integers,
+// which must not be rounded through float64, and HTML characters, which must
+// not be escaped into \u003c.
+func TestSanitizeJSONPreservesCleanInput(t *testing.T) {
+	in := `{"n":1712345678901234567,"s":"a <b> & c","f":1.5,"b":true,"z":null,"arr":[1,"x"]}`
+	out := SanitizeJSON([]byte(in))
+	if !strings.Contains(string(out), "1712345678901234567") {
+		t.Fatalf("large integer lost precision: %s", out)
+	}
+	if !strings.Contains(string(out), "a <b> & c") {
+		t.Fatalf("HTML characters were escaped: %s", out)
+	}
+	var want, got map[string]any
+	if err := json.Unmarshal([]byte(in), &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output did not unmarshal: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("key count changed: got %d, want %d (%s)", len(got), len(want), out)
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("key %q was dropped: %s", k, out)
+		}
 	}
 }
 

@@ -33,20 +33,21 @@ type Manager struct {
 	retentionDays int
 	aheadDays     int
 	exporter      Exporter
-	// coldConfigured records that the operator ASKED for a cold tier. When it is
-	// true but exporter is nil, the cold tier is configured-but-broken (DuckDB
-	// failed to open), and dropping an aged partition would destroy telemetry
-	// that was supposed to be archived. In that state we refuse to drop.
-	coldConfigured bool
+	// requireExport means an aged partition may only be dropped after it is
+	// archived. With it set and exporter nil (DuckDB failed to open), dropping
+	// would destroy telemetry that was supposed to be archived, so prune refuses
+	// and says so on every cycle. The operator opts out with
+	// FLARE_ALLOW_DROP_WITHOUT_EXPORT=true when running with no cold tier.
+	requireExport bool
 }
 
-func New(pool *pgxpool.Pool, retentionDays int, exporter Exporter, coldConfigured bool) *Manager {
+func New(pool *pgxpool.Pool, retentionDays int, exporter Exporter, requireExport bool) *Manager {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
 	return &Manager{
 		pool: pool, retentionDays: retentionDays, aheadDays: 3,
-		exporter: exporter, coldConfigured: coldConfigured,
+		exporter: exporter, requireExport: requireExport,
 	}
 }
 
@@ -102,8 +103,8 @@ func (m *Manager) prune(ctx context.Context, table string) error {
 	// Configured-but-unavailable cold tier: retention would be a straight DELETE
 	// of data the operator expected to be archived. Keep the partitions and make
 	// the degraded state loud on every cycle instead.
-	if m.coldConfigured && m.exporter == nil {
-		slog.Error("cold tier configured but exporter unavailable; refusing to drop aged partitions (data would be lost). Fix analytics/DuckDB, then retention resumes",
+	if m.requireExport && m.exporter == nil {
+		slog.Error("cold tier unavailable; refusing to drop aged partitions because they were never archived. Fix analytics/DuckDB, or set FLARE_ALLOW_DROP_WITHOUT_EXPORT=true to prune without archiving",
 			"table", table)
 		return nil
 	}

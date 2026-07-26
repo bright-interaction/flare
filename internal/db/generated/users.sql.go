@@ -181,6 +181,38 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return &i, err
 }
 
+const getUserBySSOIdentity = `-- name: GetUserBySSOIdentity :one
+SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users
+WHERE sso_issuer = $1 AND sso_subject = $2 AND sso_subject <> ''
+`
+
+type GetUserBySSOIdentityParams struct {
+	SsoIssuer  string `json:"sso_issuer"`
+	SsoSubject string `json:"sso_subject"`
+}
+
+// ciguard:allow-unscoped the SSO callback resolves the account from the IdP's issuer+subject, which IS the identity assertion; the org is then checked against the one that started the flow
+// Primary SSO lookup. Resolving by email first was wrong: `sub` is the IdP's
+// stable identifier and the email is not, so an IdP-side email change made the
+// email lookup miss, JIT-provision a second account, and then collide on the
+// (sso_issuer, sso_subject) unique index, locking the user out for good.
+func (q *Queries) GetUserBySSOIdentity(ctx context.Context, arg GetUserBySSOIdentityParams) (*User, error) {
+	row := q.db.QueryRow(ctx, getUserBySSOIdentity, arg.SsoIssuer, arg.SsoSubject)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.SessionsValidFrom,
+		&i.SsoIssuer,
+		&i.SsoSubject,
+	)
+	return &i, err
+}
+
 const getUserInOrg = `-- name: GetUserInOrg :one
 SELECT id, org_id, email, password_hash, role, created_at, sessions_valid_from, sso_issuer, sso_subject FROM users WHERE id = $1 AND org_id = $2
 `
@@ -282,6 +314,21 @@ UPDATE password_reset_tokens SET used_at = now() WHERE id = $1
 
 func (q *Queries) MarkPasswordResetTokenUsed(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, markPasswordResetTokenUsed, id)
+	return err
+}
+
+const updateUserEmail = `-- name: UpdateUserEmail :exec
+UPDATE users SET email = $2 WHERE id = $1
+`
+
+type UpdateUserEmailParams struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+// Keeps the local email in step with the IdP after a rename.
+func (q *Queries) UpdateUserEmail(ctx context.Context, arg UpdateUserEmailParams) error {
+	_, err := q.db.Exec(ctx, updateUserEmail, arg.ID, arg.Email)
 	return err
 }
 

@@ -71,30 +71,60 @@ type Server struct {
 	secIPLimiter     *ratelimit.Limiter
 	secGlobalLimiter *ratelimit.Limiter
 
-	// bgSlots bounds the detached goroutines ingest spawns per event (alert
-	// evaluation, auto-triage). Ingest used to fire one unbounded `go func` per
-	// event, so a single large envelope could create tens of thousands of
-	// goroutines all queueing on a ~20-connection pgx pool and starving every
-	// other tenant on the instance. Acquire is non-blocking: when the pool is
-	// saturated the work is DROPPED rather than queued, because ingest must never
-	// block and a backlog of stale alert evaluations has no value.
-	bgSlots chan struct{}
+	// bgSlots bounds the detached goroutines ingest spawns per event. Ingest used
+	// to fire one unbounded `go func` per event, so a single large envelope could
+	// create tens of thousands of goroutines all queueing on a ~20-connection pgx
+	// pool and starving every other tenant. Acquire is non-blocking: when the
+	// pool is saturated the work is DROPPED rather than queued, because ingest
+	// must never block and a backlog of stale alert evaluations has no value.
+	//
+	// Alerting and AI triage get SEPARATE pools on purpose. Sharing one meant a
+	// burst of new fingerprints could fill every slot with 90-second BYOAI
+	// completions, so 15-second alert evaluation, the thing that actually pages a
+	// human, was dropped while the optional nice-to-have ran.
+	bgSlots     map[string]chan struct{}
+	bgSlotsOnce sync.Once
 }
 
-// bgWorkers is the ceiling on concurrent detached ingest-side background jobs.
-const bgWorkers = 32
+// Background pool ceilings, sized against the ~20-connection pgx pool.
+const (
+	bgAlertWorkers  = 24
+	bgTriageWorkers = 8
+)
+
+// bgPool returns the worker pool for a job class, lazily initialised so a Server
+// built directly in a test (not via NewServer) still works instead of blocking
+// forever on a nil channel.
+func (s *Server) bgPool(name string) chan struct{} {
+	s.bgSlotsOnce.Do(func() {
+		if s.bgSlots == nil {
+			s.bgSlots = map[string]chan struct{}{}
+		}
+		if s.bgSlots["auto-triage"] == nil {
+			s.bgSlots["auto-triage"] = make(chan struct{}, bgTriageWorkers)
+		}
+		if s.bgSlots["default"] == nil {
+			s.bgSlots["default"] = make(chan struct{}, bgAlertWorkers)
+		}
+	})
+	if ch, ok := s.bgSlots[name]; ok {
+		return ch
+	}
+	return s.bgSlots["default"]
+}
 
 // goBackground runs fn on a bounded worker slot with its own detached, deadlined
-// context. Returns false (and drops fn) when every slot is busy.
+// context. Returns false (and drops fn) when every slot for that class is busy.
 func (s *Server) goBackground(name string, timeout time.Duration, fn func(context.Context)) bool {
+	pool := s.bgPool(name)
 	select {
-	case s.bgSlots <- struct{}{}:
+	case pool <- struct{}{}:
 	default:
-		slog.Warn("background work dropped: all worker slots busy", "job", name, "workers", bgWorkers)
+		slog.Warn("background work dropped: all worker slots busy", "job", name, "capacity", cap(pool))
 		return false
 	}
 	go func() {
-		defer func() { <-s.bgSlots }()
+		defer func() { <-pool }()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("background job panicked", "job", name, "panic", r)
@@ -132,7 +162,10 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
 		secGlobalLimiter: ratelimit.New(60, time.Minute),   // <=60 per kind / min
 
-		bgSlots: make(chan struct{}, bgWorkers),
+		bgSlots: map[string]chan struct{}{
+			"default":     make(chan struct{}, bgAlertWorkers),
+			"auto-triage": make(chan struct{}, bgTriageWorkers),
+		},
 	}
 	// Persist each delivery outcome so a silently-failing channel becomes
 	// visible (last_ok_at / last_error) instead of vanishing into a log line.
