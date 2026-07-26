@@ -95,6 +95,7 @@ const markInvitationAccepted = `-- name: MarkInvitationAccepted :exec
 UPDATE invitations SET accepted_at = now() WHERE id = $1
 `
 
+// ciguard:allow-unscoped accept flow resolves the invitation from the secret token_hash; the id here is already that resolved row
 func (q *Queries) MarkInvitationAccepted(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, markInvitationAccepted, id)
 	return err

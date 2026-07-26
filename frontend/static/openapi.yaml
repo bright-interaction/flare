@@ -514,9 +514,14 @@ paths:
     post:
       tags: [Team]
       summary: Create an API key (plaintext shown once)
+      description: >-
+        role selects what the key may do and defaults to viewer (read-only).
+        member adds writes, including DELETE /api/projects/{id}, which erases a
+        project and all of its telemetry. owner and admin are not mintable as
+        keys: team management and SSO configuration stay interactive.
       security: [{ session: [] }]
       requestBody:
-        content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } }
+        content: { application/json: { schema: { type: object, properties: { name: { type: string }, role: { type: string, enum: [viewer, member], default: viewer } } } } }
       responses: { "201": { description: Created } }
   /api/auth/register:
     post:

@@ -1,6 +1,6 @@
 -- name: CreateAPIKey :one
-INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, expires_at, role)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- ciguard:allow-unscoped auth path keyed by the secret key_hash; org_id is the result, not the filter
