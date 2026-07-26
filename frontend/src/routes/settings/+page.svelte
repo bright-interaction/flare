@@ -456,8 +456,10 @@
 
 <h2 class="mt-14 text-xl font-semibold tracking-tight">API keys</h2>
 <p class="mt-1 mb-8 text-sm text-zinc-500">
-  Org-scoped keys for programmatic access (Bearer auth). Used by Cloud to auto-provision a
-  project per service, and for OTLP ingest via the <code class="font-mono">x-flare-key</code> header.
+  Org-scoped keys for the management API (Bearer auth): auto-provisioning a project per service,
+  uploading source maps, reading issues. <strong class="text-zinc-400">Not for sending telemetry.</strong>
+  Ingest (OTLP included) authenticates with the per-project DSN key from the project page, sent as
+  <code class="font-mono">x-flare-key</code>; an org API key is rejected there.
 </p>
 
 <form onsubmit={createKey} class="mb-6 flex flex-wrap items-end gap-3 border-b border-zinc-800/80 pb-8">

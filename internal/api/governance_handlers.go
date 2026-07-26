@@ -73,12 +73,39 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	chans := make([]map[string]any, 0, len(channels))
 	for _, c := range channels {
-		chans = append(chans, map[string]any{"type": c.Type, "config": c.Config, "enabled": c.Enabled})
+		// Redact like every other read path. The export was returning the RAW
+		// stored config, so a Slack or webhook URL (a bearer secret: whoever
+		// holds it can post into the org's channel) was handed out in full to
+		// anyone who could hit the export endpoint.
+		chans = append(chans, map[string]any{
+			"type": c.Type, "config": s.redactChannelConfig(c.Type, c.Config), "enabled": c.Enabled,
+		})
 	}
+
+	// Data portability means ALL of it. The export used to take the first 1000
+	// issues per project and silently drop the rest, and swallow any query
+	// error, so a workspace with more than that got a quietly incomplete bundle
+	// with nothing to say so. Page through instead, and record what happened.
+	const exportPage = 1000
+	var exportWarnings []string
 
 	projOut := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
-		issues, _ := s.q.ListIssues(ctx, generated.ListIssuesParams{ProjectID: p.ID, OrgID: org, Limit: 1000, Offset: 0})
+		var issues []*generated.Issue
+		for offset := int32(0); ; offset += exportPage {
+			page, err := s.q.ListIssues(ctx, generated.ListIssuesParams{
+				ProjectID: p.ID, OrgID: org, Limit: exportPage, Offset: offset,
+			})
+			if err != nil {
+				exportWarnings = append(exportWarnings,
+					"issues for project "+p.Slug+" are incomplete: "+err.Error())
+				break
+			}
+			issues = append(issues, page...)
+			if len(page) < exportPage {
+				break
+			}
+		}
 		issueOut := make([]map[string]any, 0, len(issues))
 		for _, i := range issues {
 			issueOut = append(issueOut, map[string]any{
@@ -105,13 +132,20 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	s.audit(ctx, "data.export", orgRow.Name)
 	w.Header().Set("Content-Disposition", "attachment; filename=flare-export.json")
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"exported_at": time.Now(),
 		"org":         map[string]any{"name": orgRow.Name, "slug": orgRow.Slug, "created_at": orgRow.CreatedAt.Time},
 		"members":     members,
 		"channels":    chans,
 		"projects":    projOut,
-	})
+		// Stated explicitly so a recipient knows what this bundle is and is not.
+		"note": "Structured data only. Raw events, logs, spans and metrics are excluded by size; notification-channel secrets are redacted.",
+	}
+	if len(exportWarnings) > 0 {
+		out["incomplete"] = true
+		out["warnings"] = exportWarnings
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleDeleteOrg permanently erases the whole workspace (right to erasure).
@@ -133,6 +167,19 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
+
+	// Collect the member ids BEFORE the cascade removes the user rows: the
+	// sessions table has no org column and no foreign key, so it is the one
+	// store an org delete leaves fully intact unless it is cleared explicitly.
+	members, err := qtx.ListUsersByOrg(ctx, org)
+	if err != nil {
+		slogError(w, "delete org: list members", err)
+		return
+	}
+	userIDs := make([]string, 0, len(members))
+	for _, m := range members {
+		userIDs = append(userIDs, m.ID)
+	}
 
 	projects, err := qtx.ListProjectsByOrg(ctx, org)
 	if err != nil {
@@ -157,6 +204,12 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if len(userIDs) > 0 {
+		if err := qtx.DeleteSessionsForUsers(ctx, userIDs); err != nil {
+			slogError(w, "delete org sessions", err)
+			return
+		}
+	}
 	if err := qtx.DeleteOrg(ctx, org); err != nil {
 		slogError(w, "delete org", err)
 		return
@@ -167,13 +220,30 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Erase the org's telemetry from the Parquet cold tier too (aged-out data
-	// the hot-tier delete cannot reach). Best-effort after the committed delete.
+	// the hot-tier delete cannot reach). This runs after the committed delete,
+	// so it cannot be rolled back, but its OUTCOME must reach the caller: this
+	// is a right-to-erasure request, and answering a bare 204 "done" while the
+	// S3 cold tier still holds the org's telemetry (PurgeColdScope explicitly
+	// does not support S3) is a compliance claim Flare cannot back.
+	s.invalidateSecCaches(org)
+
+	coldErr := ""
 	if s.analytics != nil {
 		if err := s.analytics.PurgeColdScope(ctx, "org_id", org); err != nil {
 			slog.Error("cold-tier purge failed on org delete", "org", org, "err", err)
+			coldErr = err.Error()
 		}
 	}
 
 	_ = s.sessions.Destroy(ctx)
+	if coldErr != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":         "partial",
+			"hot_tier":       "erased",
+			"cold_tier":      "NOT erased",
+			"cold_tier_note": coldErr,
+		})
+		return
+	}
 	writeJSON(w, http.StatusNoContent, nil)
 }

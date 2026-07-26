@@ -43,6 +43,15 @@ var scrubbers = []struct {
 	// Google API key.
 	{regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`), "[secret]"},
 	{regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`), "[email]"},
+	// IPv6 BEFORE IPv4: an IPv4-mapped address (::ffff:192.0.2.1) must be
+	// matched whole, otherwise the IPv4 rule fires first and leaves ::ffff:[ip].
+	// Without these, a client's IPv6 address egressed raw through every MCP tool
+	// while the equivalent IPv4 address was redacted.
+	{regexp.MustCompile(`(?i)::(?:ffff:)?(?:\d{1,3}\.){3}\d{1,3}`), "[ip]"},
+	{regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b`), "[ip]"},
+	// Compressed form. Requires the "::", so a MAC address or a clock time
+	// (which never contain one) cannot match.
+	{regexp.MustCompile(`(?i)(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?`), "[ip]"},
 	{regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`), "[ip]"},
 	{regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b`), "[mac]"},
 	{regexp.MustCompile(`\b[A-Fa-f0-9]{40,}\b`), "[hash]"},

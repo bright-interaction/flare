@@ -132,6 +132,20 @@ func (s *Server) cacheSecProject(org string, p *generated.Project) {
 	s.secMu.Unlock()
 }
 
+// invalidateSecCaches drops the cached flare-security project (and the system
+// org, when that org is the one going away). The caches never expired, so
+// deleting the flare-security project left a stale pointer that every later
+// security event wrote against, silently disabling the org's security-signal
+// pillar until the process restarted.
+func (s *Server) invalidateSecCaches(org string) {
+	s.secMu.Lock()
+	delete(s.secProjects, org)
+	if s.systemOrg == org {
+		s.systemOrg = ""
+	}
+	s.secMu.Unlock()
+}
+
 // buildSecurityEventJSON renders a Sentry-shape event whose exception type is
 // the constant "SecurityEvent" and whose value is the kind, so events group by
 // kind (one issue per kind, count rising) via the existing fingerprint.

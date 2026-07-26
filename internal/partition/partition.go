@@ -129,14 +129,37 @@ func (m *Manager) prune(ctx context.Context, table string) error {
 					continue
 				}
 			}
-			if _, err := m.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", name)); err != nil {
-				slog.Warn("drop partition failed", "partition", name, "error", err)
+			// DROP takes ACCESS EXCLUSIVE on the parent, so without a
+			// lock_timeout it queues ahead of every read and every ingest INSERT
+			// and holds them until it gets the lock. Give up quickly instead and
+			// retry on the next cycle; the partition is already past retention,
+			// so a few hours' delay costs nothing.
+			if err := m.dropWithLockTimeout(ctx, name); err != nil {
+				slog.Warn("drop partition failed; will retry next cycle", "partition", name, "error", err)
 				continue
 			}
 			slog.Info("dropped expired partition", "partition", name)
 		}
 	}
 	return nil
+}
+
+// dropWithLockTimeout drops a partition under a short lock_timeout, on a
+// dedicated connection so the SET is scoped to this statement and cannot leak
+// into another pooled query.
+func (m *Manager) dropWithLockTimeout(ctx context.Context, name string) error {
+	conn, err := m.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+		return err
+	}
+	// Table name comes from the fixed `tables` allowlist plus a date matched by
+	// the childPartitions regex, so the formatted SQL is safe.
+	_, err = conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", name))
+	return err
 }
 
 // childPartitions returns the dated child partition names of a parent table.

@@ -98,7 +98,7 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		// Rune-safe: a raw v[:200] byte slice splits a multi-byte character and
 		// hands Postgres invalid UTF-8, which errors the whole query. Same bug
 		// class as the issue-title truncation fixed in internal/ingest.
-		v = ingest.SanitizeText(truncateRunes(v, 200))
+		v = escapeLike(ingest.SanitizeText(truncateRunes(v, 200)))
 		q = &v
 	}
 
@@ -201,6 +201,12 @@ func scrubEventsForMCP(events []eventResponse) []eventResponse {
 	for i := range events {
 		events[i].Message = ai.Scrub(events[i].Message)
 		events[i].ExceptionValue = ai.Scrub(events[i].ExceptionValue)
+		// Every remaining free-text field on the event is equally
+		// client-supplied: an exception type can be a formatted string, and
+		// release/environment routinely carry a branch name or a URL.
+		events[i].ExceptionType = ai.Scrub(events[i].ExceptionType)
+		events[i].Release = ai.Scrub(events[i].Release)
+		events[i].Environment = ai.Scrub(events[i].Environment)
 		if len(events[i].Stacktrace) > 0 {
 			events[i].Stacktrace = json.RawMessage(ai.ScrubJSON(events[i].Stacktrace))
 		}
@@ -264,6 +270,14 @@ func (s *Server) handleUpdateIssueStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, genIssueToResponse(i))
+}
+
+// escapeLike neutralises LIKE/ILIKE metacharacters so a search term is matched
+// literally. The queries declare ESCAPE '\', so the backslash must be escaped
+// first or it would swallow the character after it.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // truncateRunes cuts s to at most n bytes without splitting a UTF-8 rune.

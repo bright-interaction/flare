@@ -167,6 +167,11 @@ func run() error {
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			slog.Error("graceful shutdown", "error", err)
 		}
+		// Then drain detached work (alert dispatch, AI triage). Shutdown only
+		// waits for in-flight HTTP requests; ingest hands alert evaluation to a
+		// background worker and returns, so without this a SIGTERM during a
+		// deploy silently dropped pages that were already being sent.
+		srv.WaitBackground(shutdownCtx)
 	}()
 
 	slog.Info("flare listening", "addr", httpServer.Addr, "env", cfg.Environment)

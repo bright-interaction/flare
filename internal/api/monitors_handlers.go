@@ -93,7 +93,13 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 
 	// A run that reports failure pages immediately, but only on the ok->failed
 	// transition so a persistently-failing job does not spam an alert per run.
-	if state == "failed" && priorState != "failed" {
+	// Rate-cap per (org, monitor). The transition test alone is not a cap: the
+	// check-in endpoint is DSN-authed and the caller chooses ?status=, so
+	// alternating ok/error makes every second request a fresh ok->failed
+	// transition, and at the ingest budget that is hundreds of emails a minute
+	// to the org's channels.
+	if state == "failed" && priorState != "failed" &&
+		s.testLimiter.Allow("monitor-failed:"+project.OrgID+":"+slug) {
 		pid, name, org := project.ID, project.Name, project.OrgID
 		// Bounded like the other ingest-side background work: this runs on the
 		// DSN-authed check-in endpoint, so anyone holding a project's public key

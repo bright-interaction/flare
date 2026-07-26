@@ -84,6 +84,26 @@ type Server struct {
 	// human, was dropped while the optional nice-to-have ran.
 	bgSlots     map[string]chan struct{}
 	bgSlotsOnce sync.Once
+	// bgWG tracks in-flight background jobs so shutdown can wait for them.
+	// Without it SIGTERM dropped alert dispatches that were mid-flight and
+	// abandoned AI triage calls whose token budget had already been claimed.
+	bgWG sync.WaitGroup
+}
+
+// WaitBackground blocks until every in-flight background job finishes or the
+// context expires. Called during graceful shutdown, after the HTTP listener has
+// stopped accepting, so a page that was already being dispatched still goes out.
+func (s *Server) WaitBackground(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		s.bgWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		slog.Warn("shutdown: background jobs still running, giving up on them")
+	}
 }
 
 // Background pool ceilings, sized against the ~20-connection pgx pool.
@@ -123,7 +143,9 @@ func (s *Server) goBackground(name string, timeout time.Duration, fn func(contex
 		slog.Warn("background work dropped: all worker slots busy", "job", name, "capacity", cap(pool))
 		return false
 	}
+	s.bgWG.Add(1)
 	go func() {
+		defer s.bgWG.Done()
 		defer func() { <-pool }()
 		defer func() {
 			if r := recover(); r != nil {
@@ -149,7 +171,7 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		dispatcher:   alerts.NewDispatcher(mailer),
 		mailer:       mailer,
 		symbolicator: sourcemaps.NewResolver(),
-		ai:           ai.New(cfg.IsProduction()),
+		ai:           ai.New(!cfg.AllowPrivateAIEndpoint),
 		secrets:      secretbox.New(cfg.SecretKey),
 
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
