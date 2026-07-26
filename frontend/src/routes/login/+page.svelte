@@ -21,7 +21,11 @@
     sso_state: 'The sign-in link expired. Please try again.',
     sso_unverified: 'Your identity provider has not verified your email.',
     sso_other_org: 'That account belongs to a different workspace.',
-    sso_provision: 'Could not create your account. Ask an admin to invite you.'
+    sso_provision: 'Could not create your account. Ask an admin to invite you.',
+    sso_link: 'Could not link your account to your identity provider.',
+    sso_identity_mismatch:
+      'This account is linked to a different identity provider account. Ask an owner to check the workspace SSO settings.',
+    session_expired: 'Your session expired. Please sign in again.'
   };
 
   onMount(() => {

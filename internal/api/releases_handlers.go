@@ -48,8 +48,20 @@ func (s *Server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "version is required")
 		return
 	}
+	// Verify the path project belongs to the caller's org before writing a
+	// release against it. Without this, a member of any org can insert a release
+	// row into another org's project (the FK only checks projects(id)), which
+	// both writes cross-tenant and, because UpsertRelease is ON CONFLICT DO
+	// NOTHING, permanently suppresses the victim's own release record.
+	proj, err := s.q.GetProjectByID(r.Context(), generated.GetProjectByIDParams{
+		ID: chi.URLParam(r, "id"), OrgScope: orgIDFrom(r.Context()),
+	})
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
 	if err := s.q.UpsertRelease(r.Context(), generated.UpsertReleaseParams{
-		ID: id.New(), ProjectID: chi.URLParam(r, "id"), OrgID: orgIDFrom(r.Context()), Version: req.Version,
+		ID: id.New(), ProjectID: proj.ID, OrgID: proj.OrgID, Version: req.Version,
 	}); err != nil {
 		slogError(w, "create release", err)
 		return

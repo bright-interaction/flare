@@ -27,8 +27,8 @@ import type {
 
 let csrfToken: string | null = null;
 
-async function csrf(): Promise<string> {
-  if (csrfToken !== null) return csrfToken;
+async function csrf(force = false): Promise<string> {
+  if (csrfToken !== null && !force) return csrfToken;
   const res = await fetch('/api/csrf', { credentials: 'same-origin' });
   const data = await res.json();
   csrfToken = data.csrf_token ?? '';
@@ -43,7 +43,7 @@ export class ApiError extends Error {
   }
 }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(method: string, path: string, body?: unknown, retriedCSRF = false): Promise<T> {
   const headers: Record<string, string> = {};
   const opts: RequestInit = { method, credentials: 'same-origin', headers };
   if (body !== undefined) {
@@ -54,6 +54,23 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     headers['X-CSRF-Token'] = await csrf();
   }
   const res = await fetch('/api' + path, opts);
+  // The CSRF cookie outlives nothing: it expires while a long-lived tab is
+  // still open, and the token was cached for the page's whole lifetime, so
+  // every write failed until a manual reload. Refetch once and retry.
+  if (res.status === 403 && method !== 'GET' && !retriedCSRF) {
+    await csrf(true);
+    return req<T>(method, path, body, true);
+  }
+  // An expired or revoked session used to surface as a red error banner on
+  // whatever page the user was on, with no way forward. Send them to the login
+  // page instead. /auth/* is excluded: those endpoints answer 401 as a normal
+  // result (bad password, not-signed-in probe on load) and handle it locally.
+  if (res.status === 401 && !path.startsWith('/auth/') && typeof window !== 'undefined') {
+    csrfToken = null; // a new session issues a new CSRF token
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login?error=session_expired';
+    }
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -129,11 +146,18 @@ export const api = {
   project: (id: string) => req<Project>('GET', `/projects/${id}`),
   deleteProject: (id: string) => req<void>('DELETE', `/projects/${id}`),
 
-  issues: (pid: string, status?: string) =>
-    req<{ issues: Issue[]; total: number }>(
+  issues: (pid: string, status?: string, opts?: { q?: string; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams();
+    if (status) p.set('status', status);
+    if (opts?.q) p.set('q', opts.q);
+    if (opts?.limit != null) p.set('limit', String(opts.limit));
+    if (opts?.offset) p.set('offset', String(opts.offset));
+    const qs = p.toString();
+    return req<{ issues: Issue[]; total: number }>(
       'GET',
-      `/projects/${pid}/issues${status ? `?status=${encodeURIComponent(status)}` : ''}`
-    ),
+      `/projects/${pid}/issues${qs ? `?${qs}` : ''}`
+    );
+  },
   issue: (id: string) => req<Issue>('GET', `/issues/${id}`),
   issueEvents: (id: string) => req<IssueEvent[]>('GET', `/issues/${id}/events`),
   setIssueStatus: (id: string, status: string) => req<Issue>('PATCH', `/issues/${id}`, { status }),

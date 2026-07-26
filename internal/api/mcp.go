@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bright-interaction/flare/internal/ai"
@@ -214,10 +215,16 @@ func mcpWriteErr(w http.ResponseWriter, id any, code int, msg string) {
 	writeJSON(w, http.StatusOK, mcpResponse{JSONRPC: "2.0", ID: id, Error: &mcpError{Code: code, Message: msg}})
 }
 
+// mcpJSON renders a tool result. A marshal failure used to fall through to
+// fmt.Sprintf("%v", v), which renders any json.RawMessage field as a decimal
+// byte-array dump - so a single malformed embedded document silently turned the
+// whole response into garbage the model would then reason over. Fail loudly
+// instead: log it server-side and return a structured error the caller can see.
 func mcpJSON(v any) string {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Sprintf("%v", v)
+		slog.Error("mcp: marshalling tool result failed", "error", err)
+		return `{"error":"result could not be serialized; this is a bug, see server logs"}`
 	}
 	return string(b)
 }
@@ -271,9 +278,28 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					}
 					pu = append(pu, row)
 				}
+				// top_issues rows carry raw issue titles (the reporting service's
+				// exception text), so scrub them at the LLM boundary like every
+				// other MCP issue surface.
+				type topIssue struct {
+					ID          string `json:"id"`
+					Title       string `json:"title"`
+					Level       string `json:"level"`
+					EventCount  int64  `json:"event_count"`
+					ProjectID   string `json:"project_id"`
+					ProjectName string `json:"project_name"`
+				}
+				ti := make([]topIssue, 0, len(top))
+				for _, t := range top {
+					ti = append(ti, topIssue{
+						ID: t.ID, Title: ai.Scrub(t.Title), Level: t.Level,
+						EventCount: t.EventCount, ProjectID: t.ProjectID,
+						ProjectName: t.ProjectName,
+					})
+				}
 				return map[string]any{
 					"events_24h": ev, "unresolved": un, "new_today": nt,
-					"top_issues": top, "projects": pu,
+					"top_issues": ti, "projects": pu,
 				}, nil
 			},
 		},
@@ -295,12 +321,13 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 		},
 		"list_issues": {
 			Name:        "list_issues",
-			Description: "List a project's issues. project = id or slug. status = unresolved (default) | resolved | ignored | all. limit default 25.",
-			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"status":{"type":"string"},"limit":{"type":"integer"}},"required":["project"]}`),
+			Description: "List a project's issues. project = id or slug. status = unresolved (default) | resolved | ignored | all. q = optional case-insensitive substring match on issue title/culprit. limit default 25.",
+			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"status":{"type":"string"},"q":{"type":"string"},"limit":{"type":"integer"}},"required":["project"]}`),
 			Handler: func(ctx context.Context, org string, args json.RawMessage) (any, error) {
 				var a struct {
 					Project string `json:"project"`
 					Status  string `json:"status"`
+					Q       string `json:"q"`
 					Limit   int32  `json:"limit"`
 				}
 				_ = json.Unmarshal(args, &a)
@@ -315,13 +342,17 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Status != "" && a.Status != "all" {
 					statusFilter = &a.Status
 				}
-				issues, err := s.store.ListIssues(ctx, proj.ID, org, a.Limit, 0, statusFilter)
+				var qFilter *string
+				if q := strings.TrimSpace(a.Q); q != "" {
+					qFilter = &q
+				}
+				issues, err := s.store.ListIssues(ctx, proj.ID, org, a.Limit, 0, statusFilter, qFilter)
 				if err != nil {
 					return nil, err
 				}
 				out := make([]issueResponse, 0, len(issues))
 				for _, i := range issues {
-					out = append(out, toIssueResponse(i))
+					out = append(out, scrubIssueForMCP(toIssueResponse(i)))
 				}
 				return out, nil
 			},
@@ -349,7 +380,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				}
 				events, _ := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
 				return map[string]any{
-					"issue": toIssueResponse(issue),
+					"issue": scrubIssueForMCP(toIssueResponse(issue)),
 					// MCP crosses the LLM boundary: scrub message, exception value AND the
 					// stack trace (frame locals/context lines routinely carry secrets/PII
 					// from the reporting service), unconditionally - not only when the issue
@@ -425,7 +456,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					// the reporting service (mirror search_logs). MCP boundary only.
 					attrs := sp.Attributes
 					if len(attrs) > 0 {
-						attrs = json.RawMessage(ai.Scrub(string(attrs)))
+						attrs = json.RawMessage(ai.ScrubJSON(attrs))
 					}
 					out = append(out, spanResponse{
 						SpanID: sp.SpanID, ParentSpanID: sp.ParentSpanID, Name: sp.Name,
@@ -511,7 +542,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, userErr("issue %q not found", a.IssueID)
 				}
-				return genIssueToResponse(i), nil
+				return scrubIssueForMCP(genIssueToResponse(i)), nil
 			},
 		},
 		"triage_issue": {

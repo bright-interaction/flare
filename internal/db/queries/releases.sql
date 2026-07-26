@@ -10,7 +10,8 @@ ON CONFLICT (project_id, version) DO NOTHING;
 SELECT r.version,
        r.created_at,
        (SELECT count(*) FROM issues i
-         WHERE i.project_id = r.project_id AND i.first_release = r.version) AS new_issues
+         WHERE i.project_id = r.project_id AND i.org_id = r.org_id
+           AND i.first_release = r.version) AS new_issues
 FROM releases r
 WHERE r.project_id = $1 AND r.org_id = $2
 ORDER BY r.created_at DESC

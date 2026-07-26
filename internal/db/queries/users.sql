@@ -3,6 +3,14 @@ INSERT INTO users (id, org_id, email, password_hash, role)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
+-- name: LinkUserSSOIdentity :execrows
+-- Binds an account to the IdP identity that just authenticated it. Only ever
+-- fills an EMPTY binding: an account already bound to an issuer+subject can
+-- never be silently rebound to a different IdP identity (which would let anyone
+-- who can reconfigure SSO take over an existing, higher-privileged account).
+UPDATE users SET sso_issuer = $2, sso_subject = $3
+WHERE id = $1 AND sso_subject = '';
+
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1;
 

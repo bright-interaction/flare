@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
@@ -42,6 +43,7 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var lastID string
+	var events, stored int
 	for _, item := range items {
 		switch item.Type {
 		case "transaction":
@@ -57,15 +59,25 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("persist transaction spans failed", "project_id", project.ID, "error", perr)
 			}
 		case "event":
+			events++
 			eid, ierr := s.ingestOne(r.Context(), project, item.Payload)
 			if ierr != nil {
 				slog.Warn("envelope event ingest failed", "project_id", project.ID, "error", ierr)
 				continue
 			}
+			stored++
 			lastID = eid
 		default:
 			// sessions, attachments, client reports: not stored.
 		}
+	}
+	// A 200 tells the SDK the payload was accepted, so it drops it. Answering
+	// 200 when EVERY event in the envelope failed silently discarded the data
+	// instead of letting the SDK retry. Partial success still returns 200: the
+	// SDK has no way to retry only the failed items.
+	if events > 0 && stored == 0 {
+		writeErr(w, http.StatusBadRequest, "no event in the envelope could be stored")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": lastID})
 }
@@ -156,18 +168,24 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 	// event leaked a secret / JWT / card number. Skipped for the security
 	// project itself, both to avoid recursion and because its own event bodies
 	// (key prefixes, IPs) are not leaks.
+	sensitive := ""
 	if project.Slug != securityProjectSlug {
 		if kinds := detectSensitive(ev); len(kinds) > 0 {
-			joined := strings.Join(kinds, ",")
+			sensitive = strings.Join(kinds, ",")
 			_ = s.q.MarkIssueSensitive(ctx, generated.MarkIssueSensitiveParams{
-				ID: issue.ID, OrgID: project.OrgID, Sensitive: joined,
+				ID: issue.ID, OrgID: project.OrgID, Sensitive: sensitive,
 			})
+			// The security event is itself re-ingested as an event into the
+			// flare-security project, so its message must carry the SCRUBBED
+			// title. Passing issue.Title raw copied the detected secret into a
+			// project the detector deliberately skips, which round-tripped the
+			// leak straight past the redaction.
 			s.recordSecurityEvent(project.OrgID, "sensitive-data-in-payload",
-				"possible "+joined+" in "+project.Name+" - issue: "+issue.Title, "")
+				"possible "+sensitive+" in "+project.Name+" - issue: "+ai.Scrub(issue.Title), "")
 		}
 	}
 
-	s.evaluateAlerts(project, issue, issue.IsNew, reopened)
+	s.evaluateAlerts(project, issue, issue.IsNew, reopened, sensitive)
 
 	// A newly-seen issue gets AI triage automatically (background, budget-gated),
 	// so its root cause and fix are already waiting when a human or the AI
@@ -195,7 +213,14 @@ func pageableLevel(level string) bool {
 	}
 }
 
-func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.UpsertIssueRow, isNew, reopened bool) {
+func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.UpsertIssueRow, isNew, reopened bool, sensitive string) {
+	// "Ignore" is the only control the UI offers for a noisy issue, and it hid
+	// the issue from the list while its alerts kept firing, so the button did
+	// not do the one thing users press it for. issue.Status is the PRIOR status
+	// from UpsertIssue; a reopened issue was 'resolved', never 'ignored'.
+	if issue.Status == "ignored" {
+		return
+	}
 	// Low-severity signals (info/debug: heartbeats, breadcrumbs, health check-ins)
 	// never page, whatever the rules say - they are informational, not incidents.
 	// They still ingest and count toward the watchdog's silence-detection activity
@@ -205,10 +230,7 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 	if !pageableLevel(issue.Level) {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
+	s.goBackground("alert-eval", 15*time.Second, func(ctx context.Context) {
 		rules, err := s.q.ListEnabledAlertRulesByProject(ctx, generated.ListEnabledAlertRulesByProjectParams{
 			ProjectID: project.ID,
 			OrgID:     project.OrgID,
@@ -243,17 +265,25 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 		for _, c := range chans {
 			channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
 		}
+		// When the detector flagged this issue, the title and culprit ARE the
+		// leaked value. Alerts go out over email/Slack/webhooks, i.e. off-box to
+		// third parties, so scrub before dispatch: otherwise the feature that
+		// exists to catch a leaked secret is what forwards it.
+		alertTitle, alertCulprit := issue.Title, issue.Culprit
+		if sensitive != "" {
+			alertTitle, alertCulprit = ai.Scrub(alertTitle), ai.Scrub(alertCulprit)
+		}
 		s.dispatcher.Dispatch(ctx, channels, alerts.Notification{
 			ProjectName: project.Name,
 			IssueID:     issue.ID,
-			Title:       issue.Title,
+			Title:       alertTitle,
 			Level:       issue.Level,
-			Culprit:     issue.Culprit,
+			Culprit:     alertCulprit,
 			EventCount:  issue.EventCount,
 			Reason:      reason,
 			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/issues/" + issue.ID,
 		})
-	}()
+	})
 }
 
 // spikeReason returns a non-empty reason when the issue has crossed the rule's
@@ -329,7 +359,35 @@ func remoteIP(r *http.Request) string {
 
 // ingestKey pulls the public key from the X-Sentry-Auth header, the
 // sentry_key query param, or the X-Flare-Key header.
+// maxIngestKeyLen bounds a DSN public key. Real keys are id.New() cuids (~25
+// chars); anything longer is not a key we could ever resolve.
+const maxIngestKeyLen = 64
+
+// plausibleIngestKey rejects anything that cannot be a DSN public key. The
+// ingest rate limiter runs BEFORE authentication and buckets on this value, so
+// without a shape check an attacker can mint unlimited distinct limiter keys
+// (each an arbitrary-length header) and grow the limiter map without bound.
+// Implausible values return "" so the request falls back to the IP bucket.
+func plausibleIngestKey(k string) string {
+	if k == "" || len(k) > maxIngestKeyLen {
+		return ""
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return ""
+		}
+	}
+	return k
+}
+
 func ingestKey(r *http.Request) string {
+	return plausibleIngestKey(rawIngestKey(r))
+}
+
+func rawIngestKey(r *http.Request) string {
 	if h := r.Header.Get("X-Sentry-Auth"); h != "" {
 		// Header looks like: "Sentry sentry_key=KEY, sentry_version=7, ...".
 		// Split on both spaces and commas so the leading scheme word and the

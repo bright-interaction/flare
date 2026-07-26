@@ -71,14 +71,17 @@ func (s *Server) persistLogs(ctx context.Context, project *generated.Project, re
 	params := make([]generated.InsertLogsParams, 0, len(records))
 	for _, rec := range records {
 		params = append(params, generated.InsertLogsParams{
-			ID:         id.New(),
-			ProjectID:  project.ID,
-			OrgID:      project.OrgID,
-			Severity:   rec.Severity,
-			Body:       rec.Body,
-			Attributes: rec.Attributes,
-			TraceID:    rec.TraceID,
-			SpanID:     rec.SpanID,
+			ID:        id.New(),
+			ProjectID: project.ID,
+			OrgID:     project.OrgID,
+			Severity:  ingest.SanitizeText(rec.Severity),
+			// InsertLogs is a CopyFrom: it is all-or-nothing, so one record
+			// carrying a NUL byte or invalid UTF-8 failed the whole batch, and an
+			// OTLP collector's retry made that record a permanent poison pill.
+			Body:       ingest.SanitizeText(rec.Body),
+			Attributes: ingest.SanitizeJSON(rec.Attributes),
+			TraceID:    ingest.SanitizeText(rec.TraceID),
+			SpanID:     ingest.SanitizeText(rec.SpanID),
 			ObservedAt: pgtype.Timestamptz{Time: rec.ObservedAt, Valid: true},
 		})
 	}
@@ -142,7 +145,7 @@ func toLogResponsesScrubbed(logs []telemetry.Log) []logResponse {
 	for i := range out {
 		out[i].Body = ai.Scrub(out[i].Body)
 		if len(out[i].Attributes) > 0 {
-			out[i].Attributes = json.RawMessage(ai.Scrub(string(out[i].Attributes)))
+			out[i].Attributes = json.RawMessage(ai.ScrubJSON(out[i].Attributes))
 		}
 	}
 	return out
