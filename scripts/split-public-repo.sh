@@ -57,24 +57,14 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 [ -d "$PREFIX" ] || { echo "error: $PREFIX/ not found at $ROOT" >&2; exit 1; }
 
-# Coarse pre-flight secret guard on the subtree history (defense before the
-# authoritative gitleaks scan on the filtered clone below). Two refinements over a
-# naive keyword scan, both audited safe:
-#   - the value class excludes '.', so dotted Go selectors (ClientSecret:
-#     req.ClientSecret), SQL columns (api_key = EXCLUDED.api_key) and the PII
-#     scrubber's own detection regexes break into sub-16-char tokens instead of
-#     false-tripping. A real base64/hex credential is a contiguous >=16 run and
-#     still matches; dotted secrets (JWTs) are caught by the gitleaks gate below.
-#   - documented placeholders (changeme / your_ / _here / EXAMPLE) are filtered
-#     out; a real high-entropy credential would not carry those markers.
-if git log -p -- "$PREFIX/" \
-  | grep -iE '(api[_-]?key|secret|password|bearer|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9/_+-]{16,}' \
-  | grep -ivE 'changeme|change[_-]?me|your_|_here|example|redacted|placeholder|xxxx' \
-  | grep -q .; then
-  echo "REFUSING: a possible secret appears in $PREFIX/ history. Audit before any push:" >&2
-  echo "  git log -p -- $PREFIX/ | grep -iE 'key|secret|token|password'" >&2
-  exit 1
-fi
+# Coarse pre-flight secret guard. Shared by every product mirror, in ONE file, so
+# it cannot drift again. It did drift: five copies, five different regexes, one of
+# which could not fire at all. See scripts/mirror-secret-preflight.sh for both bugs.
+# This is the fast pre-check; the gitleaks scan on the filtered clone below is the
+# authoritative gate.
+# shellcheck source=../../scripts/mirror-secret-preflight.sh
+. "$ROOT/scripts/mirror-secret-preflight.sh"
+mirror_secret_preflight "$PREFIX" "$ROOT/$PREFIX/scripts/mirror-secret-allowlist.txt"
 
 echo "Splitting $PREFIX/ subtree (history-preserving) into $SPLIT_BRANCH ..."
 git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
