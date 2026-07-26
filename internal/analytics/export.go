@@ -38,10 +38,26 @@ func (e *Exporter) ExportDay(ctx context.Context, table string, day time.Time) e
 		return nil // already exported
 	}
 
+	// Only a genuinely ABSENT partition is "nothing to archive". Deciding that
+	// from a failed DuckDB count conflated every transient DuckDB fault (attach
+	// dropped, extension missing, disk full, read-only replica lag) with
+	// "missing", and the caller drops the partition when this returns nil - so a
+	// blip meant permanent, silent telemetry loss. Ask Postgres directly, over
+	// the pgx pool, and only then return nil.
+	var childExists bool
+	if err := e.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'r')`, child,
+	).Scan(&childExists); err != nil {
+		return fmt.Errorf("check partition %s exists: %w", child, err)
+	}
+	if !childExists {
+		return nil // child partition does not exist; nothing to archive
+	}
+
 	d := e.duck.db
 	var srcCount int64
 	if err := d.QueryRowContext(ctx, fmt.Sprintf("SELECT count(*) FROM hot.public.%s", child)).Scan(&srcCount); err != nil {
-		return nil // child partition does not exist; nothing to archive
+		return fmt.Errorf("count rows in %s: %w", child, err)
 	}
 	if srcCount == 0 {
 		_, _ = e.pool.Exec(ctx, `INSERT INTO export_log (tbl, day, row_count) VALUES ($1,$2,0) ON CONFLICT (tbl,day) DO NOTHING`, table, day)

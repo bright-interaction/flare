@@ -188,10 +188,7 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 // claimed atomically BEFORE the model call, so a burst of new fingerprints
 // cannot run more than triage_daily_budget BYOAI completions in a day.
 func (s *Server) maybeAutoTriage(org, issueID string) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-
+	s.goBackground("auto-triage", 90*time.Second, func(ctx context.Context) {
 		cfg, err := s.q.GetAIConfig(ctx, org)
 		if err != nil || !cfg.Enabled || !cfg.AutoTriage || cfg.TriageDailyBudget <= 0 {
 			return
@@ -209,7 +206,7 @@ func (s *Server) maybeAutoTriage(org, issueID string) {
 		if _, _, err := s.triageIssue(ctx, org, issueID, false); err != nil {
 			slog.Warn("auto-triage failed", "issue", issueID, "error", err)
 		}
-	}()
+	})
 }
 
 type triageFrame struct {

@@ -107,10 +107,17 @@ SELECT m.id, m.org_id, m.project_id, m.slug, m.name, m.interval_seconds, m.grace
 FROM monitors m
 JOIN projects p ON p.id = m.project_id
 WHERE m.interval_seconds > 0
-  AND m.state <> 'missing'
-  AND m.last_ping_at IS NOT NULL
-  AND EXTRACT(EPOCH FROM ($1::timestamptz - m.last_ping_at)) > (m.interval_seconds + m.grace_seconds)
+  AND EXTRACT(EPOCH FROM ($1::timestamptz - COALESCE(m.last_ping_at, m.created_at)))
+      > (m.interval_seconds + m.grace_seconds)
+  AND (m.state <> 'missing'
+       OR m.last_alert_at IS NULL
+       OR EXTRACT(EPOCH FROM ($1::timestamptz - m.last_alert_at)) > $2::bigint)
 `
+
+type ListDueMonitorsParams struct {
+	Column1         pgtype.Timestamptz `json:"column_1"`
+	RenotifySeconds int64              `json:"renotify_seconds"`
+}
 
 type ListDueMonitorsRow struct {
 	ID              string             `json:"id"`
@@ -129,12 +136,15 @@ type ListDueMonitorsRow struct {
 }
 
 // ciguard:allow-unscoped global watchdog worker scanning every org's monitors; the claim it drives (TrySetMonitorMissing) filters id AND org_id
-// Configured monitors whose last ping is older than interval plus grace and
-// which are not already flagged missing. Joined to the project name for the
-// alert body. The watchdog claims each via TrySetMonitorMissing before
-// dispatching, so a stuck monitor pages once.
-func (q *Queries) ListDueMonitors(ctx context.Context, dollar_1 pgtype.Timestamptz) ([]*ListDueMonitorsRow, error) {
-	rows, err := q.db.Query(ctx, listDueMonitors, dollar_1)
+// Configured monitors whose last ping is older than interval plus grace.
+// Overdue is measured from COALESCE(last_ping_at, created_at): a monitor that
+// has NEVER checked in is the most important case (the scheduled job never ran
+// at all), and the previous `last_ping_at IS NOT NULL` guard excluded exactly
+// that case, so a cron that never fired once was never alerted.
+// Already-missing monitors are re-listed once past the re-notify window so a
+// dropped delivery cannot permanently suppress a dead-cron page.
+func (q *Queries) ListDueMonitors(ctx context.Context, arg ListDueMonitorsParams) ([]*ListDueMonitorsRow, error) {
+	rows, err := q.db.Query(ctx, listDueMonitors, arg.Column1, arg.RenotifySeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -212,21 +222,31 @@ func (q *Queries) ListMonitorsByProject(ctx context.Context, arg ListMonitorsByP
 const trySetMonitorMissing = `-- name: TrySetMonitorMissing :execrows
 UPDATE monitors
 SET state = 'missing', last_alert_at = $3
-WHERE id = $1 AND org_id = $2 AND state <> 'missing'
-  AND last_ping_at IS NOT NULL
-  AND EXTRACT(EPOCH FROM ($3::timestamptz - last_ping_at)) > (interval_seconds + grace_seconds)
+WHERE id = $1 AND org_id = $2
+  AND EXTRACT(EPOCH FROM ($3::timestamptz - COALESCE(last_ping_at, created_at)))
+      > (interval_seconds + grace_seconds)
+  AND (state <> 'missing'
+       OR last_alert_at IS NULL
+       OR EXTRACT(EPOCH FROM ($3::timestamptz - last_alert_at)) > $4::bigint)
 `
 
 type TrySetMonitorMissingParams struct {
-	ID          string             `json:"id"`
-	OrgID       string             `json:"org_id"`
-	LastAlertAt pgtype.Timestamptz `json:"last_alert_at"`
+	ID              string             `json:"id"`
+	OrgID           string             `json:"org_id"`
+	LastAlertAt     pgtype.Timestamptz `json:"last_alert_at"`
+	RenotifySeconds int64              `json:"renotify_seconds"`
 }
 
-// Atomic claim: flip to missing only if still overdue and not already missing.
-// Exactly one replica's UPDATE affects a row, so the alert fires once.
+// Atomic claim: exactly one replica's UPDATE affects a row, so the alert fires
+// once per re-notify window. Mirrors ListDueMonitors' COALESCE and re-notify
+// predicates; if they drift apart the watchdog either double-pages or goes mute.
 func (q *Queries) TrySetMonitorMissing(ctx context.Context, arg TrySetMonitorMissingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, trySetMonitorMissing, arg.ID, arg.OrgID, arg.LastAlertAt)
+	result, err := q.db.Exec(ctx, trySetMonitorMissing,
+		arg.ID,
+		arg.OrgID,
+		arg.LastAlertAt,
+		arg.RenotifySeconds,
+	)
 	if err != nil {
 		return 0, err
 	}

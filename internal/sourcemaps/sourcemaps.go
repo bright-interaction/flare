@@ -38,6 +38,12 @@ type Resolver struct {
 	cache map[[32]byte]*sourcemap.Consumer // nil value = a cached parse failure
 }
 
+// maxCachedConsumers bounds the cache. A parsed consumer holds the whole
+// decoded source map in memory (tens of MB for a large bundle), the cache was
+// keyed on content hash with no eviction, and any tenant can upload unlimited
+// distinct source maps, so this grew until the shared process was OOM-killed.
+const maxCachedConsumers = 64
+
 func NewResolver() *Resolver {
 	return &Resolver{cache: make(map[[32]byte]*sourcemap.Consumer)}
 }
@@ -56,6 +62,13 @@ func (r *Resolver) consumer(content string) *sourcemap.Consumer {
 		c = nil
 	}
 	r.mu.Lock()
+	// Bounded, and deliberately simple: at the ceiling, drop the whole cache
+	// rather than track recency. Symbolication is a read-path optimization, so
+	// the cost of a miss is one re-parse, and an LRU's bookkeeping is not worth
+	// it for a map this small.
+	if len(r.cache) >= maxCachedConsumers {
+		r.cache = make(map[[32]byte]*sourcemap.Consumer, maxCachedConsumers)
+	}
 	r.cache[key] = c
 	r.mu.Unlock()
 	return c

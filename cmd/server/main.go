@@ -89,8 +89,10 @@ func run() error {
 
 	// Partition manager: pre-create daily telemetry partitions, export aged ones
 	// to the Parquet cold tier, then drop (retention = export-then-DROP).
-	go partition.New(pool, cfg.RetentionDays, exporter).Run(ctx)
-	slog.Info("partition manager started", "retention_days", cfg.RetentionDays)
+	coldConfigured := cfg.ParquetDir != "" || cfg.S3Endpoint != ""
+	go partition.New(pool, cfg.RetentionDays, exporter, coldConfigured).Run(ctx)
+	slog.Info("partition manager started", "retention_days", cfg.RetentionDays,
+		"cold_tier_configured", coldConfigured, "cold_tier_available", exporter != nil)
 
 	sessions := auth.NewSessionManager(cfg.SessionLifetime, cfg.SessionIdleTimeout, cfg.IsProduction())
 	sessions.Store = pgxstore.New(pool)
@@ -138,9 +140,18 @@ func run() error {
 	handler := srv.Routes(build, csrfMW)
 
 	httpServer := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           handler,
+		Addr:    ":" + cfg.Port,
+		Handler: handler,
+		// ReadHeaderTimeout alone only bounds the headers. Without ReadTimeout a
+		// client can dribble a body (ingest accepts up to 1 MiB) for as long as
+		// it likes, holding a goroutine and a connection each time; without
+		// IdleTimeout, keep-alive connections are never reaped. WriteTimeout is
+		// the widest of the three because a large trace/log read is legitimately
+		// slow.
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

@@ -87,7 +87,7 @@ SELECT
        LIMIT 1) AS root_name
 FROM spans s
 WHERE s.project_id = $1 AND s.org_id = $2
-GROUP BY s.trace_id, s.org_id
+GROUP BY s.trace_id, s.org_id, s.project_id
 ORDER BY started DESC
 LIMIT $3
 `
@@ -107,6 +107,9 @@ type ListTracesRow struct {
 	RootName  string             `json:"root_name"`
 }
 
+// project_id MUST be grouped: the root_name subquery correlates on it, and
+// Postgres rejects an ungrouped outer reference ("subquery uses ungrouped
+// column"). The WHERE pins it to one value, so this does not change cardinality.
 func (q *Queries) ListTraces(ctx context.Context, arg ListTracesParams) ([]*ListTracesRow, error) {
 	rows, err := q.db.Query(ctx, listTraces, arg.ProjectID, arg.OrgID, arg.Limit)
 	if err != nil {

@@ -150,8 +150,9 @@ func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := oidc.RandomState()
-	s.sessions.Put(ctx, "oidc_state", state)
-	s.sessions.Put(ctx, "oidc_org", org.ID)
+	// Dedicated SameSite=Lax transaction cookie, NOT the Strict session cookie:
+	// the browser withholds a Strict cookie on the IdP's redirect back.
+	s.setOIDCTx(w, state, org.ID)
 	http.Redirect(w, r, provider.AuthCodeURL(cfg.ClientID, s.oidcRedirectURI(), state), http.StatusFound)
 }
 
@@ -161,11 +162,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	qstate := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	sessState := s.sessions.GetString(ctx, "oidc_state")
-	sessOrg := s.sessions.GetString(ctx, "oidc_org")
-	// One-time use: drop the state regardless of outcome.
-	s.sessions.Remove(ctx, "oidc_state")
-	s.sessions.Remove(ctx, "oidc_org")
+	sessState, sessOrg := s.readOIDCTx(r)
+	// One-time use: drop the transaction regardless of outcome.
+	s.clearOIDCTx(w)
 
 	if code == "" || qstate == "" || sessState == "" || sessOrg == "" ||
 		subtle.ConstantTimeCompare([]byte(qstate), []byte(sessState)) != 1 {
@@ -188,7 +187,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info, err := provider.FetchUserInfo(ctx, accessToken)
-	if err != nil || info.Email == "" {
+	if err != nil || info.Email == "" || info.Subject == "" {
 		ssoError(w, r, "sso_userinfo")
 		return
 	}
@@ -204,6 +203,28 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// Email is globally unique; it must belong to the org that started SSO.
 		if user.OrgID != sessOrg {
 			ssoError(w, r, "sso_other_org")
+			return
+		}
+		// Identity binding. An email alone is not proof of identity here: it is
+		// asserted by whoever controls this org's SSO config. Once an account
+		// has signed in through a given issuer+subject, only that same identity
+		// may match it again, so re-pointing SSO at another IdP cannot take over
+		// an existing account.
+		switch {
+		case user.SsoSubject == "":
+			// First SSO sign-in for this account: bind it now.
+			if _, lerr := s.q.LinkUserSSOIdentity(ctx, generated.LinkUserSSOIdentityParams{
+				ID: user.ID, SsoIssuer: cfg.Issuer, SsoSubject: info.Subject,
+			}); lerr != nil {
+				ssoError(w, r, "sso_link")
+				return
+			}
+			s.audit(ctx, "sso.link", email)
+		case user.SsoIssuer != cfg.Issuer ||
+			subtle.ConstantTimeCompare([]byte(user.SsoSubject), []byte(info.Subject)) != 1:
+			s.recordSecurityEvent(user.OrgID, "sso-identity-mismatch",
+				"SSO sign-in rejected: account is bound to a different IdP identity", "")
+			ssoError(w, r, "sso_identity_mismatch")
 			return
 		}
 	} else if errors.Is(err, pgx.ErrNoRows) {
@@ -223,6 +244,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			ssoError(w, r, "sso_provision")
+			return
+		}
+		// Bind the fresh account to the identity that provisioned it, so a later
+		// IdP change cannot claim it by email.
+		if _, lerr := s.q.LinkUserSSOIdentity(ctx, generated.LinkUserSSOIdentityParams{
+			ID: user.ID, SsoIssuer: cfg.Issuer, SsoSubject: info.Subject,
+		}); lerr != nil {
+			ssoError(w, r, "sso_link")
 			return
 		}
 		s.audit(ctx, "sso.provision", email)

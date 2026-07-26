@@ -15,6 +15,12 @@
   let error = $state<string | null>(null);
   let status = $state('unresolved');
   let setupOpen = $state(false);
+  // Issue list paging + search. Without these the list was capped at the
+  // backend's default 50 with no way to reach anything past it.
+  let search = $state('');
+  let page_ = $state(0);
+  const perPage = 50;
+  const pageCount = $derived(Math.max(1, Math.ceil(total / perPage)));
 
   let rules = $state<AlertRule[]>([]);
   let ruleName = $state('');
@@ -61,7 +67,11 @@
   async function loadIssues() {
     issues = null;
     try {
-      const res = await api.issues(id, status === 'all' ? undefined : status);
+      const res = await api.issues(id, status === 'all' ? undefined : status, {
+        q: search.trim() || undefined,
+        limit: perPage,
+        offset: page_ * perPage
+      });
       issues = res.issues;
       total = res.total;
     } catch (err) {
@@ -72,6 +82,24 @@
 
   function setStatus(s: string) {
     status = s;
+    page_ = 0;
+    loadIssues();
+  }
+
+  // Debounced so typing does not fire a request per keystroke.
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  function onSearchInput() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      page_ = 0;
+      loadIssues();
+    }, 250);
+  }
+
+  function goPage(delta: number) {
+    const next = page_ + delta;
+    if (next < 0 || next * perPage >= total) return;
+    page_ = next;
     loadIssues();
   }
 
@@ -595,7 +623,17 @@
         {f}
       </button>
     {/each}
-    <span class="ml-auto font-mono text-xs text-zinc-600">{total} total</span>
+    <div class="ml-auto flex items-center gap-3 pb-1.5">
+      <input
+        bind:value={search}
+        oninput={onSearchInput}
+        type="search"
+        placeholder="Search title or culprit"
+        aria-label="Search issues"
+        class="w-48 rounded-md border border-zinc-800 bg-zinc-900/50 px-2.5 py-1 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-amber-400/50 focus:outline-none"
+      />
+      <span class="font-mono text-xs text-zinc-600">{total} total</span>
+    </div>
   </div>
 
   {#if issues === null}
@@ -608,7 +646,11 @@
     <div class="rounded-lg border border-dashed border-zinc-800 px-6 py-14 text-center">
       <p class="text-sm font-medium text-zinc-300">Nothing here</p>
       <p class="mx-auto mt-1 max-w-sm text-sm text-zinc-500">
-        No {status === 'all' ? '' : status} issues. Send a test error with your DSN and it shows up here.
+        {#if search.trim()}
+          Nothing matches "{search.trim()}". Try a shorter search, or clear it.
+        {:else}
+          No {status === 'all' ? '' : status} issues. Send a test error with your DSN and it shows up here.
+        {/if}
       </p>
     </div>
   {:else}
@@ -642,6 +684,30 @@
         </li>
       {/each}
     </ul>
+    {#if total > perPage}
+      <div class="mt-4 flex items-center justify-between text-xs text-zinc-500">
+        <span class="font-mono">
+          {page_ * perPage + 1}-{Math.min((page_ + 1) * perPage, total)} of {total}
+        </span>
+        <div class="flex items-center gap-2">
+          <button
+            onclick={() => goPage(-1)}
+            disabled={page_ === 0}
+            class="rounded-md border border-zinc-800 px-2.5 py-1 transition-colors hover:border-zinc-700 hover:text-zinc-300 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span class="font-mono text-zinc-600">{page_ + 1} / {pageCount}</span>
+          <button
+            onclick={() => goPage(1)}
+            disabled={(page_ + 1) * perPage >= total}
+            class="rounded-md border border-zinc-800 px-2.5 py-1 transition-colors hover:border-zinc-700 hover:text-zinc-300 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    {/if}
   {/if}
 {:else if error}
   <p class="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-300">{error}</p>

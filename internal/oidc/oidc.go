@@ -168,6 +168,10 @@ func (p *Provider) Exchange(ctx context.Context, clientID, clientSecret, code, r
 
 // UserInfo is the subset of the OIDC userinfo response we use.
 type UserInfo struct {
+	// Subject is the IdP's stable, immutable identifier for the user ("sub").
+	// Accounts are bound to it, because an email can be reassigned at the IdP
+	// (or simply asserted by whoever controls the IdP config).
+	Subject       string `json:"sub"`
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name"`
@@ -197,6 +201,9 @@ func (p *Provider) FetchUserInfo(ctx context.Context, accessToken string) (*User
 		return nil, err
 	}
 	info := &UserInfo{}
+	if v, ok := raw["sub"].(string); ok {
+		info.Subject = v
+	}
 	if v, ok := raw["email"].(string); ok {
 		info.Email = v
 	}

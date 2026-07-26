@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -67,16 +68,26 @@ func (s *Server) persistMetrics(ctx context.Context, project *generated.Project,
 	}
 	params := make([]generated.InsertMetricsParams, 0, len(records))
 	for _, m := range records {
+		// NaN and +/-Inf are accepted by float64 and by Postgres double
+		// precision, but they are not representable in JSON: the query endpoint
+		// and the MCP tool then failed to marshal and answered 200 with an empty
+		// body. Drop them at the door instead.
+		if math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
+			continue
+		}
 		params = append(params, generated.InsertMetricsParams{
 			ID:         id.New(),
 			ProjectID:  project.ID,
 			OrgID:      project.OrgID,
-			Name:       m.Name,
-			Kind:       m.Kind,
+			Name:       ingest.SanitizeText(m.Name),
+			Kind:       ingest.SanitizeText(m.Kind),
 			Value:      m.Value,
-			Labels:     m.Labels,
+			Labels:     ingest.SanitizeJSON(m.Labels),
 			ObservedAt: pgtype.Timestamptz{Time: m.ObservedAt, Valid: true},
 		})
+	}
+	if len(params) == 0 {
+		return nil
 	}
 	_, err := s.q.InsertMetrics(ctx, params)
 	return err

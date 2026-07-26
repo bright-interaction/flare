@@ -44,7 +44,19 @@ func New(host string, port int, user, pass, from, fromName, tlsMode string) *Mai
 // Enabled reports whether the mailer can send.
 func (m *Mailer) Enabled() bool { return m != nil && m.host != "" && m.from != "" }
 
+const (
+	// dialTimeout bounds connection setup, sendDeadline bounds the whole SMTP
+	// conversation once connected. Both are mandatory: net/smtp applies NO
+	// deadline of its own, so a server that accepts the TCP connection and then
+	// stops reading parks the calling goroutine forever. Alert mail is sent from
+	// the watchdog tick, so one stalled mail server used to wedge anomaly,
+	// silence and monitor detection for the whole estate until a restart.
+	dialTimeout  = 10 * time.Second
+	sendDeadline = 30 * time.Second
+)
+
 // Send delivers a multipart (text + HTML) message to a single recipient.
+// It always returns within roughly dialTimeout + sendDeadline.
 func (m *Mailer) Send(to, subject, htmlBody, textBody string) error {
 	if !m.Enabled() {
 		return ErrDisabled
@@ -57,25 +69,30 @@ func (m *Mailer) Send(to, subject, htmlBody, textBody string) error {
 		auth = smtp.PlainAuth("", m.user, m.pass, m.host)
 	}
 
-	switch m.tlsMode {
-	case "tls":
-		return m.sendImplicitTLS(addr, auth, to, msg)
-	default: // "starttls" and "none": SendMail upgrades via STARTTLS when offered.
-		return smtp.SendMail(addr, auth, m.from, []string{to}, msg)
-	}
-}
-
-// sendImplicitTLS dials a TLS socket first (SMTPS, port 465).
-func (m *Mailer) sendImplicitTLS(addr string, auth smtp.Auth, to string, msg []byte) error {
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{ServerName: m.host})
+	conn, err := m.dial(addr)
 	if err != nil {
+		return err
+	}
+	// One deadline for the entire exchange, set before any protocol chatter so
+	// every subsequent read and write inherits it.
+	if err := conn.SetDeadline(time.Now().Add(sendDeadline)); err != nil {
+		conn.Close()
 		return err
 	}
 	c, err := smtp.NewClient(conn, m.host)
 	if err != nil {
+		conn.Close()
 		return err
 	}
 	defer c.Close()
+
+	if m.tlsMode == "starttls" {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(&tls.Config{ServerName: m.host}); err != nil {
+				return err
+			}
+		}
+	}
 	if auth != nil {
 		if err := c.Auth(auth); err != nil {
 			return err
@@ -98,6 +115,16 @@ func (m *Mailer) sendImplicitTLS(addr string, auth smtp.Auth, to string, msg []b
 		return err
 	}
 	return c.Quit()
+}
+
+// dial opens the transport: implicit TLS (SMTPS, port 465) for "tls", plain TCP
+// otherwise, with STARTTLS negotiated afterwards when the mode asks for it.
+func (m *Mailer) dial(addr string) (net.Conn, error) {
+	d := &net.Dialer{Timeout: dialTimeout}
+	if m.tlsMode == "tls" {
+		return tls.DialWithDialer(d, "tcp", addr, &tls.Config{ServerName: m.host})
+	}
+	return d.Dial("tcp", addr)
 }
 
 // stripHeaderCRLF removes CR and LF so an interpolated header value cannot inject

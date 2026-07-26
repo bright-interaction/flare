@@ -16,6 +16,12 @@ import (
 
 var tables = []string{"events", "logs", "spans", "metrics"}
 
+// behindDays must be >= ingest.MaxBackfillDays so every timestamp ingest accepts
+// has a dated partition waiting for it. (Not imported from ingest: partition
+// must not depend on the ingest package. The ingest-side test asserts the
+// relationship holds.)
+const behindDays = 7
+
 // Exporter archives a dated partition to the cold tier before it is dropped.
 // nil = no cold tier (just drop). analytics.Exporter satisfies this.
 type Exporter interface {
@@ -27,13 +33,21 @@ type Manager struct {
 	retentionDays int
 	aheadDays     int
 	exporter      Exporter
+	// coldConfigured records that the operator ASKED for a cold tier. When it is
+	// true but exporter is nil, the cold tier is configured-but-broken (DuckDB
+	// failed to open), and dropping an aged partition would destroy telemetry
+	// that was supposed to be archived. In that state we refuse to drop.
+	coldConfigured bool
 }
 
-func New(pool *pgxpool.Pool, retentionDays int, exporter Exporter) *Manager {
+func New(pool *pgxpool.Pool, retentionDays int, exporter Exporter, coldConfigured bool) *Manager {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
-	return &Manager{pool: pool, retentionDays: retentionDays, aheadDays: 3, exporter: exporter}
+	return &Manager{
+		pool: pool, retentionDays: retentionDays, aheadDays: 3,
+		exporter: exporter, coldConfigured: coldConfigured,
+	}
 }
 
 // Run does one pass now, then every 6 hours until ctx is cancelled.
@@ -53,7 +67,11 @@ func (m *Manager) Run(ctx context.Context) {
 
 func (m *Manager) once(ctx context.Context) {
 	for _, tbl := range tables {
-		for d := 0; d <= m.aheadDays; d++ {
+		// Cover the backfill window too, not just today forward. Ingest accepts
+		// client timestamps up to ingest.MaxBackfillDays old, and a day with no
+		// dated partition sends those rows to the DEFAULT partition, which
+		// retention never prunes and the exporter never archives.
+		for d := -behindDays; d <= m.aheadDays; d++ {
 			day := time.Now().UTC().AddDate(0, 0, d)
 			if err := ensurePartition(ctx, m.pool, tbl, day); err != nil {
 				slog.Warn("partition ensure failed", "table", tbl, "day", day.Format("2006-01-02"), "error", err)
@@ -81,6 +99,14 @@ func ensurePartition(ctx context.Context, pool *pgxpool.Pool, table string, day 
 }
 
 func (m *Manager) prune(ctx context.Context, table string) error {
+	// Configured-but-unavailable cold tier: retention would be a straight DELETE
+	// of data the operator expected to be archived. Keep the partitions and make
+	// the degraded state loud on every cycle instead.
+	if m.coldConfigured && m.exporter == nil {
+		slog.Error("cold tier configured but exporter unavailable; refusing to drop aged partitions (data would be lost). Fix analytics/DuckDB, then retention resumes",
+			"table", table)
+		return nil
+	}
 	names, err := childPartitions(ctx, m.pool, table)
 	if err != nil {
 		return err

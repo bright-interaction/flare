@@ -42,6 +42,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "flare.secretName" . }}
                   key: csrf-key
+            - name: FLARE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flare.secretName" . }}
+                  key: secret-key
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

@@ -47,8 +47,12 @@ func (m *Manager) coldAvailable(table string) bool {
 		return len(matches) > 0
 	}
 	// S3: gate on the export_log marker (best-effort; missing table => no cold).
+	// row_count > 0 is required: an empty aged partition writes a row_count=0
+	// marker WITHOUT producing any Parquet file, so counting markers alone made
+	// this claim cold data existed and every analytics query then failed on a
+	// read_parquet glob that matches nothing.
 	var n int
-	if err := m.db.QueryRow(`SELECT count(*) FROM hot.public.export_log WHERE tbl = ?`, table).Scan(&n); err != nil {
+	if err := m.db.QueryRow(`SELECT count(*) FROM hot.public.export_log WHERE tbl = ? AND row_count > 0`, table).Scan(&n); err != nil {
 		return false
 	}
 	return n > 0

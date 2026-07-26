@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // Frame is one stack frame, a subset of the Sentry frame interface.
@@ -172,15 +174,20 @@ func (e NormalizedEvent) Fingerprint() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// titleMax bounds every issue title. The exception form used to be unbounded,
+// so an 8 MiB exception message became an 8 MiB title that the issues list then
+// returned 50 of per request.
+const titleMax = 200
+
 func title(e NormalizedEvent) string {
 	if e.ExceptionType != "" {
 		if e.ExceptionValue != "" {
-			return e.ExceptionType + ": " + e.ExceptionValue
+			return truncate(e.ExceptionType+": "+e.ExceptionValue, titleMax)
 		}
-		return e.ExceptionType
+		return truncate(e.ExceptionType, titleMax)
 	}
 	if e.Message != "" {
-		return truncate(e.Message, 200)
+		return truncate(e.Message, titleMax)
 	}
 	return "Error"
 }
@@ -227,6 +234,75 @@ func messageText(se sentryEvent) string {
 	return ""
 }
 
+// Telemetry timestamps are fully client-controlled (an SDK, an OTLP collector,
+// or anyone holding a DSN). Anything outside this window has no dated partition
+// and lands in the table's DEFAULT partition, which retention never prunes and
+// the cold exporter never archives; worse, a row in DEFAULT permanently blocks
+// CREATE TABLE ... PARTITION OF for that day, so one bogus timestamp can wedge
+// partition creation for good. The bounds are kept strictly inside what the
+// partition manager pre-creates (BackfillDays back, aheadDays forward).
+const (
+	// MaxBackfillDays bounds how far in the past a client timestamp is honored.
+	MaxBackfillDays = 7
+	// MaxAhead bounds clock skew into the future. The manager pre-creates 3 days
+	// ahead, so 48h leaves a full day of margin.
+	MaxAhead = 48 * time.Hour
+)
+
+// SanitizeText makes a client-supplied string safe for a Postgres TEXT column.
+// Postgres rejects BOTH a NUL byte ("invalid byte sequence"/"unsupported Unicode
+// escape") and invalid UTF-8, and logs/spans/metrics are written with CopyFrom,
+// which is all-or-nothing: one bad byte in one record failed the ENTIRE batch.
+// With an OTLP collector retrying that batch forever, a single poisoned record
+// blocked the pipeline permanently.
+func SanitizeText(s string) string {
+	if s == "" {
+		return s
+	}
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "�")
+	}
+	return s
+}
+
+// SanitizeJSON applies the same rule to a JSON document bound for a JSONB
+// column. Inside JSON text a NUL is encoded as the six-character escape
+// \u0000, and Postgres rejects that escape in jsonb ("unsupported Unicode
+// escape sequence"), so a log attribute carrying one poisons the CopyFrom
+// batch exactly like a raw NUL byte does.
+func SanitizeJSON(raw []byte) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	s := string(raw)
+	if strings.Contains(s, `\u0000`) {
+		s = strings.ReplaceAll(s, `\u0000`, "")
+	}
+	if out := SanitizeText(s); out != s {
+		s = out
+	}
+	if s == string(raw) {
+		return raw
+	}
+	return []byte(s)
+}
+
+// ClampTime keeps a client-supplied timestamp inside the partitioned window.
+// A zero or out-of-range value is replaced with now, which is what Sentry and
+// the OTLP collectors do; the alternative is silently unqueryable data.
+func ClampTime(t, now time.Time) time.Time {
+	if t.IsZero() {
+		return now
+	}
+	if t.Before(now.AddDate(0, 0, -MaxBackfillDays)) || t.After(now.Add(MaxAhead)) {
+		return now
+	}
+	return t
+}
+
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
@@ -236,9 +312,16 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// truncate cuts s to at most n bytes WITHOUT splitting a UTF-8 rune. Slicing on
+// a raw byte boundary produced invalid UTF-8, which Postgres rejects on insert
+// ("invalid byte sequence for encoding UTF8"), silently dropping every event
+// whose text straddled the limit with a multi-byte character.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

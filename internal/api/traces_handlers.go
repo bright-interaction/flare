@@ -44,18 +44,20 @@ func (s *Server) persistSpans(ctx context.Context, project *generated.Project, s
 	params := make([]generated.InsertSpansParams, 0, len(spans))
 	for _, sp := range spans {
 		params = append(params, generated.InsertSpansParams{
-			TraceID:      sp.TraceID,
-			SpanID:       sp.SpanID,
-			ParentSpanID: sp.ParentSpanID,
+			// CopyFrom is all-or-nothing: sanitize every client-supplied string
+			// so one bad byte cannot fail the whole batch forever under retry.
+			TraceID:      ingest.SanitizeText(sp.TraceID),
+			SpanID:       ingest.SanitizeText(sp.SpanID),
+			ParentSpanID: ingest.SanitizeText(sp.ParentSpanID),
 			ProjectID:    project.ID,
 			OrgID:        project.OrgID,
-			Name:         sp.Name,
-			Kind:         sp.Kind,
-			Status:       sp.Status,
+			Name:         ingest.SanitizeText(sp.Name),
+			Kind:         ingest.SanitizeText(sp.Kind),
+			Status:       ingest.SanitizeText(sp.Status),
 			StartTime:    pgtype.Timestamptz{Time: sp.Start, Valid: true},
 			EndTime:      pgtype.Timestamptz{Time: sp.End, Valid: true},
 			DurationMs:   sp.DurationMs,
-			Attributes:   sp.Attributes,
+			Attributes:   ingest.SanitizeJSON(sp.Attributes),
 		})
 	}
 	_, err := s.q.InsertSpans(ctx, params)

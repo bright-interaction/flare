@@ -22,6 +22,11 @@
   onMount(async () => {
     try {
       issue = await api.issue(id);
+      // Stored triage was already persisted by auto-triage or an earlier run.
+      // Without this it was fetched and thrown away, so the panel only ever
+      // appeared right after someone pressed the button, and viewers (who
+      // cannot run triage at all) could never see it.
+      triage = issue.ai_triage ?? '';
       events = await api.issueEvents(id);
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to load issue';
@@ -142,7 +147,10 @@
         {/if}
       </div>
       <div class="space-y-1.5 text-sm leading-relaxed text-zinc-300">
-        {#each triage.split('\n') as line (line)}
+        <!-- Index-keyed on purpose: the model's reply repeats lines (blank
+             lines between paragraphs, most obviously), and keying on the text
+             threw "keyed each duplicate key" and blanked the panel. -->
+        {#each triage.split('\n') as line, i (i)}
           <p>{#each segments(line) as seg}{#if seg.bold}<strong class="font-semibold text-zinc-100">{seg.text}</strong>{:else}{seg.text}{/if}{/each}</p>
         {/each}
       </div>

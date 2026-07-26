@@ -135,15 +135,25 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Get("/audit-log", s.handleListAuditLog)
 					r.Get("/export", s.handleExport)
 					r.Get("/integrations/oidc", s.handleGetOIDCConfig)
-					r.Put("/integrations/oidc", s.handleSetOIDCConfig)
-					r.Delete("/integrations/oidc", s.handleDeleteOIDCConfig)
 					r.Get("/integrations/ai", s.handleGetAIConfig)
 					r.Put("/integrations/ai", s.handleSetAIConfig)
 					r.Delete("/integrations/ai", s.handleDeleteAIConfig)
 				})
 
-				// Workspace erasure: owner only.
-				r.With(s.requireRole("owner")).Delete("/org", s.handleDeleteOrg)
+				// Owner only.
+				r.Group(func(r chi.Router) {
+					r.Use(s.requireRole("owner"))
+
+					// Workspace erasure.
+					r.Delete("/org", s.handleDeleteOrg)
+
+					// WRITING the SSO config is an authentication-authority
+					// change: whoever points the org at an IdP can have that IdP
+					// assert any member's email. At admin+ that was a direct
+					// admin -> owner escalation path. Reads stay at admin+.
+					r.Put("/integrations/oidc", s.handleSetOIDCConfig)
+					r.Delete("/integrations/oidc", s.handleDeleteOIDCConfig)
+				})
 			})
 		})
 	})

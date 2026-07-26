@@ -16,15 +16,23 @@ secrets:
   sessionKey: ""
   # EXACTLY 32 bytes. Generate: openssl rand -hex 16
   csrfKey: ""
+  # Encrypts integration secrets at rest (BYOAI keys, OIDC client secrets,
+  # notification-channel configs). Production REFUSES TO BOOT without it.
+  # Generate: openssl rand -base64 32
+  # Treat as permanent: rotating it makes existing encrypted values unreadable.
+  secretKey: ""
   # Provide a pre-created Secret instead of the values above. It must hold
-  # keys: session-key, csrf-key, database-url (and optionally smtp-password).
+  # keys: session-key, csrf-key, secret-key, database-url (and optionally
+  # smtp-password).
   existingSecret: ""
 
 postgres:
   # Deploy a single Postgres in-cluster. Set false to use an external DB.
   bundled: true
   image: postgres:16-alpine
-  password: change-me-to-a-strong-password
+  # REQUIRED when bundled=true. Deliberately empty: a shipped default is a
+  # working password on every install that forgets to change it.
+  password: ""
   storage: 10Gi
   # Used only when bundled=false:
   externalUrl: ""  # postgres://user:pass@host:5432/flare?sslmode=require

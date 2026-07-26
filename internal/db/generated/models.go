@@ -316,4 +316,6 @@ type User struct {
 	Role              string             `json:"role"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	SessionsValidFrom pgtype.Timestamptz `json:"sessions_valid_from"`
+	SsoIssuer         string             `json:"sso_issuer"`
+	SsoSubject        string             `json:"sso_subject"`
 }

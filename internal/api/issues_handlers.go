@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -90,13 +91,21 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("status"); v != "" {
 		status = &v
 	}
+	var q *string
+	if v := strings.TrimSpace(r.URL.Query().Get("q")); v != "" {
+		if len(v) > 200 {
+			v = v[:200]
+		}
+		q = &v
+	}
 
-	issues, err := s.store.ListIssues(ctx, projectID, org, limit, offset, status)
+	issues, err := s.store.ListIssues(ctx, projectID, org, limit, offset, status, q)
 	if err != nil {
 		slogError(w, "list issues", err)
 		return
 	}
-	total, err := s.store.CountIssues(ctx, projectID, org)
+	// Same filter as the list, so the total always describes what is shown.
+	total, err := s.store.CountIssues(ctx, projectID, org, status, q)
 	if err != nil {
 		slogError(w, "count issues", err)
 		return
@@ -166,6 +175,20 @@ func (s *Server) toEventResponses(ctx context.Context, issueID, org string, even
 	return out
 }
 
+// scrubIssueForMCP scrubs the issue strings that cross the LLM boundary. It runs
+// UNCONDITIONALLY, unlike toIssueResponse, which only scrubs when the detector
+// already flagged the issue as sensitive. The detector is a heuristic: a title is
+// the raw "ExceptionType: ExceptionValue" from the reporting service, so it can
+// carry PII/secrets the detector never matched. REST keeps the flag-conditional
+// behaviour, because there the reader is an authenticated operator of that org.
+func scrubIssueForMCP(i issueResponse) issueResponse {
+	i.Title = ai.Scrub(i.Title)
+	i.Culprit = ai.Scrub(i.Culprit)
+	i.AITriage = ai.Scrub(i.AITriage)
+	i.FirstRelease = ai.Scrub(i.FirstRelease)
+	return i
+}
+
 // scrubEventsForMCP runs the PII/secret scrubber over event fields that cross the LLM
 // boundary via the MCP get_issue tool: the message, the exception value, and the stack
 // trace (frame context lines + locals routinely carry request params, DSNs, and secrets
@@ -176,7 +199,7 @@ func scrubEventsForMCP(events []eventResponse) []eventResponse {
 		events[i].Message = ai.Scrub(events[i].Message)
 		events[i].ExceptionValue = ai.Scrub(events[i].ExceptionValue)
 		if len(events[i].Stacktrace) > 0 {
-			events[i].Stacktrace = json.RawMessage(ai.Scrub(string(events[i].Stacktrace)))
+			events[i].Stacktrace = json.RawMessage(ai.ScrubJSON(events[i].Stacktrace))
 		}
 	}
 	return events

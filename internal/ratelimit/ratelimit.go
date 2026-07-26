@@ -33,8 +33,17 @@ func New(limit int, window time.Duration) *Limiter {
 // expired keys. High enough that normal traffic never triggers it.
 const sweepThreshold = 50000
 
+// maxKeys is a HARD ceiling on live entries. The sweep alone only reclaims
+// EXPIRED windows, so a flood of unique keys arriving inside one window (the
+// ingest limiter runs pre-auth on an attacker-supplied header) frees nothing and
+// grows the map without bound, taking the single global mutex on every insert.
+// Past this ceiling a key that has no entry yet is refused rather than
+// allocated: fail closed, since only an abnormal flood can reach it.
+const maxKeys = 4 * sweepThreshold
+
 // get returns the live window for key, creating/rolling it when absent or
-// expired. Caller holds the lock.
+// expired. Returns nil when the map is at its hard ceiling and key is new.
+// Caller holds the lock.
 func (l *Limiter) get(key string, now time.Time) *entry {
 	e := l.hits[key]
 	if e != nil && now.Before(e.reset) {
@@ -47,6 +56,9 @@ func (l *Limiter) get(key string, now time.Time) *entry {
 			}
 		}
 	}
+	if e == nil && len(l.hits) >= maxKeys {
+		return nil
+	}
 	e = &entry{count: 0, reset: now.Add(l.window)}
 	l.hits[key] = e
 	return e
@@ -56,6 +68,9 @@ func (l *Limiter) allowAt(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e := l.get(key, now)
+	if e == nil {
+		return false // at the hard key ceiling: refuse rather than allocate
+	}
 	if e.count >= l.limit {
 		return false
 	}
@@ -73,7 +88,9 @@ func (l *Limiter) blockedAt(key string, now time.Time) bool {
 func (l *Limiter) recordAt(key string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.get(key, now).count++
+	if e := l.get(key, now); e != nil {
+		e.count++
+	}
 }
 
 // Allow counts one event and reports whether key is still within its limit.

@@ -14,6 +14,7 @@ cp .env.example .env
 # Fill in the secrets in .env:
 #   SESSION_KEY        openssl rand -base64 32
 #   CSRF_KEY           openssl rand -hex 16      (exactly 32 chars)
+#   FLARE_SECRET_KEY   openssl rand -base64 32   (required; keep it forever)
 #   FLARE_DB_PASSWORD  any strong string
 #   FLARE_BASE_URL     the URL Flare is reached at
 docker compose up -d --build
@@ -60,6 +61,7 @@ You can also supply all secrets via a pre-created `Secret` (keys `session-key`,
 | Public URL | `FLARE_BASE_URL` | `baseURL` | Used in DSNs + email links; must match how Flare is reached |
 | Session secret | `SESSION_KEY` | `secrets.sessionKey` | 32+ bytes, required |
 | CSRF secret | `CSRF_KEY` | `secrets.csrfKey` | exactly 32 bytes, required |
+| At-rest secret | `FLARE_SECRET_KEY` | `secrets.secretKey` | required; encrypts BYOAI keys, OIDC client secrets and channel configs. Production refuses to boot without it, and rotating it makes existing encrypted values unreadable |
 | DB password | `FLARE_DB_PASSWORD` | `postgres.password` | for the bundled Postgres |
 | External DB | `DATABASE_URL` | `postgres.externalUrl` (+ `bundled=false`) | point at your own Postgres |
 | Retention (days) | `FLARE_RETENTION_DAYS` | `retentionDays` | before export-to-Parquet + drop |

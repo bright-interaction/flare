@@ -98,10 +98,14 @@ func numberValue(dp *metricspb.NumberDataPoint) float64 {
 }
 
 func unixNano(ts uint64) time.Time {
+	now := time.Now().UTC()
 	if ts == 0 {
-		return time.Now().UTC()
+		return now
 	}
-	return time.Unix(0, int64(ts)).UTC()
+	// int64 overflow on a huge uint64 yields a negative nanosecond offset (a
+	// year-1754 timestamp); ClampTime catches that along with any out-of-window
+	// value, so nothing reaches the DEFAULT partition.
+	return ClampTime(time.Unix(0, int64(ts)).UTC(), now)
 }
 
 type nativeMetric struct {
@@ -131,10 +135,11 @@ func ParseNativeMetrics(body []byte) ([]MetricRecord, error) {
 		if m.Name == "" {
 			continue
 		}
-		when := time.Now().UTC()
+		now := time.Now().UTC()
+		when := now
 		if m.Timestamp != "" {
 			if t, err := time.Parse(time.RFC3339, m.Timestamp); err == nil {
-				when = t
+				when = ClampTime(t, now)
 			}
 		}
 		kind := m.Kind

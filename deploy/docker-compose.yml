@@ -20,6 +20,9 @@ services:
       ENVIRONMENT: production
       PORT: "8080"
       BASE_URL: "${FLARE_BASE_URL:?set FLARE_BASE_URL in .env}"
+      # Production refuses to boot without this. Fail here, at compose time,
+      # with a readable message rather than in a container restart loop.
+      FLARE_SECRET_KEY: "${FLARE_SECRET_KEY:?set FLARE_SECRET_KEY in .env (openssl rand -base64 32)}"
       DATABASE_URL: "postgres://flare:${FLARE_DB_PASSWORD:?set FLARE_DB_PASSWORD in .env}@flare-db:5432/flare?sslmode=disable"
       RETENTION_DAYS: "${FLARE_RETENTION_DAYS:-30}"
       FLARE_PARQUET_DIR: /app/data/parquet

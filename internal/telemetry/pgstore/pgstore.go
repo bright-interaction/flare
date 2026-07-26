@@ -27,9 +27,10 @@ func New(pool *pgxpool.Pool) *PGStore {
 
 var _ telemetry.Store = (*PGStore)(nil)
 
-func (s *PGStore) ListIssues(ctx context.Context, projectID, orgID string, limit, offset int32, status *string) ([]telemetry.Issue, error) {
+func (s *PGStore) ListIssues(ctx context.Context, projectID, orgID string, limit, offset int32, status, q *string) ([]telemetry.Issue, error) {
 	rows, err := s.q.ListIssues(ctx, generated.ListIssuesParams{
-		ProjectID: projectID, OrgID: orgID, Limit: limit, Offset: offset, Status: nText(status),
+		ProjectID: projectID, OrgID: orgID, Limit: limit, Offset: offset,
+		Status: nText(status), Q: nText(q),
 	})
 	if err != nil {
 		return nil, err
@@ -41,8 +42,10 @@ func (s *PGStore) ListIssues(ctx context.Context, projectID, orgID string, limit
 	return out, nil
 }
 
-func (s *PGStore) CountIssues(ctx context.Context, projectID, orgID string) (int64, error) {
-	return s.q.CountIssues(ctx, generated.CountIssuesParams{ProjectID: projectID, OrgID: orgID})
+func (s *PGStore) CountIssues(ctx context.Context, projectID, orgID string, status, q *string) (int64, error) {
+	return s.q.CountIssues(ctx, generated.CountIssuesParams{
+		ProjectID: projectID, OrgID: orgID, Status: nText(status), Q: nText(q),
+	})
 }
 
 func (s *PGStore) GetIssue(ctx context.Context, issueID, orgID string) (telemetry.Issue, error) {
