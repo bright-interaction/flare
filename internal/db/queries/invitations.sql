@@ -20,5 +20,6 @@ ORDER BY created_at DESC;
 -- name: DeleteInvitation :execrows
 DELETE FROM invitations WHERE id = $1 AND org_id = $2;
 
+-- ciguard:allow-unscoped accept flow resolves the invitation from the secret token_hash; the id here is already that resolved row
 -- name: MarkInvitationAccepted :exec
 UPDATE invitations SET accepted_at = now() WHERE id = $1;

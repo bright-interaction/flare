@@ -17,6 +17,7 @@ type apiKeyResponse struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
+	Role       string     `json:"role"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 }
@@ -27,6 +28,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name          string `json:"name"`
 		ExpiresInDays int    `json:"expires_in_days"`
+		Role          string `json:"role"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -35,6 +37,19 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = "API key"
+	}
+	// Least privilege is the DEFAULT for a new key. Every key used to act as a
+	// member, which includes irreversible project deletion, so a token minted
+	// for a dashboard could erase a project. Callers opt UP to member
+	// explicitly; owner/admin are not mintable at all, because a long-lived
+	// token must never be able to change who can log in.
+	role := strings.TrimSpace(req.Role)
+	if role == "" {
+		role = "viewer"
+	}
+	if role != "viewer" && role != "member" {
+		writeErr(w, http.StatusBadRequest, "role must be viewer or member")
+		return
 	}
 
 	plaintext, hash, prefix, err := auth.GenerateAPIKey()
@@ -49,7 +64,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 
 	k, err := s.q.CreateAPIKey(r.Context(), generated.CreateAPIKeyParams{
 		ID: id.New(), OrgID: orgIDFrom(r.Context()), Name: name,
-		KeyHash: hash, KeyPrefix: prefix, ExpiresAt: expires,
+		KeyHash: hash, KeyPrefix: prefix, ExpiresAt: expires, Role: role,
 	})
 	if err != nil {
 		slogError(w, "create api key", err)
@@ -58,7 +73,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), "apikey.create", k.Name)
 	// key (plaintext) is shown once and never again.
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": k.ID, "name": k.Name, "prefix": k.KeyPrefix, "key": plaintext,
+		"id": k.ID, "name": k.Name, "prefix": k.KeyPrefix, "role": k.Role, "key": plaintext,
 	})
 }
 
@@ -76,7 +91,7 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 			last = &t
 		}
 		out = append(out, apiKeyResponse{
-			ID: k.ID, Name: k.Name, Prefix: k.KeyPrefix, CreatedAt: k.CreatedAt.Time, LastUsedAt: last,
+			ID: k.ID, Name: k.Name, Prefix: k.KeyPrefix, Role: k.Role, CreatedAt: k.CreatedAt.Time, LastUsedAt: last,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

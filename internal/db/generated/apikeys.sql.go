@@ -12,9 +12,9 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :one
-INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at
+INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, expires_at, role)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role
 `
 
 type CreateAPIKeyParams struct {
@@ -24,6 +24,7 @@ type CreateAPIKeyParams struct {
 	KeyHash   string             `json:"key_hash"`
 	KeyPrefix string             `json:"key_prefix"`
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	Role      string             `json:"role"`
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*ApiKey, error) {
@@ -34,6 +35,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*Ap
 		arg.KeyHash,
 		arg.KeyPrefix,
 		arg.ExpiresAt,
+		arg.Role,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -45,6 +47,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*Ap
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
+		&i.Role,
 	)
 	return &i, err
 }
@@ -67,7 +70,7 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, arg DeleteAPIKeyParams) (int
 }
 
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
-SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at FROM api_keys WHERE key_hash = $1
+SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role FROM api_keys WHERE key_hash = $1
 `
 
 // ciguard:allow-unscoped auth path keyed by the secret key_hash; org_id is the result, not the filter
@@ -83,12 +86,13 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (*ApiKey,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
+		&i.Role,
 	)
 	return &i, err
 }
 
 const listAPIKeysByOrg = `-- name: ListAPIKeysByOrg :many
-SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC
+SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID string) ([]*ApiKey, error) {
@@ -109,6 +113,7 @@ func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID string) ([]*ApiKey
 			&i.CreatedAt,
 			&i.ExpiresAt,
 			&i.LastUsedAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
