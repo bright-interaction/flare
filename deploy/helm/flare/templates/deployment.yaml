@@ -30,6 +30,10 @@ spec:
               value: {{ .Values.baseURL | quote }}
             - name: RETENTION_DAYS
               value: {{ .Values.retentionDays | quote }}
+            {{- if .Values.allowDropWithoutExport }}
+            - name: FLARE_ALLOW_DROP_WITHOUT_EXPORT
+              value: "true"
+            {{- end }}
             - name: FLARE_PARQUET_DIR
               value: /app/data/parquet
             - name: SESSION_KEY

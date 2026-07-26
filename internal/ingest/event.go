@@ -268,26 +268,74 @@ func SanitizeText(s string) string {
 	return s
 }
 
-// SanitizeJSON applies the same rule to a JSON document bound for a JSONB
-// column. Inside JSON text a NUL is encoded as the six-character escape
-// \u0000, and Postgres rejects that escape in jsonb ("unsupported Unicode
-// escape sequence"), so a log attribute carrying one poisons the CopyFrom
-// batch exactly like a raw NUL byte does.
+// SanitizeJSON makes a client-supplied JSON document safe for a JSONB column.
+//
+// It PARSES and re-marshals rather than rewriting the text. A text-level
+// replace of the six-character \u0000 escape is wrong: in JSON that escape can
+// itself be escaped, so {"k":"\\u0000"} is a valid document whose value is the
+// literal text \u0000, and stripping those six characters leaves {"k":"\\"},
+// which is invalid, recreating exactly the CopyFrom poison pill this exists to
+// remove. Parsing also fixes lone surrogate escapes (\ud800 with no pair),
+// which Postgres rejects too and which no text replace would catch: the decoder
+// turns them into U+FFFD.
 func SanitizeJSON(raw []byte) []byte {
 	if len(raw) == 0 {
 		return raw
 	}
-	s := string(raw)
-	if strings.Contains(s, `\u0000`) {
-		s = strings.ReplaceAll(s, `\u0000`, "")
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// Keep numbers as their literal text so a large int64 (an id, a nanosecond
+	// timestamp) is not silently rounded through float64.
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		// Not valid JSON to begin with. Preserve the payload as a sanitized
+		// string rather than dropping it or failing the whole batch.
+		if out, merr := marshalJSON(map[string]string{"_raw": SanitizeText(string(raw))}); merr == nil {
+			return out
+		}
+		return []byte(`{"_raw":"unserializable"}`)
 	}
-	if out := SanitizeText(s); out != s {
-		s = out
+	out, err := marshalJSON(sanitizeValue(v))
+	if err != nil {
+		return []byte(`{"_sanitize_error":true}`)
 	}
-	if s == string(raw) {
-		return raw
+	return out
+}
+
+// sanitizeValue strips NULs and invalid UTF-8 from every string leaf and object
+// key. Keys are included because a NUL in a key fails the insert just as a NUL
+// in a value does; unlike the PII scrubber this rewrite is near-identity, so it
+// cannot meaningfully collapse two distinct keys into one.
+func sanitizeValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return SanitizeText(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[SanitizeText(k)] = sanitizeValue(val)
+		}
+		return out
+	case []any:
+		for i := range t {
+			t[i] = sanitizeValue(t[i])
+		}
+		return t
+	default:
+		return v
 	}
-	return []byte(s)
+}
+
+// marshalJSON encodes without HTML-escaping, so <, > and & in a log body or a
+// span attribute survive the round trip unchanged.
+func marshalJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // ClampTime keeps a client-supplied timestamp inside the partitioned window.

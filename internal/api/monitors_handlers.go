@@ -95,9 +95,11 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	// transition so a persistently-failing job does not spam an alert per run.
 	if state == "failed" && priorState != "failed" {
 		pid, name, org := project.ID, project.Name, project.OrgID
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
+		// Bounded like the other ingest-side background work: this runs on the
+		// DSN-authed check-in endpoint, so anyone holding a project's public key
+		// could otherwise loop ok->failed transitions and spawn one unbounded
+		// detached goroutine (plus one outbound alert) per request.
+		s.goBackground("monitor-failed", 15*time.Second, func(ctx context.Context) {
 			s.dispatchToOrg(ctx, org, alerts.Notification{
 				ProjectName: name,
 				Title:       "Monitor failed: " + slug,
@@ -105,7 +107,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 				Reason:      "Check-in reported failure",
 				URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/projects/" + pid,
 			})
-		}()
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

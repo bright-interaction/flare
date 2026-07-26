@@ -1,4 +1,22 @@
 Flare is deploying.
+{{- if .Values.secrets.existingSecret }}
+
+UPGRADING? Your pre-created Secret "{{ .Values.secrets.existingSecret }}" must now
+contain a "secret-key" entry (FLARE_SECRET_KEY), alongside session-key, csrf-key
+and database-url. Production refuses to boot without it, and a missing key leaves
+the new pods in CreateContainerConfigError while the old one keeps serving, so
+the rollout stalls silently. Add it before upgrading:
+
+    kubectl patch secret {{ .Values.secrets.existingSecret }} \
+      -p "{\"stringData\":{\"secret-key\":\"$(openssl rand -base64 32)\"}}"
+{{- end }}
+{{- if .Values.postgres.bundled }}
+
+NOTE on postgres.password: it is applied only when the database volume is first
+initialised. Changing it on an EXISTING install does not rotate the password in
+Postgres, but it does regenerate database-url, so the app would fail to
+authenticate. Run ALTER USER flare PASSWORD '...' first, then upgrade.
+{{- end }}
 
 1. Wait for the pod to be ready:
      kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w

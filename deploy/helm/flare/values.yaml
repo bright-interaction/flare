@@ -11,6 +11,12 @@ baseURL: https://flare.example.com
 # Days telemetry is kept in Postgres before export-to-Parquet + drop.
 retentionDays: 30
 
+# Retention only drops a partition once it is archived to the cold tier. An
+# unreachable cold tier PAUSES retention (partitions accumulate, error logged
+# every cycle) rather than deleting unarchived telemetry. Set true only if you
+# deliberately run with no cold tier.
+allowDropWithoutExport: false
+
 secrets:
   # 32+ bytes. Generate: openssl rand -base64 32
   sessionKey: ""

@@ -8,11 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/ingest"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
@@ -93,9 +95,10 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	var q *string
 	if v := strings.TrimSpace(r.URL.Query().Get("q")); v != "" {
-		if len(v) > 200 {
-			v = v[:200]
-		}
+		// Rune-safe: a raw v[:200] byte slice splits a multi-byte character and
+		// hands Postgres invalid UTF-8, which errors the whole query. Same bug
+		// class as the issue-title truncation fixed in internal/ingest.
+		v = ingest.SanitizeText(truncateRunes(v, 200))
 		q = &v
 	}
 
@@ -261,6 +264,17 @@ func (s *Server) handleUpdateIssueStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, genIssueToResponse(i))
+}
+
+// truncateRunes cuts s to at most n bytes without splitting a UTF-8 rune.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func parsePaging(r *http.Request) (limit, offset int32) {
