@@ -23,14 +23,14 @@ type overviewIssue struct {
 }
 
 type overviewProject struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Slug       string  `json:"slug"`
-	Events24h  int64   `json:"events_24h"`
-	Unresolved int64   `json:"unresolved"`
-	Status     string  `json:"status"`         // healthy | alert | spike | silent
-	LastSeenUnix int64 `json:"last_seen_unix"` // newest signal of any level; 0 = no pulse in 7d
-	Volume     []int64 `json:"volume"`         // overviewBuckets hourly error counts
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Slug         string  `json:"slug"`
+	Events24h    int64   `json:"events_24h"`
+	Unresolved   int64   `json:"unresolved"`
+	Status       string  `json:"status"`         // healthy | alert | spike | silent
+	LastSeenUnix int64   `json:"last_seen_unix"` // newest signal of any level; 0 = no pulse in 7d
+	Volume       []int64 `json:"volume"`         // overviewBuckets hourly error counts
 }
 
 type overviewResponse struct {
