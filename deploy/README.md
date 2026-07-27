@@ -34,6 +34,7 @@ helm install flare ./deploy/helm/flare \
   --set baseURL=https://flare.example.com \
   --set secrets.sessionKey=$(openssl rand -base64 32) \
   --set secrets.csrfKey=$(openssl rand -hex 16) \
+  --set secrets.secretKey=$(openssl rand -base64 32) \
   --set postgres.password=$(openssl rand -hex 16) \
   --set ingress.enabled=true \
   --set ingress.host=flare.example.com \
@@ -50,8 +51,13 @@ helm install flare ./deploy/helm/flare \
   ... (baseURL + secrets as above)
 ```
 
+`secrets.secretKey` is FLARE_SECRET_KEY, which encrypts stored credentials
+(BYOAI keys, OIDC client secrets, SMTP passwords) at rest. The pod refuses to
+start without it, so leaving it out of the command above does not silently
+disable encryption, it just fails.
+
 You can also supply all secrets via a pre-created `Secret` (keys `session-key`,
-`csrf-key`, `database-url`, optional `smtp-password`) with
+`csrf-key`, `secret-key`, `database-url`, optional `smtp-password`) with
 `--set secrets.existingSecret=my-secret`.
 
 ## Configuration
