@@ -30,9 +30,13 @@ func (q *Queries) DeleteSourceMap(ctx context.Context, arg DeleteSourceMapParams
 }
 
 const getSourceMapsForRelease = `-- name: GetSourceMapsForRelease :many
-SELECT name, content
-FROM source_map_artifacts
-WHERE project_id = $1 AND org_id = $2 AND release = $3
+SELECT name, content FROM (
+    SELECT name, content, created_at,
+           sum(octet_length(content)) OVER (ORDER BY created_at DESC, name) AS running_bytes
+    FROM source_map_artifacts
+    WHERE project_id = $1 AND org_id = $2 AND release = $3
+) t
+WHERE running_bytes <= $4::bigint
 ORDER BY created_at DESC
 LIMIT 1000
 `
@@ -41,6 +45,7 @@ type GetSourceMapsForReleaseParams struct {
 	ProjectID string `json:"project_id"`
 	OrgID     string `json:"org_id"`
 	Release   string `json:"release"`
+	MaxBytes  int64  `json:"max_bytes"`
 }
 
 type GetSourceMapsForReleaseRow struct {
@@ -48,10 +53,25 @@ type GetSourceMapsForReleaseRow struct {
 	Content string `json:"content"`
 }
 
-// Bounded: symbolication loads full content into memory, so cap the number of
-// maps pulled per release to keep triage from exhausting memory.
+// Bounded by BYTES, not just by row count.
+//
+// A row cap alone does not bound memory: maxArtifactBody allows a 30 MiB source
+// map, so LIMIT 1000 permits 30 GB in a single request. The cap has to be here
+// rather than in Go, because pgx materialises every row before the handler sees
+// one, so a Go-side budget would run after the allocation it is meant to
+// prevent.
+//
+// The window function accumulates content size over the same ordering the LIMIT
+// uses, so this takes the newest maps until the budget is spent and then stops.
+// Symbolication already degrades gracefully when a map is absent: frames stay
+// minified rather than the request failing.
 func (q *Queries) GetSourceMapsForRelease(ctx context.Context, arg GetSourceMapsForReleaseParams) ([]*GetSourceMapsForReleaseRow, error) {
-	rows, err := q.db.Query(ctx, getSourceMapsForRelease, arg.ProjectID, arg.OrgID, arg.Release)
+	rows, err := q.db.Query(ctx, getSourceMapsForRelease,
+		arg.ProjectID,
+		arg.OrgID,
+		arg.Release,
+		arg.MaxBytes,
+	)
 	if err != nil {
 		return nil, err
 	}
