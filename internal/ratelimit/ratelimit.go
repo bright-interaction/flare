@@ -22,6 +22,18 @@ type Limiter struct {
 	limit  int
 	window time.Duration
 	hits   map[string]*entry
+	// lastSweep rate-limits the O(n) reclaim. Without it the sweep ran on every
+	// insert once the map passed sweepThreshold, which turned a flood of unique
+	// keys into an amplification attack against the limiter itself: each request
+	// is a map miss, each miss scans 50k-200k entries, and all of it is
+	// serialized on mu. The attacker pays one request; the server pays a full
+	// scan under the global lock.
+	lastSweep time.Time
+	// sweeps counts completed O(n) reclaims. It exists so a test can assert on
+	// the WORK DONE rather than on bookkeeping: the first version of that test
+	// checked lastSweep, which the pre-fix code never wrote, so it passed against
+	// the very code it was meant to reject.
+	sweeps int
 }
 
 // New returns a limiter allowing limit events per window per key.
@@ -49,6 +61,17 @@ const maxKeys = 4 * sweepThreshold
 // eviction is amortized instead of running on every subsequent insert.
 const evictBatch = maxKeys / 10
 
+// sweepInterval is the floor between two O(n) reclaims.
+//
+// The sweep only ever reclaims EXPIRED windows, and a window cannot expire in
+// less than one window's duration, so sweeping more often than that cannot free
+// anything that the previous sweep did not already free. Running it on every
+// insert was therefore pure cost: the same scan, repeated, under the lock.
+//
+// One second is well below any window in use (ingest is a minute) and bounds
+// the amortized cost at one scan per second regardless of request rate.
+const sweepInterval = time.Second
+
 // get returns the live window for key, creating or rolling it when absent or
 // expired. Caller holds the lock. Never returns nil.
 func (l *Limiter) get(key string, now time.Time) *entry {
@@ -56,7 +79,9 @@ func (l *Limiter) get(key string, now time.Time) *entry {
 	if e != nil && now.Before(e.reset) {
 		return e
 	}
-	if len(l.hits) > sweepThreshold {
+	if len(l.hits) > sweepThreshold && now.Sub(l.lastSweep) >= sweepInterval {
+		l.lastSweep = now
+		l.sweeps++
 		for k, v := range l.hits {
 			if !now.Before(v.reset) {
 				delete(l.hits, k)
