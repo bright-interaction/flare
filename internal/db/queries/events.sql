@@ -8,7 +8,27 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), 1)
 ON CONFLICT (project_id, fingerprint) DO UPDATE
 SET last_seen    = now(),
     event_count  = issues.event_count + 1,
-    level        = EXCLUDED.level,
+    -- Level ESCALATES, never downgrades.
+    --
+    -- This used to be `level = EXCLUDED.level`, so the newest event decided the
+    -- issue's severity outright. Ingest authenticates with a DSN public key that
+    -- ships in a browser bundle, so anyone who can read a customer's page can
+    -- post an event with the same fingerprint and level='info'. pageableLevel
+    -- treats info/debug as never-page, so that one request silently switches off
+    -- alerting for a live incident and nothing in the UI reports a change.
+    --
+    -- Unknown or empty maps to the rank of 'error', matching pageableLevel's
+    -- "empty == error per Sentry semantics".
+    level        = CASE
+                     WHEN COALESCE(array_position(ARRAY['debug','info','warning','error','fatal'], lower(NULLIF(EXCLUDED.level, ''))), 4)
+                        > COALESCE(array_position(ARRAY['debug','info','warning','error','fatal'], lower(NULLIF(issues.level,   ''))), 4)
+                     THEN EXCLUDED.level
+                     ELSE issues.level
+                   END,
+    -- Title and culprit DO track the newest event on purpose: they describe the
+    -- current shape of the error (an updated exception message, a moved call
+    -- site) and an operator reads them next to a visible last_seen. They carry
+    -- no automated consequence, unlike level, which alert rules filter on.
     title        = EXCLUDED.title,
     culprit      = EXCLUDED.culprit
 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform,
