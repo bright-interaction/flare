@@ -231,10 +231,27 @@ func (s *Server) releaseSourceMaps(ctx context.Context, issueID, org string, eve
 	if err != nil {
 		return nil
 	}
+	// Byte budget for the WHOLE request, spent across releases.
+	//
+	// A row cap does not bound memory here: an artifact may be 30 MiB
+	// (maxArtifactBody), so the old LIMIT 1000 allowed 30 GB per release, and an
+	// issue whose events span several releases multiplied that again. One
+	// GET /api/issues/{id}/events was enough to OOM the shared process, which on
+	// a self-host takes down ingest for every tenant with it.
+	//
+	// 64 MiB comfortably covers a real bundle's maps while making the endpoint's
+	// worst case bounded and predictable.
+	const maxSourceMapBytes = 64 << 20
+	remaining := int64(maxSourceMapBytes)
+
 	out := make(map[string]map[string]string, len(releases))
 	for rel := range releases {
+		if remaining <= 0 {
+			break
+		}
 		rows, err := s.q.GetSourceMapsForRelease(ctx, generated.GetSourceMapsForReleaseParams{
 			ProjectID: issue.ProjectID, OrgID: org, Release: rel,
+			MaxBytes: remaining,
 		})
 		if err != nil || len(rows) == 0 {
 			continue
@@ -242,6 +259,7 @@ func (s *Server) releaseSourceMaps(ctx context.Context, issueID, org string, eve
 		m := make(map[string]string, len(rows))
 		for _, row := range rows {
 			m[row.Name] = row.Content
+			remaining -= int64(len(row.Content))
 		}
 		out[rel] = m
 	}
