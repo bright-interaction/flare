@@ -66,9 +66,63 @@ var (
 	reAlterAddOrg = regexp.MustCompile(`(?is)ALTER TABLE\s+(\w+)\b[^;]*?ADD COLUMN\s+(?:IF NOT EXISTS\s+)?org_id\b`)
 	reOrgCol      = regexp.MustCompile(`(?i)\borg_id\b`)
 	reLineComment = regexp.MustCompile(`--[^\n]*`)
-	reDriving     = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(\w+)`)
-	reIsInsert    = regexp.MustCompile(`(?is)^\s*INSERT\s+INTO`)
+	// The table name is matched through the three ways SQL lets you spell the
+	// SAME table without using bare word characters, because \w+ alone silently
+	// misses all of them and a miss here means the query is never checked at all:
+	//
+	//   FROM public.issues   schema-qualified; \w+ captures "public"
+	//   FROM "issues"        quoted identifier; \w+ does not match the quote
+	//   FROM ONLY issues     partition-inheritance keyword; \w+ captures "only"
+	//
+	// Verified as a real bypass on 2026-07-27: adding
+	//   -- name: GetIssueByFingerprint :one
+	//   SELECT * FROM public.issues WHERE fingerprint = $1;
+	// to a query file PASSED the guard, i.e. an unscoped cross-tenant read of a
+	// tenant-scoped table went unnoticed. That is the exact defect this guard was
+	// rewritten to catch, reintroduced through the spelling of the table name.
+	reDriving  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:ONLY\s+)?(?:"?\w+"?\.)?"?(\w+)"?`)
+	reIsInsert = regexp.MustCompile(`(?is)^\s*INSERT\s+INTO`)
 )
+
+// TestDrivingTableMatchesEverySpelling pins the table-name matcher.
+//
+// The matcher decides WHICH queries get checked at all, so a miss here is worse
+// than a weak predicate: the query is simply never examined. On 2026-07-27 an
+// audit re-check proved that adding
+//
+//	-- name: GetIssueByFingerprint :one
+//	SELECT * FROM public.issues WHERE fingerprint = $1;
+//
+// passed the guard clean. That is an unscoped cross-tenant read of a
+// tenant-scoped table, which is precisely the class this guard exists to stop,
+// reintroduced through nothing but the spelling of the table name. \w+ does not
+// match a quote and captures the wrong token for a schema qualifier or ONLY.
+func TestDrivingTableMatchesEverySpelling(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want string
+		why  string
+	}{
+		{"SELECT * FROM issues WHERE x = $1", "issues", "bare"},
+		{"SELECT * FROM public.issues WHERE x = $1", "issues", "schema-qualified: must not capture the schema"},
+		{`SELECT * FROM "issues" WHERE x = $1`, "issues", "quoted identifier"},
+		{`SELECT * FROM "public"."issues" WHERE x = $1`, "issues", "both quoted"},
+		{"SELECT * FROM ONLY issues WHERE x = $1", "issues", "ONLY excludes partitions but is still the table"},
+		{"UPDATE public.issues SET x = 1", "issues", "UPDATE with schema"},
+		{"DELETE FROM ONLY issues WHERE x = $1", "issues", "DELETE with ONLY"},
+		{"INSERT INTO public.issues (a) VALUES ($1)", "issues", "INSERT with schema"},
+		{"SELECT * FROM events e JOIN public.issues i ON i.id = e.issue_id", "events", "first driving table"},
+	} {
+		m := reDriving.FindStringSubmatch(tc.sql)
+		if m == nil {
+			t.Errorf("no driving table found in %q (%s); the query would never be checked", tc.sql, tc.why)
+			continue
+		}
+		if m[1] != tc.want {
+			t.Errorf("driving table for %q = %q, want %q (%s)", tc.sql, m[1], tc.want, tc.why)
+		}
+	}
+}
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
