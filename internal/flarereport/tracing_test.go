@@ -34,12 +34,12 @@ func TestIsUntraceable(t *testing.T) {
 
 func TestNormalizeTracePath(t *testing.T) {
 	cases := map[string]string{
-		"/":                                        "/",
-		"/api/users/123":                           "/api/users/:id",
-		"/projects/ru6pj4v16irarblw2s1ojrrs/edit":  "/projects/:id/edit",
-		"/t/550e8400-e29b-41d4-a716-446655440000":  "/t/:id",
-		"/api/v1/scans":                            "/api/v1/scans", // v1 kept (short), scans kept (word)
-		"/verify-traces-probe":                     "/verify-traces-probe",
+		"/":              "/",
+		"/api/users/123": "/api/users/:id",
+		"/projects/ru6pj4v16irarblw2s1ojrrs/edit": "/projects/:id/edit",
+		"/t/550e8400-e29b-41d4-a716-446655440000": "/t/:id",
+		"/api/v1/scans":        "/api/v1/scans", // v1 kept (short), scans kept (word)
+		"/verify-traces-probe": "/verify-traces-probe",
 	}
 	for in, want := range cases {
 		if got := normalizeTracePath(in); got != want {
