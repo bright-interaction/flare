@@ -144,22 +144,49 @@ func (m *Manager) prune(ctx context.Context, table string) error {
 	return nil
 }
 
-// dropWithLockTimeout drops a partition under a short lock_timeout, on a
-// dedicated connection so the SET is scoped to this statement and cannot leak
-// into another pooled query.
+// dropWithLockTimeout drops a partition under a short lock_timeout, inside an
+// explicit TRANSACTION.
+//
+// The transaction is the entire point, and its absence made this a no-op. SET
+// LOCAL only applies within a transaction block: run outside one, Postgres
+// emits `WARNING: SET LOCAL can only be used in transaction blocks` and
+// discards it, because each statement is then its own implicit transaction that
+// ends before the next one begins. So the DROP that followed ran with the
+// default lock_timeout of 0, meaning wait forever, which is exactly the
+// behaviour the timeout was added to prevent.
+//
+// That matters because DROP TABLE takes ACCESS EXCLUSIVE on the parent. Without
+// a deadline it queues behind any in-flight read and then convoys every
+// subsequent read AND ingest INSERT behind itself for as long as that read
+// runs. A dashboard query over a wide time range is enough to stall ingest.
+//
+// With the timeout actually in force the DROP gives up after 5s and the caller
+// logs and retries on the next cycle; the partition is already past retention,
+// so a few hours' delay costs nothing.
 func (m *Manager) dropWithLockTimeout(ctx context.Context, name string) error {
 	conn, err := m.pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback is a no-op once Commit has run; on any early return it releases
+	// the lock rather than holding it to the end of the pooled connection.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
 		return err
 	}
 	// Table name comes from the fixed `tables` allowlist plus a date matched by
 	// the childPartitions regex, so the formatted SQL is safe.
-	_, err = conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", name))
-	return err
+	if _, err := tx.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", name)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // childPartitions returns the dated child partition names of a parent table.
