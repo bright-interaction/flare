@@ -98,22 +98,25 @@ fi
 # Redact internal infra references from ALL history (file contents + commit
 # messages). Distinctive tokens only, so a literal global replace is safe.
 REDACT="$WORK/redactions.txt"
-{
-  echo 'host==>host'
-  echo 'web-proxy==>web-proxy'
-  echo 'flare.example.com==>flare.example.com'
-  echo 's3.example.com==>s3.example.com'
-  echo 'Cloud==>Cloud'
-  # Synthetic Stripe-key fixtures in older commits of the AI scrubber tests (NOT
-  # real: obvious ABCDEF... values). Current source splits these literals so they
-  # are non-contiguous (tests still pass); this scrubs the old contiguous forms so
-  # GitHub push protection accepts the mirror. The redacted form is too short to
-  # match the Stripe detector.
-  echo 'sk_live_REDACTED==>sk_live_REDACTED'
-  echo 'sk_live_REDACTED==>sk_live_REDACTED'
-} > "$REDACT"
+# Redactions come from ONE shared list plus this product's extras, because the
+# per-product copies drifted: slab's never got the estate host IP or the internal
+# service hostnames, so the production IP sat in its test fixtures labelled "prod
+# host" and 98 occurrences of an internal SaaS hostname stayed in its history.
+# shellcheck source=../../scripts/mirror-redactions.sh
+. "$ROOT/scripts/mirror-redactions.sh"
+mirror_redaction_file "$ROOT" "$ROOT/flare/scripts/mirror-redactions.txt" "$REDACT"
 echo "Redacting internal infra hostnames from all history ..."
 ( cd "$CLONE" && git filter-repo --force --replace-text "$REDACT" --replace-message "$REDACT" )
+
+# Assert the redaction actually took. Rewriting a token is a hope; checking it is
+# gone is the guarantee, and this walks every blob in every commit because that is
+# what the push publishes (mesh found names neutralised at HEAD still present in 61
+# of 156 published commits).
+mirror_redaction_check "$CLONE" "$ROOT" "$ROOT/flare/scripts/mirror-redactions.txt"
+
+# Blobs that text redaction cannot fix: a committed binary or archive, or a
+# maintainer home path baked into build metadata. Nothing at HEAD reveals these.
+mirror_blob_sanity_check "$CLONE" "$ROOT/flare/scripts/mirror-blob-allowlist.txt"
 
 # Defense in depth: fail if a stripped path survived.
 for p in "${STRIP_PATHS[@]}"; do
