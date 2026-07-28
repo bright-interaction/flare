@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +100,16 @@ type logResponse struct {
 	ObservedAt time.Time       `json:"observed_at"`
 }
 
+const (
+	// maxLogWindowHours clamps `hours`. 90 days is past any retention setting
+	// this ships with, so a larger value only asks the database to prove the
+	// rows are absent.
+	maxLogWindowHours = 24 * 90
+	// maxLogLimit caps a page. 100 is the default; 500 is enough for an export
+	// loop without letting one request pull an unbounded slice into memory.
+	maxLogLimit = 500
+)
+
 // handleSearchLogs is the authenticated dashboard query over the hot tier.
 func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -112,13 +123,66 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	if v := strings.TrimSpace(q.Get("trace_id")); v != "" {
 		f.TraceID = &v
 	}
+	// Time window. `hours` is what the UI sends; `since` (RFC3339) is the
+	// precise form for API and MCP callers. Without either, the query scanned
+	// the entire retained history and returned the newest 100, so an operator
+	// looking at an incident from Tuesday had no way to ask for Tuesday.
+	if v := strings.TrimSpace(q.Get("since")); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.Since = &t
+		} else {
+			writeErr(w, http.StatusBadRequest, "since must be an RFC3339 timestamp")
+			return
+		}
+	} else if v := strings.TrimSpace(q.Get("hours")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeErr(w, http.StatusBadRequest, "hours must be a positive integer")
+			return
+		}
+		// Clamped: a huge value is the same unbounded scan the window exists to
+		// prevent, and nothing is retained beyond it anyway.
+		if n > maxLogWindowHours {
+			n = maxLogWindowHours
+		}
+		t := time.Now().Add(-time.Duration(n) * time.Hour)
+		f.Since = &t
+	}
+	// Keyset paging cursor: the previous page's oldest row.
+	if v := strings.TrimSpace(q.Get("before")); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "before must be an RFC3339 timestamp")
+			return
+		}
+		f.Before = &t
+	}
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeErr(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		if n > maxLogLimit {
+			n = maxLogLimit
+		}
+		f.Limit = int32(n)
+	}
 
 	logs, err := s.store.SearchLogs(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), f)
 	if err != nil {
 		slogError(w, "search logs", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toLogResponses(logs))
+	out := toLogResponses(logs)
+	// next_before is the cursor for the following page, present only when this
+	// page was full. An empty value means "no more", which is what lets the UI
+	// distinguish the end of the data from a page that happens to be short.
+	resp := map[string]any{"logs": out}
+	if int32(len(logs)) == f.Limit && len(logs) > 0 {
+		resp["next_before"] = logs[len(logs)-1].ObservedAt.Format(time.RFC3339Nano)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // toLogResponses maps stored logs to the clean API shape. Used by the REST

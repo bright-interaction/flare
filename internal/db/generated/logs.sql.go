@@ -32,6 +32,11 @@ WHERE project_id = $1
   AND ($5::text IS NULL OR body ILIKE '%' || $5 || '%')
   AND ($6::text IS NULL OR trace_id = $6)
   AND ($7::timestamptz IS NULL OR observed_at >= $7)
+  -- Keyset paging, NOT OFFSET. Logs stream in continuously, so an OFFSET over a
+  -- DESC observed_at ordering skips and duplicates rows as new ones land: page 2
+  -- is computed against a list that grew since page 1. Paging from the last row
+  -- seen is stable under concurrent ingest.
+  AND ($8::timestamptz IS NULL OR observed_at < $8)
 ORDER BY observed_at DESC
 LIMIT $3
 `
@@ -44,6 +49,7 @@ type SearchLogsParams struct {
 	Q         pgtype.Text        `json:"q"`
 	TraceID   pgtype.Text        `json:"trace_id"`
 	Since     pgtype.Timestamptz `json:"since"`
+	Before    pgtype.Timestamptz `json:"before"`
 }
 
 func (q *Queries) SearchLogs(ctx context.Context, arg SearchLogsParams) ([]*Log, error) {
@@ -55,6 +61,7 @@ func (q *Queries) SearchLogs(ctx context.Context, arg SearchLogsParams) ([]*Log,
 		arg.Q,
 		arg.TraceID,
 		arg.Since,
+		arg.Before,
 	)
 	if err != nil {
 		return nil, err

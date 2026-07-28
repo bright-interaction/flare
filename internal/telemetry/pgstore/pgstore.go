@@ -82,7 +82,8 @@ func (s *PGStore) ListEventsByIssue(ctx context.Context, issueID, orgID string, 
 func (s *PGStore) SearchLogs(ctx context.Context, projectID, orgID string, f telemetry.LogFilter) ([]telemetry.Log, error) {
 	rows, err := s.q.SearchLogs(ctx, generated.SearchLogsParams{
 		ProjectID: projectID, OrgID: orgID, Limit: f.Limit,
-		Severity: nText(f.Severity), Q: nText(f.Query), TraceID: nText(f.TraceID), Since: nTs(f.Since),
+		Severity: nText(f.Severity), Q: nText(f.Query), TraceID: nText(f.TraceID),
+		Since: nTs(f.Since), Before: nTs(f.Before),
 	})
 	if err != nil {
 		return nil, err

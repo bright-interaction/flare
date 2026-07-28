@@ -16,6 +16,7 @@ import type {
   Issue,
   IssueEvent,
   LogRow,
+  LogPage,
   LogVolumeBucket,
   MetricName,
   MetricPoint,
@@ -184,13 +185,29 @@ export const api = {
       `/projects/${pid}/metrics/query?name=${encodeURIComponent(name)}&window=${windowMin}`
     ),
 
-  logs: (pid: string, opts: { q?: string; severity?: string; trace?: string } = {}) => {
+  logs: (
+    pid: string,
+    opts: {
+      q?: string;
+      severity?: string;
+      trace?: string;
+      /** Window size in hours. Without it the server returns the newest records
+       *  from the whole retained history. */
+      hours?: number;
+      /** Keyset paging cursor: the observed_at of the oldest row already shown. */
+      before?: string;
+      limit?: number;
+    } = {}
+  ) => {
     const p = new URLSearchParams();
     if (opts.q) p.set('q', opts.q);
     if (opts.severity) p.set('severity', opts.severity);
     if (opts.trace) p.set('trace_id', opts.trace);
+    if (opts.hours) p.set('hours', String(opts.hours));
+    if (opts.before) p.set('before', opts.before);
+    if (opts.limit) p.set('limit', String(opts.limit));
     const qs = p.toString();
-    return req<LogRow[]>('GET', `/projects/${pid}/logs${qs ? `?${qs}` : ''}`);
+    return req<LogPage>('GET', `/projects/${pid}/logs${qs ? `?${qs}` : ''}`);
   },
 
   overview: () => req<Overview>('GET', '/overview'),
