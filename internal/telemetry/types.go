@@ -94,6 +94,9 @@ type LogFilter struct {
 	Severity *string
 	Query    *string
 	TraceID  *string
-	Since    *time.Time
-	Limit    int32
+	// Since bounds the window's start (inclusive). Before is the keyset paging
+	// cursor: strictly older than this, which is the previous page's last row.
+	Since  *time.Time
+	Before *time.Time
+	Limit  int32
 }
