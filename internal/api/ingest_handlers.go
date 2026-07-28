@@ -25,6 +25,22 @@ import (
 const (
 	maxIngestBody       = 1 << 20 // 1 MiB compressed request body
 	maxDecompressedBody = 8 << 20 // 8 MiB cap after gzip inflation (bomb guard)
+
+	// maxEnvelopeItems caps the RECORDS in one envelope, which the byte caps
+	// above do not.
+	//
+	// An envelope is newline-delimited, so 8 MiB of `{"type":"event"}\n{}\n`
+	// pairs is ~400,000 items, and each event item runs UpsertIssue +
+	// InsertEvent synchronously. One gzipped ~100 KiB POST therefore buys
+	// hundreds of thousands of round trips for ONE rate-limit token, because the
+	// limiter charges per REQUEST. That is the amplification: the attacker pays
+	// once and the database pays 400,000 times.
+	//
+	// 1000 is far above any real SDK batch (Sentry clients flush a handful of
+	// events per envelope, and a transaction carries its spans inside one item)
+	// while capping the per-request work at something a single token can honestly
+	// pay for.
+	maxEnvelopeItems = 1000
 )
 
 // handleEnvelope ingests a Sentry envelope (the modern @sentry/* SDK path).
@@ -42,6 +58,18 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid envelope")
 		return
 	}
+	// Truncate rather than reject. A legitimate SDK never comes near this, and
+	// answering 4xx would make Sentry clients DISCARD the payload as malformed;
+	// accepting the first maxEnvelopeItems keeps real data flowing while the
+	// amplification is bounded.
+	dropped := 0
+	if len(items) > maxEnvelopeItems {
+		dropped = len(items) - maxEnvelopeItems
+		items = items[:maxEnvelopeItems]
+		slog.Warn("envelope truncated: too many items",
+			"project_id", project.ID, "kept", maxEnvelopeItems, "dropped", dropped)
+	}
+
 	var lastID string
 	var events, stored int
 	for _, item := range items {
