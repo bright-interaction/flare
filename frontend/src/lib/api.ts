@@ -142,6 +142,9 @@ export const api = {
   // Returns a body ONLY when the erasure was partial (202): the hot tier is
   // erased but an S3 cold tier still holds aged telemetry. A 204 means fully
   // erased. Callers must read this rather than assuming success.
+  changePassword: (current_password: string, new_password: string) =>
+    req<{ status: string }>('POST', '/auth/password', { current_password, new_password }),
+
   deleteOrg: () => req<PartialErasure | void>('DELETE', '/org'),
 
   members: () => req<Member[]>('GET', '/members'),
