@@ -209,9 +209,36 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 	return srv
 }
 
-// dispatchToOrg loads an org's enabled notification channels and dispatches one
-// notification, no-op when the org has none. Shared by the ad-hoc alert paths
-// (monitor check-in failures) that are not tied to a project alert rule.
+// dispatchToProject sends one notification to the channels routed to a project,
+// which is every channel routed to it PLUS every channel with no routing at all.
+//
+// Prefer this over dispatchToOrg wherever a project is known. Alerts are almost
+// always about a project, and org-wide fan-out is what put a production incident
+// and a side project in the same Slack.
+func (s *Server) dispatchToProject(ctx context.Context, org, project string, n alerts.Notification) {
+	chans, err := s.q.ListEnabledChannelsForProject(ctx, generated.ListEnabledChannelsForProjectParams{
+		OrgID: org, ProjectID: project,
+	})
+	if err != nil || len(chans) == 0 {
+		return
+	}
+	channels := make([]alerts.Channel, 0, len(chans))
+	for _, c := range chans {
+		channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
+	}
+	s.dispatcher.Dispatch(ctx, channels, n)
+}
+
+// dispatchToOrg fans out to EVERY enabled channel in the org, ignoring routing.
+//
+// Reserved for notifications that genuinely belong to no single project. Routing
+// is per project, so a channel scoped to project A has no answer to "should this
+// org-level message reach you"; delivering is the safe direction, because the
+// alternative is an alert that silently reaches nobody once anyone configures
+// routing. Deciding that once and writing it here is the point: the recurring
+// defect in this codebase is a rule applied to some call sites and not others.
+//
+// If you are reaching for this and you have a project id, use dispatchToProject.
 func (s *Server) dispatchToOrg(ctx context.Context, org string, n alerts.Notification) {
 	chans, err := s.q.ListEnabledNotificationChannelsByOrg(ctx, org)
 	if err != nil || len(chans) == 0 {

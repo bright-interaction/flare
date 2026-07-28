@@ -200,6 +200,9 @@ export interface Channel {
   last_attempt_at: string | null;
   last_ok_at: string | null;
   last_error: string;
+  /** Projects this channel is routed to. EMPTY MEANS ALL PROJECTS, which is
+   *  both the default and the behaviour before routing existed. */
+  project_ids: string[];
 }
 
 export interface Monitor {

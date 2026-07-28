@@ -20,6 +20,10 @@ type channelResponse struct {
 	LastAttemptAt *string         `json:"last_attempt_at"`
 	LastOkAt      *string         `json:"last_ok_at"`
 	LastError     string          `json:"last_error"`
+	// ProjectIDs is the routing list. EMPTY MEANS ALL PROJECTS, which is both
+	// the pre-routing behaviour and the default, so an existing channel keeps
+	// receiving everything until someone narrows it deliberately.
+	ProjectIDs []string `json:"project_ids"`
 }
 
 // toChannelResponse maps a stored channel row to the API shape, redacting the
@@ -173,7 +177,15 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]channelResponse, 0, len(chans))
 	for _, c := range chans {
-		out = append(out, s.toChannelResponse(c))
+		resp := s.toChannelResponse(c)
+		// Routing, so the UI can show and edit it. An error here degrades to
+		// "no routing", which reads as "all projects": the same thing the
+		// channel did before routing existed, and the safe direction, because
+		// the alternative is showing a channel as narrower than it is.
+		if pids, err := s.q.ListChannelProjects(r.Context(), c.ID); err == nil {
+			resp.ProjectIDs = pids
+		}
+		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -353,4 +365,73 @@ func (s *Server) handleListAlertRules(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleUpdateChannel toggles a channel's enabled flag and its project routing.
+//
+// notification_channels.enabled has existed since the first schema and the
+// dispatch query has always filtered on it, but nothing could ever SET it: the
+// routes were create, test and delete. So silencing a channel that started
+// paging at 3am meant DELETING it and re-creating it afterwards, re-entering a
+// config the API deliberately redacts and will not read back. The column was
+// there; only the wiring was missing.
+func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled    *bool     `json:"enabled"`
+		ProjectIDs *[]string `json:"project_ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ctx := r.Context()
+	org := orgIDFrom(ctx)
+	chID := chi.URLParam(r, "id")
+
+	if req.Enabled != nil {
+		rows, err := s.q.SetChannelEnabled(ctx, generated.SetChannelEnabledParams{
+			ID: chID, OrgID: org, Enabled: *req.Enabled,
+		})
+		if err != nil {
+			slogError(w, "set channel enabled", err)
+			return
+		}
+		if rows == 0 {
+			writeErr(w, http.StatusNotFound, "channel not found")
+			return
+		}
+	}
+
+	if req.ProjectIDs != nil {
+		// Verify every project belongs to THIS org before storing it. The join
+		// table has no org_id of its own, so this handler is the only thing
+		// standing between a routing list and a cross-tenant reference.
+		for _, pid := range *req.ProjectIDs {
+			if _, err := s.q.GetProjectByID(ctx, generated.GetProjectByIDParams{ID: pid, OrgScope: org}); err != nil {
+				writeErr(w, http.StatusBadRequest, "unknown project in project_ids")
+				return
+			}
+		}
+		// Confirm the channel is this org's before touching its routing: without
+		// this, an id from another tenant would have its routing rewritten.
+		if _, err := s.q.GetNotificationChannel(ctx, generated.GetNotificationChannelParams{ID: chID, OrgID: org}); err != nil {
+			writeErr(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		if err := s.q.ReplaceChannelProjects(ctx, chID); err != nil {
+			slogError(w, "clear channel routing", err)
+			return
+		}
+		for _, pid := range *req.ProjectIDs {
+			if err := s.q.AddChannelProject(ctx, generated.AddChannelProjectParams{
+				ChannelID: chID, ProjectID: pid,
+			}); err != nil {
+				slogError(w, "set channel routing", err)
+				return
+			}
+		}
+	}
+
+	s.audit(ctx, "channel.update", chID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
