@@ -59,6 +59,16 @@ type Server struct {
 	// testLimiter caps per-org "send test notification" calls so the test route
 	// cannot be looped to spam a configured recipient or probe public hosts.
 	testLimiter *ratelimit.Limiter
+	// monitorAlertLimiter caps monitor-failure alerts PER ORG, independent of
+	// the per-monitor cap.
+	//
+	// The per-monitor key includes the slug, which the caller chooses, and
+	// UpsertMonitorCheckin CREATES the monitor if it does not exist. So a DSN
+	// public key could invent an unlimited number of slugs, each auto-registering
+	// and each getting its own fresh per-monitor budget. Capping per (org, slug)
+	// bounds an honestly-flapping cron and bounds nothing at all against someone
+	// varying the slug.
+	monitorAlertLimiter *ratelimit.Limiter
 
 	// Security-event recording: Flare's own security signals (ingest-auth
 	// rejections, login lockouts) become grouped issues in a per-org
@@ -179,6 +189,10 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
 		resetLimiter:  ratelimit.New(5, 15*time.Minute), // <=5 reset requests per (email, ip) / 15m
 		testLimiter:   ratelimit.New(10, time.Minute),   // <=10 test-sends per org / min
+		// <=20 monitor-failure alerts per ORG per minute, whatever the slug.
+		// Above any real estate (a flapping fleet transitions a handful of
+		// monitors a minute) and far below what a mailbox tolerates.
+		monitorAlertLimiter: ratelimit.New(20, time.Minute),
 
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
