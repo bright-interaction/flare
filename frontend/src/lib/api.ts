@@ -3,6 +3,7 @@ import type {
   ApiKey,
   ApiKeyCreated,
   ApiKeyRole,
+  PartialErasure,
   Artifact,
   AiConfig,
   AuditEntry,
@@ -138,7 +139,10 @@ export const api = {
 
   auditLog: () => req<AuditEntry[]>('GET', '/audit-log'),
   exportData: () => req<Record<string, unknown>>('GET', '/export'),
-  deleteOrg: () => req<void>('DELETE', '/org'),
+  // Returns a body ONLY when the erasure was partial (202): the hot tier is
+  // erased but an S3 cold tier still holds aged telemetry. A 204 means fully
+  // erased. Callers must read this rather than assuming success.
+  deleteOrg: () => req<PartialErasure | void>('DELETE', '/org'),
 
   members: () => req<Member[]>('GET', '/members'),
   updateMemberRole: (userId: string, role: string) =>
@@ -152,7 +156,7 @@ export const api = {
   createProject: (name: string, platform: string) =>
     req<Project>('POST', '/projects', { name, platform }),
   project: (id: string) => req<Project>('GET', `/projects/${id}`),
-  deleteProject: (id: string) => req<void>('DELETE', `/projects/${id}`),
+  deleteProject: (id: string) => req<PartialErasure | void>('DELETE', `/projects/${id}`),
 
   issues: (pid: string, status?: string, opts?: { q?: string; limit?: number; offset?: number }) => {
     const p = new URLSearchParams();

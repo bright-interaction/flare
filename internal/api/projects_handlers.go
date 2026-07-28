@@ -189,7 +189,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	// unsupported, so the telemetry is still there and the operator has to
 	// erase it in the bucket themselves.
 	if coldErr != "" {
-		writeJSON(w, http.StatusOK, map[string]any{
+		s.recordPartialErasure(r.Context(), orgIDFrom(r.Context()), pid, "project_id", pid,
+			userIDFrom(r.Context()), coldErr)
+		// 202, not 200: accepted but not complete. See recordPartialErasure.
+		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status": "partial", "hot_tier": "erased",
 			"cold_tier": "NOT erased", "cold_tier_note": coldErr,
 		})

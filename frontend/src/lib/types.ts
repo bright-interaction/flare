@@ -260,3 +260,13 @@ export interface Overview {
   projects: OverviewProject[];
   alerting_blind: boolean;
 }
+
+/** Body of a 202 from an erasure endpoint: the request was accepted but not
+ *  fully carried out. Aged telemetry remains in the object store and only an
+ *  operator can remove it, so this must be shown, not swallowed. */
+export interface PartialErasure {
+  status: 'partial';
+  hot_tier: string;
+  cold_tier: string;
+  cold_tier_note: string;
+}
