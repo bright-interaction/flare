@@ -423,12 +423,25 @@ SET last_seen    = now(),
                      THEN EXCLUDED.level
                      ELSE issues.level
                    END,
-    -- Title and culprit DO track the newest event on purpose: they describe the
-    -- current shape of the error (an updated exception message, a moved call
-    -- site) and an operator reads them next to a visible last_seen. They carry
-    -- no automated consequence, unlike level, which alert rules filter on.
-    title        = EXCLUDED.title,
-    culprit      = EXCLUDED.culprit
+    -- Title and culprit are FIRST-WRITE-WINS, so a later event cannot rename an
+    -- existing issue.
+    --
+    -- I originally kept these last-writer-wins and argued it was deliberate:
+    -- they describe the current shape of the error and carry no automated
+    -- consequence. Re-verification executed the attack and that argument does
+    -- not survive it. Ingest authenticates with a DSN public key that ships in a
+    -- browser bundle, so anyone who can load a customer's page can post an event
+    -- on an existing fingerprint and turn "DatabaseError: connection refused"
+    -- into anything they like. The issue stays open and alerting, and reads as
+    -- something else entirely in the list, in alert bodies, and in the BYOAI
+    -- triage prompt. The audit's own Fix says exactly this: "Keeping title as
+    -- first-write-wins ... removes the alert/prompt vandalism primitive."
+    --
+    -- Nothing is lost operationally. The newest event's exception type and value
+    -- are shown in full on the issue detail, so the current shape of the error is
+    -- still one click away; only the GROUP's name is now stable.
+    title        = issues.title,
+    culprit      = issues.culprit
 RETURNING id, project_id, org_id, fingerprint, title, culprit, level, status, platform,
           first_release, first_seen, last_seen, event_count, (first_seen = last_seen) AS is_new
 `
