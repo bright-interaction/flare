@@ -281,7 +281,6 @@ func (s *Server) recordPartialErasure(ctx context.Context, org, project, column,
 	}
 }
 
-
 // LogOpenErasures reports every unfulfilled erasure obligation. Called at
 // startup so the obligation keeps announcing itself until an operator clears the
 // row: the tenant who asked for it may no longer exist.
