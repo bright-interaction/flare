@@ -98,8 +98,16 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	// alternating ok/error makes every second request a fresh ok->failed
 	// transition, and at the ingest budget that is hundreds of emails a minute
 	// to the org's channels.
+	// Two caps, and both are needed. The per-monitor one stops a single honestly
+	// flapping cron from alerting on every run; the per-ORG one bounds the total
+	// when the slug itself is attacker-chosen, which it is: this endpoint is
+	// DSN-authed and UpsertMonitorCheckin creates the monitor, so an unlimited
+	// number of slugs is reachable with a public key. Checking the per-monitor
+	// limiter FIRST keeps the org budget from being consumed by a monitor that
+	// was going to be suppressed anyway.
 	if state == "failed" && priorState != "failed" &&
-		s.testLimiter.Allow("monitor-failed:"+project.OrgID+":"+slug) {
+		s.testLimiter.Allow("monitor-failed:"+project.OrgID+":"+slug) &&
+		s.monitorAlertLimiter.Allow("monitor-failed-org:"+project.OrgID) {
 		pid, name, org := project.ID, project.Name, project.OrgID
 		// Bounded like the other ingest-side background work: this runs on the
 		// DSN-authed check-in endpoint, so anyone holding a project's public key

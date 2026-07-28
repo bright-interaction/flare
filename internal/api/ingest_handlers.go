@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -268,23 +269,45 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 		if err != nil || len(rules) == 0 {
 			return
 		}
-		// Keep the MOST SENSITIVE rule of each type rather than whichever the
-		// query happened to return last. Two spike rules on one project (say
-		// 10-in-5min and 100-in-5min) used to collapse to a nondeterministic
-		// winner, so the tighter rule could silently never evaluate.
+		// regression and new_issue are BOOLEAN rules: they either apply to this
+		// event or they do not, so collapsing duplicates of those is harmless.
 		byType := make(map[string]*generated.AlertRule, len(rules))
+		// Spike rules are NOT interchangeable and must each be evaluated.
+		//
+		// Collapsing them to the "most sensitive" one silently disabled every
+		// other spike rule on the project. moreSensitiveRule ranks on threshold
+		// first, so "10 in 5min" beat "50 in 1440min" and the second never ran.
+		// Those detect different things: a burst, and a slow burn that never
+		// reaches 10 within any 5-minute window. An operator who configured both
+		// got one, with nothing in the UI saying so.
+		var spikes []*generated.AlertRule
 		for _, r := range rules {
+			if r.Type == "spike" {
+				spikes = append(spikes, r)
+				continue
+			}
 			if cur, ok := byType[r.Type]; !ok || moreSensitiveRule(r, cur) {
 				byType[r.Type] = r
 			}
 		}
+		// Deterministic order, most sensitive first, so the reason reported when
+		// several rules fire at once is stable across runs and is the tightest
+		// one that matched.
+		sort.SliceStable(spikes, func(i, j int) bool { return moreSensitiveRule(spikes[i], spikes[j]) })
 
 		var reason string
 		switch {
 		case reopened && byType["regression"] != nil:
 			reason = "Regression"
-		case byType["spike"] != nil:
-			reason = s.spikeReason(ctx, issue, project.OrgID, byType["spike"])
+		default:
+			// First match wins. Dispatch stays at most one notification per
+			// issue, so the existing "most actionable reason wins" contract holds
+			// and the per-issue TrySetIssueSpike dedup still gates the send.
+			for _, sr := range spikes {
+				if reason = s.spikeReason(ctx, issue, project.OrgID, sr); reason != "" {
+					break
+				}
+			}
 		}
 		if reason == "" && isNew && byType["new_issue"] != nil {
 			reason = "New issue"
