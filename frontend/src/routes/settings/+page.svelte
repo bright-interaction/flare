@@ -46,6 +46,41 @@
   let deletingOrg = $state(false);
   let partialErasure = $state<PartialErasure | null>(null);
 
+  // Change password. Lives in Settings because that is where a signed-in user
+  // looks for account actions; before this the ONLY way to change a password was
+  // the emailed reset link, which does not exist at all on an instance without
+  // SMTP.
+  let pwCurrent = $state('');
+  let pwNew = $state('');
+  let pwConfirm = $state('');
+  let pwBusy = $state(false);
+  let pwError = $state<string | null>(null);
+  let pwDone = $state(false);
+
+  async function changePassword(e: SubmitEvent) {
+    e.preventDefault();
+    pwError = null;
+    pwDone = false;
+    if (pwNew.length < 8) {
+      pwError = 'New password must be at least 8 characters.';
+      return;
+    }
+    if (pwNew !== pwConfirm) {
+      pwError = 'The two new passwords do not match.';
+      return;
+    }
+    pwBusy = true;
+    try {
+      await api.changePassword(pwCurrent, pwNew);
+      pwCurrent = pwNew = pwConfirm = '';
+      pwDone = true;
+    } catch (err) {
+      pwError = err instanceof ApiError ? err.message : 'Could not change password';
+    } finally {
+      pwBusy = false;
+    }
+  }
+
   let ai = $state<AiConfig | null>(null);
   let aiBase = $state('');
   let aiKey = $state('');
@@ -823,6 +858,62 @@
   >
     {exporting ? 'Preparing...' : 'Export workspace data'}
   </button>
+
+  <!-- Account: available to every signed-in role, including viewer. Changing
+       your own password is an account action, not a workspace one. -->
+  <div class="mt-14 rounded-lg border border-zinc-800/80 p-5">
+    <h3 class="text-sm font-medium text-zinc-200">Change password</h3>
+    <p class="mt-1 max-w-2xl text-xs text-zinc-500">
+      Changing your password signs you out everywhere else. Your API keys keep working.
+    </p>
+    <form onsubmit={changePassword} class="mt-3 flex flex-wrap items-end gap-3">
+      <div class="flex flex-col gap-1.5">
+        <label for="pw-cur" class="text-xs font-medium text-zinc-400">Current password</label>
+        <input
+          id="pw-cur"
+          type="password"
+          autocomplete="current-password"
+          bind:value={pwCurrent}
+          class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="pw-new" class="text-xs font-medium text-zinc-400">New password</label>
+        <input
+          id="pw-new"
+          type="password"
+          autocomplete="new-password"
+          bind:value={pwNew}
+          class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="pw-confirm" class="text-xs font-medium text-zinc-400">Repeat new password</label>
+        <input
+          id="pw-confirm"
+          type="password"
+          autocomplete="new-password"
+          bind:value={pwConfirm}
+          class="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={pwBusy || !pwCurrent || !pwNew}
+        class="rounded-md bg-amber-400 px-3.5 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-amber-300 active:translate-y-px disabled:opacity-60"
+      >
+        {pwBusy ? 'Changing...' : 'Change password'}
+      </button>
+    </form>
+    {#if pwError}
+      <p class="mt-3 text-sm text-rose-400">{pwError}</p>
+    {/if}
+    {#if pwDone}
+      <p class="mt-3 text-sm text-emerald-400">
+        Password changed. Any other sessions have been signed out.
+      </p>
+    {/if}
+  </div>
 
   {#if isOwner}
     <div class="mt-14 rounded-lg border border-rose-900/50 bg-rose-950/20 p-5">
