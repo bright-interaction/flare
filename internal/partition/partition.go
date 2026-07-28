@@ -95,8 +95,38 @@ func ensurePartition(ctx context.Context, pool *pgxpool.Pool, table string, day 
 		"CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')",
 		name, table, from, to,
 	)
-	_, err := pool.Exec(ctx, q)
-	return err
+	// Same treatment as the DROP in dropWithLockTimeout, and for the same
+	// reason: CREATE TABLE ... PARTITION OF takes ACCESS EXCLUSIVE on the
+	// PARENT, so with no deadline it queues behind one in-flight read and then
+	// convoys every subsequent read and ingest INSERT behind itself.
+	//
+	// Measured in the same harness that proved the DROP fix: against a 23s open
+	// reader holding AccessShareLock, this CREATE blocked for the full 23s. It
+	// only short-circuits when the partition already exists, and once() walks
+	// d = -7..+3 across 4 tables every 6h, so at least one genuinely-new
+	// partition per table per day runs this path.
+	//
+	// SET LOCAL requires a transaction block; outside one Postgres warns and
+	// discards it, which is exactly how the DROP shipped a no-op timeout.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, q); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (m *Manager) prune(ctx context.Context, table string) error {
