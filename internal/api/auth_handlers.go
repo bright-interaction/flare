@@ -304,5 +304,17 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.q.BumpUserSessionsValidFrom(ctx, prt.UserID); err != nil {
 		slog.Warn("bump sessions_valid_from", "error", err)
 	}
+	// Sessions alone are not the whole credential surface. An attacker who used
+	// their access to mint an API key would otherwise keep it: the key survives
+	// the reset, which is precisely the moment the victim believes they have
+	// taken the account back. Revoke the keys THIS user created; org-wide
+	// revocation would break every pipeline in the workspace over one person's
+	// reset. Keys with no recorded creator predate migration 026 and are left
+	// alone rather than guessed at.
+	if n, err := s.q.DeleteAPIKeysCreatedBy(ctx, pgtype.Text{String: prt.UserID, Valid: true}); err != nil {
+		slog.Warn("revoke api keys on password reset", "error", err)
+	} else if n > 0 {
+		slog.Info("revoked api keys on password reset", "user", prt.UserID, "count", n)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
