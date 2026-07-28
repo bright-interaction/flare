@@ -270,3 +270,10 @@ export interface PartialErasure {
   cold_tier: string;
   cold_tier_note: string;
 }
+
+/** A page of logs. next_before is absent when there are no older records, which
+ *  is what lets the UI tell "end of data" from "this page happened to be short". */
+export interface LogPage {
+  logs: LogRow[];
+  next_before?: string;
+}
