@@ -224,8 +224,23 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.mailer.Enabled() {
-		slog.Warn("password reset requested but SMTP not configured", "email", email)
-		ok()
+		// Say so, rather than claiming a link was sent.
+		//
+		// The generic "if that address exists, a link is on its way" answer
+		// exists to stop account enumeration, and it is the right answer when
+		// mail WORKS. When SMTP is unconfigured no link can ever arrive, so the
+		// same words become a lie that leaves the user waiting for an email that
+		// does not exist, with no way to tell that from a typo in their address.
+		//
+		// This reveals nothing about the account: it is a property of the
+		// INSTANCE, identical for every address, and is already visible to anyone
+		// who can read the deployment docs. Enumeration resistance is unaffected.
+		slog.Warn("password reset requested but SMTP is not configured; told the user plainly",
+			"email", email)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "password reset by email is not configured on this Flare instance. " +
+				"Ask whoever operates it to set the SMTP_* variables, or to reset your password for you.",
+		})
 		return
 	}
 
@@ -316,5 +331,77 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	} else if n > 0 {
 		slog.Info("revoked api keys on password reset", "user", prt.UserID, "count", n)
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleChangePassword changes the signed-in user's password.
+//
+// Until now the ONLY way to change a password was the emailed reset link, so on
+// an instance without SMTP there was no way at all, and even with SMTP a user
+// who simply wanted to rotate their password had to pretend to have forgotten
+// it. Both are the kind of gap that pushes people to reuse a password forever.
+//
+// The current password is required. A signed-in session is not sufficient
+// authority to change the credential that session rests on: a borrowed laptop or
+// a stolen cookie must not become a permanent account takeover.
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Same floor the register and reset paths use.
+	if len(req.NewPassword) < 8 {
+		writeErr(w, http.StatusBadRequest, "new password must be at least 8 characters")
+		return
+	}
+
+	ctx := r.Context()
+	user, err := s.q.GetUserByID(ctx, userIDFrom(ctx))
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	// Rate-limited on the USER, so a stolen cookie cannot be used to brute-force
+	// the current password from inside a session.
+	lockKey := "pwchange:" + user.ID
+	if s.loginLimiter.Blocked(lockKey) {
+		w.Header().Set("Retry-After", "300")
+		writeErr(w, http.StatusTooManyRequests, "too many attempts, try again later")
+		return
+	}
+	if !auth.VerifyPasswordConstantTime(user.PasswordHash, req.CurrentPassword) {
+		s.loginLimiter.Record(lockKey)
+		writeErr(w, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+	s.loginLimiter.Reset(lockKey)
+
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		slogError(w, "hash password", err)
+		return
+	}
+	if err := s.q.UpdateUserPassword(ctx, generated.UpdateUserPasswordParams{
+		ID: user.ID, PasswordHash: hash,
+	}); err != nil {
+		slogError(w, "update password", err)
+		return
+	}
+	// Revoke every OTHER session: whoever else was signed in as this user is the
+	// reason people change passwords. Bumping the epoch invalidates this session
+	// too, so re-establish it immediately and the user stays where they are.
+	if err := s.q.BumpUserSessionsValidFrom(ctx, user.ID); err != nil {
+		slog.Warn("bump sessions_valid_from on password change", "error", err)
+	}
+	s.establishSession(ctx, user.ID, user.OrgID)
+
+	// API keys are deliberately NOT revoked here, unlike on a reset. A reset
+	// implies the account was lost; a voluntary change does not, and silently
+	// breaking the user's own CI would teach them not to rotate passwords.
+	s.audit(ctx, "user.password_change", user.Email)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
