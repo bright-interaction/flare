@@ -66,6 +66,7 @@ var (
 	reAlterAddOrg = regexp.MustCompile(`(?is)ALTER TABLE\s+(\w+)\b[^;]*?ADD COLUMN\s+(?:IF NOT EXISTS\s+)?org_id\b`)
 	reOrgCol      = regexp.MustCompile(`(?i)\borg_id\b`)
 	reLineComment = regexp.MustCompile(`--[^\n]*`)
+	reDotSpace    = regexp.MustCompile(`\s*\.\s*`)
 	// The table name is matched through the three ways SQL lets you spell the
 	// SAME table without using bare word characters, because \w+ alone silently
 	// misses all of them and a miss here means the query is never checked at all:
@@ -80,7 +81,7 @@ var (
 	// to a query file PASSED the guard, i.e. an unscoped cross-tenant read of a
 	// tenant-scoped table went unnoticed. That is the exact defect this guard was
 	// rewritten to catch, reintroduced through the spelling of the table name.
-	reDriving  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:ONLY\s+)?(?:"?\w+"?\.)?"?(\w+)"?`)
+	reDriving  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:ONLY\s+)?(?:\w+\.)?(\w+)`)
 	reIsInsert = regexp.MustCompile(`(?is)^\s*INSERT\s+INTO`)
 )
 
@@ -112,8 +113,17 @@ func TestDrivingTableMatchesEverySpelling(t *testing.T) {
 		{"DELETE FROM ONLY issues WHERE x = $1", "issues", "DELETE with ONLY"},
 		{"INSERT INTO public.issues (a) VALUES ($1)", "issues", "INSERT with schema"},
 		{"SELECT * FROM events e JOIN public.issues i ON i.id = e.issue_id", "events", "first driving table"},
+		// The three that still passed after the FIRST fix. Each is valid
+		// Postgres and sqlc generates working Go from it, so each shipped a
+		// fully unscoped cross-tenant read with the guard green.
+		{"SELECT * FROM public . issues WHERE x = $1", "issues", "spaces around the schema dot"},
+		{`SELECT * FROM"issues" WHERE x = $1`, "issues", "no space before the quote"},
+		{"SELECT * FROM public\n   .issues WHERE x = $1", "issues", "newline before the dot"},
+		{`SELECT * FROM ONLY "public" . "issues" WHERE x = $1`, "issues", "all of it at once"},
 	} {
-		m := reDriving.FindStringSubmatch(tc.sql)
+		// Through normalizeSQL, the same path drivingTables uses. Testing the
+		// raw regex here would prove something the guard does not do.
+		m := reDriving.FindStringSubmatch(normalizeSQL(tc.sql))
 		if m == nil {
 			t.Errorf("no driving table found in %q (%s); the query would never be checked", tc.sql, tc.why)
 			continue
@@ -262,9 +272,33 @@ func splitQueries(file, src string) []query {
 	return out
 }
 
+// normalizeSQL rewrites the spellings SQL allows for the SAME table into one
+// form, so the matcher has a single shape to recognise.
+//
+// The previous version tried to ENUMERATE spellings in the regex. That is a
+// losing game and it lost twice: `FROM public.issues` slipped through the first
+// version, and after that was fixed, `FROM public . issues` and `FROM"issues"`
+// still passed. Both are valid Postgres (EXPLAIN on the live database returns a
+// plain Seq Scan on issues) and sqlc generates working Go from both, so either
+// ships a fully unscoped cross-tenant read with the guard green.
+//
+// A miss here is silent and total: an unmatched table is never checked at all,
+// so the query reads as having no tenant-scoped table in it.
+func normalizeSQL(body string) string {
+	// Quotes become spaces rather than vanishing: `FROM"issues"` has to become
+	// `FROM issues`, not `FROMissues`.
+	body = strings.ReplaceAll(body, `"`, " ")
+	// Newlines to spaces, so a table on its own line or a schema split across
+	// lines still reads as one statement.
+	body = strings.ReplaceAll(body, "\n", " ")
+	// Glue the schema qualifier back: `public . issues` -> `public.issues`.
+	body = reDotSpace.ReplaceAllString(body, ".")
+	return body
+}
+
 func drivingTables(body string) []string {
 	var out []string
-	for _, m := range reDriving.FindAllStringSubmatch(body, -1) {
+	for _, m := range reDriving.FindAllStringSubmatch(normalizeSQL(body), -1) {
 		out = append(out, strings.ToLower(m[1]))
 	}
 	return out
