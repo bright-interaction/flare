@@ -18,6 +18,7 @@ type apiKeyResponse struct {
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
 	Role       string     `json:"role"`
+	CreatedBy  string     `json:"created_by"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 }
@@ -65,6 +66,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	k, err := s.q.CreateAPIKey(r.Context(), generated.CreateAPIKeyParams{
 		ID: id.New(), OrgID: orgIDFrom(r.Context()), Name: name,
 		KeyHash: hash, KeyPrefix: prefix, ExpiresAt: expires, Role: role,
+		CreatedByUserID: pgtype.Text{String: userIDFrom(r.Context()), Valid: userIDFrom(r.Context()) != ""},
 	})
 	if err != nil {
 		slogError(w, "create api key", err)
@@ -91,7 +93,8 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 			last = &t
 		}
 		out = append(out, apiKeyResponse{
-			ID: k.ID, Name: k.Name, Prefix: k.KeyPrefix, Role: k.Role, CreatedAt: k.CreatedAt.Time, LastUsedAt: last,
+			ID: k.ID, Name: k.Name, Prefix: k.KeyPrefix, Role: k.Role,
+			CreatedBy: k.CreatedByEmail.String, CreatedAt: k.CreatedAt.Time, LastUsedAt: last,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

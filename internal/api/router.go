@@ -102,7 +102,6 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 
 					r.Post("/projects", s.handleCreateProject)
 					r.Post("/projects/provision", s.handleProvisionProject)
-					r.Delete("/projects/{id}", s.handleDeleteProject)
 					r.Post("/projects/{id}/alert-rules", s.handleCreateAlertRule)
 					r.Delete("/projects/{id}/alert-rules/{ruleID}", s.handleDeleteAlertRule)
 					r.Post("/projects/{id}/monitors", s.handleCreateMonitor)
@@ -116,9 +115,31 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Post("/channels", s.handleCreateChannel)
 					r.Post("/channels/{id}/test", s.handleTestChannel)
 					r.Delete("/channels/{id}", s.handleDeleteChannel)
+					r.Post("/issues/{id}/github", s.handleCreateGithubIssue)
+				})
+
+				// Irreversible erasure and credential management: admin+, which
+				// no API key can ever reach (apiKeyRole clamps a key to viewer or
+				// member and refuses anything else).
+				//
+				// Giving keys their own role fixed the DEFAULT (new keys are
+				// read-only) but left these three routes inside member, so a key
+				// minted for CI provisioning or source-map upload still carried
+				// DELETE /projects/{id}, which erases a project and all of its
+				// telemetry in one transaction, plus the ability to mint and
+				// revoke keys including its own successors. A leaked CI key is
+				// the scenario the finding names, and the leak does not have to
+				// be malicious: a build script with a wrong id deletes a project.
+				//
+				// These are interactive, human decisions. Provision, artifacts,
+				// releases, alert rules, monitors and issue writes stay at member
+				// so CI keeps working.
+				r.Group(func(r chi.Router) {
+					r.Use(s.requireRole("admin"))
+
+					r.Delete("/projects/{id}", s.handleDeleteProject)
 					r.Post("/keys", s.handleCreateAPIKey)
 					r.Delete("/keys/{id}", s.handleDeleteAPIKey)
-					r.Post("/issues/{id}/github", s.handleCreateGithubIssue)
 				})
 
 				// Team management + integration secrets: admin+.

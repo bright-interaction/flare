@@ -12,19 +12,20 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :one
-INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, expires_at, role)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role
+INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, expires_at, role, created_by_user_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role, created_by_user_id
 `
 
 type CreateAPIKeyParams struct {
-	ID        string             `json:"id"`
-	OrgID     string             `json:"org_id"`
-	Name      string             `json:"name"`
-	KeyHash   string             `json:"key_hash"`
-	KeyPrefix string             `json:"key_prefix"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
-	Role      string             `json:"role"`
+	ID              string             `json:"id"`
+	OrgID           string             `json:"org_id"`
+	Name            string             `json:"name"`
+	KeyHash         string             `json:"key_hash"`
+	KeyPrefix       string             `json:"key_prefix"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	Role            string             `json:"role"`
+	CreatedByUserID pgtype.Text        `json:"created_by_user_id"`
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*ApiKey, error) {
@@ -36,6 +37,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*Ap
 		arg.KeyPrefix,
 		arg.ExpiresAt,
 		arg.Role,
+		arg.CreatedByUserID,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -48,6 +50,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (*Ap
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 		&i.Role,
+		&i.CreatedByUserID,
 	)
 	return &i, err
 }
@@ -69,8 +72,30 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, arg DeleteAPIKeyParams) (int
 	return result.RowsAffected(), nil
 }
 
+const deleteAPIKeysCreatedBy = `-- name: DeleteAPIKeysCreatedBy :execrows
+DELETE FROM api_keys
+WHERE created_by_user_id = $1
+  AND org_id = (SELECT org_id FROM users WHERE id = $1)
+`
+
+// Revoke every key a given user minted. Used by the password-reset path: a
+// reset must not leave behind a credential the attacker created while they had
+// the account. Keys with a NULL creator predate the column and are left alone
+// rather than guessed at.
+// The org_id predicate is redundant in principle (a user belongs to one org, so
+// their keys are already that org's) and explicit on purpose: ciguard refused
+// this query without it, correctly. A tenant-scoped table gets a tenant
+// predicate, and "it cannot happen" is how cross-tenant reads get written.
+func (q *Queries) DeleteAPIKeysCreatedBy(ctx context.Context, createdByUserID pgtype.Text) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAPIKeysCreatedBy, createdByUserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
-SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role FROM api_keys WHERE key_hash = $1
+SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role, created_by_user_id FROM api_keys WHERE key_hash = $1
 `
 
 // ciguard:allow-unscoped auth path keyed by the secret key_hash; org_id is the result, not the filter
@@ -87,23 +112,46 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (*ApiKey,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 		&i.Role,
+		&i.CreatedByUserID,
 	)
 	return &i, err
 }
 
 const listAPIKeysByOrg = `-- name: ListAPIKeysByOrg :many
-SELECT id, org_id, name, key_hash, key_prefix, created_at, expires_at, last_used_at, role FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC
+SELECT k.id, k.org_id, k.name, k.key_hash, k.key_prefix, k.created_at, k.expires_at, k.last_used_at, k.role, k.created_by_user_id, u.email AS created_by_email
+FROM api_keys k
+LEFT JOIN users u ON u.id = k.created_by_user_id
+WHERE k.org_id = $1
+ORDER BY k.created_at DESC
 `
 
-func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID string) ([]*ApiKey, error) {
+type ListAPIKeysByOrgRow struct {
+	ID              string             `json:"id"`
+	OrgID           string             `json:"org_id"`
+	Name            string             `json:"name"`
+	KeyHash         string             `json:"key_hash"`
+	KeyPrefix       string             `json:"key_prefix"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	LastUsedAt      pgtype.Timestamptz `json:"last_used_at"`
+	Role            string             `json:"role"`
+	CreatedByUserID pgtype.Text        `json:"created_by_user_id"`
+	CreatedByEmail  pgtype.Text        `json:"created_by_email"`
+}
+
+// Joins the creator's email so the settings UI can show who minted each key.
+// A NULL creator means the key predates migration 026: a password reset will NOT
+// revoke it, so an operator needs to see which keys are in that state and rotate
+// them deliberately.
+func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID string) ([]*ListAPIKeysByOrgRow, error) {
 	rows, err := q.db.Query(ctx, listAPIKeysByOrg, orgID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []*ApiKey{}
+	items := []*ListAPIKeysByOrgRow{}
 	for rows.Next() {
-		var i ApiKey
+		var i ListAPIKeysByOrgRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.OrgID,
@@ -114,6 +162,8 @@ func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID string) ([]*ApiKey
 			&i.ExpiresAt,
 			&i.LastUsedAt,
 			&i.Role,
+			&i.CreatedByUserID,
+			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
 		}
