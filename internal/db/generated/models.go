@@ -245,6 +245,20 @@ type PasswordResetToken struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type PendingErasure struct {
+	ID          string             `json:"id"`
+	OrgID       string             `json:"org_id"`
+	ProjectID   pgtype.Text        `json:"project_id"`
+	ScopeColumn string             `json:"scope_column"`
+	ScopeValue  string             `json:"scope_value"`
+	RequestedAt pgtype.Timestamptz `json:"requested_at"`
+	RequestedBy pgtype.Text        `json:"requested_by"`
+	ColdTier    string             `json:"cold_tier"`
+	Reason      string             `json:"reason"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+	CompletedBy pgtype.Text        `json:"completed_by"`
+}
+
 type Project struct {
 	ID        string             `json:"id"`
 	OrgID     string             `json:"org_id"`

@@ -5,7 +5,7 @@
   import { api, ApiError } from '$lib/api';
   import { session } from '$lib/session.svelte';
   import { relativeTime, levelColor } from '$lib/format';
-  import type { AlertRule, Artifact, Issue, Monitor, Project } from '$lib/types';
+  import type { AlertRule, Artifact, Issue, Monitor, PartialErasure, Project } from '$lib/types';
 
   const id = $derived(page.params.id ?? '');
 
@@ -30,6 +30,7 @@
   let ruleWindow = $state(5);
   let confirmName = $state('');
   let deleting = $state(false);
+  let partialErasure = $state<PartialErasure | null>(null);
 
   let monitors = $state<Monitor[]>([]);
   let monSlug = $state('');
@@ -233,7 +234,13 @@
     deleting = true;
     error = null;
     try {
-      await api.deleteProject(id);
+      const res = await api.deleteProject(id);
+      // 202 body = partial erasure. Do not navigate away claiming success.
+      if (res && res.status === 'partial') {
+        partialErasure = res;
+        deleting = false;
+        return;
+      }
       goto('/projects');
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Failed to delete project';
@@ -622,6 +629,28 @@
         >
           {deleting ? 'Deleting...' : 'Delete project'}
         </button>
+
+      {#if partialErasure}
+        <!-- Shown instead of navigating to /projects. Aged telemetry for this
+             project is still in object storage; saying nothing would report a
+             completed erasure that did not happen. -->
+        <div class="mt-4 rounded-md border border-amber-400/40 bg-amber-400/10 p-4">
+          <p class="text-sm font-medium text-amber-200">Project data was only partly erased</p>
+          <p class="mt-2 text-xs text-amber-100/90">
+            Everything in the live database is gone. Older telemetry already archived to object
+            storage was <strong>not</strong> erased, because Flare cannot rewrite those files
+            automatically. Ask whoever operates this instance to remove the archived copies; the
+            request has been recorded on the server.
+          </p>
+          <p class="mt-2 text-xs text-amber-100/70">Reason: {partialErasure.cold_tier_note}</p>
+          <button
+            onclick={() => { partialErasure = null; goto('/projects'); }}
+            class="mt-3 rounded-md border border-amber-400/40 px-3 py-1.5 text-xs text-amber-100 transition-colors hover:bg-amber-400/10"
+          >
+            I understand
+          </button>
+        </div>
+      {/if}
       </div>
     </div>
   {/if}

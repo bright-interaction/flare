@@ -174,6 +174,19 @@ func run() error {
 		srv.WaitBackground(shutdownCtx)
 	}()
 
+	// Outstanding right-to-erasure obligations, surfaced on every start.
+	//
+	// When PurgeColdScope refuses (S3 cold tier has no object rewrite), the hot
+	// tier is erased and aged telemetry stays in the bucket. For an ORG deletion
+	// there is no tenant left to chase it: the org row is gone, so there is no
+	// dashboard to show it on and nobody to ask. The self-host operator is the
+	// only person who can act, and a log line at the moment of deletion has
+	// almost certainly rotated by the time anyone looks.
+	//
+	// Repeating it at startup means the obligation keeps announcing itself until
+	// someone clears the row.
+	srv.LogOpenErasures(context.Background())
+
 	slog.Info("flare listening", "addr", httpServer.Addr, "env", cfg.Environment)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("http server: %w", err)
