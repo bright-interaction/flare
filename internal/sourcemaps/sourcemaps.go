@@ -36,16 +36,33 @@ type Frame struct {
 type Resolver struct {
 	mu    sync.Mutex
 	cache map[[32]byte]*sourcemap.Consumer // nil value = a cached parse failure
+	sizes map[[32]byte]int                 // source length per entry, for the byte ceiling
+	bytes int                              // sum of sizes, kept incrementally
 }
 
-// maxCachedConsumers bounds the cache. A parsed consumer holds the whole
-// decoded source map in memory (tens of MB for a large bundle), the cache was
-// keyed on content hash with no eviction, and any tenant can upload unlimited
-// distinct source maps, so this grew until the shared process was OOM-killed.
-const maxCachedConsumers = 64
+// maxCachedConsumers bounds the cache by COUNT, and maxCachedBytes bounds it by
+// SIZE. The count alone is not a memory bound.
+//
+// A parsed consumer holds the whole decoded source map, and an upload may be 30
+// MiB (maxArtifactBody), so 64 entries permits ~2.5 GiB. Measured: 64 synthetic
+// maps at the upload ceiling leave this cache retaining 2,479 MiB of heap,
+// permanently, in the process every tenant shares. Reachable by any member-role
+// tenant: upload 64 maps at the ceiling, then issue enough issue-detail reads to
+// populate the cache.
+//
+// This is the same mistake the query-side fix called out ("a row count does not
+// bound memory") repeated one layer up, which is worth stating plainly: the
+// lesson did not transfer because the two limits live in different files.
+const (
+	maxCachedConsumers = 64
+	maxCachedBytes     = 256 << 20
+)
 
 func NewResolver() *Resolver {
-	return &Resolver{cache: make(map[[32]byte]*sourcemap.Consumer)}
+	return &Resolver{
+		cache: make(map[[32]byte]*sourcemap.Consumer),
+		sizes: make(map[[32]byte]int),
+	}
 }
 
 func (r *Resolver) consumer(content string) *sourcemap.Consumer {
@@ -62,14 +79,23 @@ func (r *Resolver) consumer(content string) *sourcemap.Consumer {
 		c = nil
 	}
 	r.mu.Lock()
-	// Bounded, and deliberately simple: at the ceiling, drop the whole cache
-	// rather than track recency. Symbolication is a read-path optimization, so
-	// the cost of a miss is one re-parse, and an LRU's bookkeeping is not worth
-	// it for a map this small.
-	if len(r.cache) >= maxCachedConsumers {
+	// Bounded on BOTH axes, and deliberately simple: at either ceiling, drop the
+	// whole cache rather than track recency. Symbolication is a read-path
+	// optimization, so a miss costs one re-parse, and an LRU's bookkeeping is
+	// not worth it for a map this small.
+	//
+	// The size is charged as the SOURCE length. The parsed consumer is larger
+	// than its input, so this under-counts the true heap, but it is a stable
+	// proxy that cannot itself be gamed and it keeps the ceiling proportional to
+	// what the tenant uploaded.
+	if len(r.cache) >= maxCachedConsumers || r.bytes+len(content) > maxCachedBytes {
 		r.cache = make(map[[32]byte]*sourcemap.Consumer, maxCachedConsumers)
+		r.sizes = make(map[[32]byte]int, maxCachedConsumers)
+		r.bytes = 0
 	}
 	r.cache[key] = c
+	r.sizes[key] = len(content)
+	r.bytes += len(content)
 	r.mu.Unlock()
 	return c
 }
