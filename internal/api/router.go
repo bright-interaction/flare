@@ -73,6 +73,14 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				// POST-only.
 				r.With(s.rateLimitMCP).Handle("/mcp", s.mcpHandler())
 
+				// Changing your own password is available to EVERY authenticated
+				// role, including viewer. It is an account action, not a
+				// workspace one, and gating it behind a role would leave the
+				// least-privileged users with no way to rotate a credential.
+				// The handler requires the current password, so a borrowed
+				// session is not enough on its own.
+				r.Post("/auth/password", s.handleChangePassword)
+
 				// Reads: any authenticated role (viewer+).
 				r.Get("/overview", s.handleOverview)
 				r.Get("/projects", s.handleListProjects)

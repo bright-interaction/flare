@@ -423,14 +423,17 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 		},
 		"search_logs": {
 			Name:        "search_logs",
-			Description: "Search a project's log records. project = id or slug. Optional severity, query (substring), and trace_id (pass an error's trace_id to get the logs from the same request). limit default 50. Returns [] until services ship logs (OTLP) to Flare.",
-			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"severity":{"type":"string"},"query":{"type":"string"},"trace_id":{"type":"string"},"limit":{"type":"integer"}},"required":["project"]}`),
+			Description: "Search a project's log records. project = id or slug. Optional severity, query (substring), and trace_id (pass an error's trace_id to get the logs from the same request). Time window: hours (e.g. 24 for the last day) or since (RFC3339); without one you get the newest records from the whole retained history, which is rarely what you want when investigating a past incident. Page backwards with before, set to the observed_at of the oldest record you have seen. limit default 50, max 500. Returns [] until services ship logs (OTLP) to Flare.",
+			InputSchema: schema(`{"type":"object","properties":{"project":{"type":"string"},"severity":{"type":"string"},"query":{"type":"string"},"trace_id":{"type":"string"},"hours":{"type":"integer"},"since":{"type":"string"},"before":{"type":"string"},"limit":{"type":"integer"}},"required":["project"]}`),
 			Handler: func(ctx context.Context, org string, args json.RawMessage) (any, error) {
 				var a struct {
 					Project  string `json:"project"`
 					Severity string `json:"severity"`
 					Query    string `json:"query"`
 					TraceID  string `json:"trace_id"`
+					Hours    int    `json:"hours"`
+					Since    string `json:"since"`
+					Before   string `json:"before"`
 					Limit    int32  `json:"limit"`
 				}
 				_ = json.Unmarshal(args, &a)
@@ -442,6 +445,29 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					a.Limit = 50
 				}
 				f := telemetry.LogFilter{Limit: a.Limit}
+				// An agent investigating an incident needs to ask about a TIME,
+				// not just about the newest records. Without this it could only
+				// ever see the tail of the stream.
+				if a.Since != "" {
+					t, terr := time.Parse(time.RFC3339, a.Since)
+					if terr != nil {
+						return nil, fmt.Errorf("since must be an RFC3339 timestamp")
+					}
+					f.Since = &t
+				} else if a.Hours > 0 {
+					if a.Hours > maxLogWindowHours {
+						a.Hours = maxLogWindowHours
+					}
+					t := time.Now().Add(-time.Duration(a.Hours) * time.Hour)
+					f.Since = &t
+				}
+				if a.Before != "" {
+					t, terr := time.Parse(time.RFC3339Nano, a.Before)
+					if terr != nil {
+						return nil, fmt.Errorf("before must be an RFC3339 timestamp")
+					}
+					f.Before = &t
+				}
 				if a.Severity != "" {
 					f.Severity = &a.Severity
 				}
