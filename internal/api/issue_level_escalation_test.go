@@ -58,6 +58,20 @@ func TestIssueLevelNeverDowngrades(t *testing.T) {
 	if !strings.Contains(q, "NULLIF") {
 		t.Error("UpsertIssue does not normalise an empty level; empty must rank as 'error' to match pageableLevel")
 	}
+
+	// Title and culprit are first-write-wins for the same reason level escalates
+	// only: a DSN public key ships in a browser bundle, so a later event must not
+	// be able to rename an existing issue. Verified against the live schema:
+	// posting "ATTACKER CONTROLLED TITLE" on an existing fingerprint leaves the
+	// title as "DatabaseError: connection refused" and only increments the count.
+	for _, col := range []string{"title", "culprit"} {
+		bareCol := regexp.MustCompile(`(?i)\b` + col + `\s*=\s*EXCLUDED\.` + col + `\b`)
+		if bareCol.MatchString(q) {
+			t.Errorf("UpsertIssue sets %s = EXCLUDED.%s, so any DSN holder can rename an existing "+
+				"issue. It stays open and alerting while reading as something else in the list, in "+
+				"alert bodies and in the BYOAI triage prompt. Keep it first-write-wins.", col, col)
+		}
+	}
 }
 
 func upsertIssueBody(t *testing.T, src string) string {
