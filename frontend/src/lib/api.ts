@@ -232,6 +232,10 @@ export const api = {
     req<Channel>('POST', '/channels', { type, config }),
   testChannel: (id: string) => req<{ ok: boolean; error?: string }>('POST', `/channels/${id}/test`),
   deleteChannel: (id: string) => req<void>('DELETE', `/channels/${id}`),
+  /** Mute/unmute a channel, or set its project routing. Omitted fields are
+   *  left alone; project_ids: [] means "all projects". */
+  updateChannel: (id: string, patch: { enabled?: boolean; project_ids?: string[] }) =>
+    req<{ status: string }>('PATCH', `/channels/${id}`, patch),
 
   alertRules: (pid: string) => req<AlertRule[]>('GET', `/projects/${pid}/alert-rules`),
   createAlertRule: (

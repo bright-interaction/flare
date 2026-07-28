@@ -122,6 +122,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Post("/issues/{id}/triage", s.handleTriageIssue)
 					r.Post("/channels", s.handleCreateChannel)
 					r.Post("/channels/{id}/test", s.handleTestChannel)
+					r.Patch("/channels/{id}", s.handleUpdateChannel)
 					r.Delete("/channels/{id}", s.handleDeleteChannel)
 					r.Post("/issues/{id}/github", s.handleCreateGithubIssue)
 				})

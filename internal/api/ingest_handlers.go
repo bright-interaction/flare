@@ -316,7 +316,10 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 			return
 		}
 
-		chans, err := s.q.ListEnabledNotificationChannelsByOrg(ctx, project.OrgID)
+		// Respect per-project routing: an issue alert is about this project.
+		chans, err := s.q.ListEnabledChannelsForProject(ctx, generated.ListEnabledChannelsForProjectParams{
+			OrgID: project.OrgID, ProjectID: project.ID,
+		})
 		if err != nil || len(chans) == 0 {
 			return
 		}
