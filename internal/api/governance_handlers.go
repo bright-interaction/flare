@@ -235,9 +235,17 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if coldErr != "" {
+		// Record BEFORE destroying the session, while the actor is still known.
+		s.recordPartialErasure(ctx, org, "", "org_id", org, userIDFrom(ctx), coldErr)
+	}
 	_ = s.sessions.Destroy(ctx)
 	if coldErr != "" {
-		writeJSON(w, http.StatusOK, map[string]any{
+		// 202, not 200. A client that only checks the status code reads 200 as
+		// "erased" and moves on, which is the wrong thing to tell someone who
+		// exercised a right to erasure. 202 says accepted-but-incomplete, and the
+		// body says exactly what is outstanding.
+		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":         "partial",
 			"hot_tier":       "erased",
 			"cold_tier":      "NOT erased",
@@ -246,4 +254,54 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusNoContent, nil)
+}
+
+// recordPartialErasure persists an erasure obligation that was not fulfilled.
+//
+// It is written BEFORE the response so a crash between the two cannot lose it,
+// and into a table with no foreign keys so it survives the deletion of the org
+// and project it names. That is the whole reason it exists: for an org deletion
+// there is no tenant left to notice, no audit row that outlives the org, and
+// nobody to ask. Without this the obligation lived only in a log line.
+func (s *Server) recordPartialErasure(ctx context.Context, org, project, column, value, by, note string) {
+	if err := s.q.RecordPendingErasure(ctx, generated.RecordPendingErasureParams{
+		ID:          id.New(),
+		OrgID:       org,
+		ProjectID:   pgtype.Text{String: project, Valid: project != ""},
+		ScopeColumn: column,
+		ScopeValue:  value,
+		RequestedBy: pgtype.Text{String: by, Valid: by != ""},
+		ColdTier:    "NOT erased",
+		Reason:      note,
+	}); err != nil {
+		// Log loudly: at this point the data is still out there and the only
+		// other record is this line.
+		slog.Error("FAILED to record an unfulfilled erasure obligation",
+			"org", org, "project", project, "scope", column+"="+value, "note", note, "err", err)
+	}
+}
+
+
+// LogOpenErasures reports every unfulfilled erasure obligation. Called at
+// startup so the obligation keeps announcing itself until an operator clears the
+// row: the tenant who asked for it may no longer exist.
+func (s *Server) LogOpenErasures(ctx context.Context) {
+	rows, err := s.q.ListOpenErasures(ctx)
+	if err != nil {
+		slog.Warn("could not read pending erasures", "err", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	slog.Error("UNFULFILLED right-to-erasure obligations outstanding",
+		"count", len(rows),
+		"action", "erase the listed scopes from the object store, then set completed_at on the row")
+	for _, r := range rows {
+		slog.Error("  pending erasure",
+			"requested_at", r.RequestedAt.Time.Format(time.RFC3339),
+			"org", r.OrgID,
+			"scope", r.ScopeColumn+"="+r.ScopeValue,
+			"reason", r.Reason)
+	}
 }

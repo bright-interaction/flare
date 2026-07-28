@@ -9,6 +9,7 @@
     ApiKey,
     ApiKeyRole,
     AuditEntry,
+    PartialErasure,
     Channel,
     GithubConfig,
     OidcConfig
@@ -43,6 +44,7 @@
   let exporting = $state(false);
   let confirmDelete = $state('');
   let deletingOrg = $state(false);
+  let partialErasure = $state<PartialErasure | null>(null);
 
   let ai = $state<AiConfig | null>(null);
   let aiBase = $state('');
@@ -137,7 +139,16 @@
     deletingOrg = true;
     error = null;
     try {
-      await api.deleteOrg();
+      const res = await api.deleteOrg();
+      // A 202 body means the erasure was PARTIAL. Navigating away here would
+      // tell someone exercising a right to erasure that their data is gone when
+      // aged telemetry is still in the object store, and after this navigation
+      // there is no workspace left to come back to and ask.
+      if (res && res.status === 'partial') {
+        partialErasure = res;
+        deletingOrg = false;
+        return;
+      }
       session.user = null;
       goto('/login', { replaceState: true });
     } catch (err) {
@@ -833,6 +844,37 @@
           {deletingOrg ? 'Deleting...' : 'Delete workspace'}
         </button>
       </div>
+
+      {#if partialErasure}
+        <!-- Shown INSTEAD of navigating away. Telling someone their data is gone
+             when it is not is the one outcome this flow must never produce, and
+             once we navigate there is no workspace left to come back and ask. -->
+        <div class="mt-4 rounded-md border border-amber-400/40 bg-amber-400/10 p-4">
+          <p class="text-sm font-medium text-amber-200">Workspace data was only partly erased</p>
+          <p class="mt-2 text-xs text-amber-100/90">
+            Everything in the live database has been erased. Older telemetry that had already been
+            archived to object storage was <strong>not</strong> erased, because Flare cannot rewrite
+            those files automatically.
+          </p>
+          <p class="mt-2 text-xs text-amber-100/70">
+            Reason: {partialErasure.cold_tier_note}
+          </p>
+          <p class="mt-2 text-xs text-amber-100/90">
+            Ask whoever operates this Flare instance to erase the archived copies. The request has
+            been recorded on the server so it is not lost.
+          </p>
+          <button
+            onclick={() => {
+              partialErasure = null;
+              session.user = null;
+              goto('/login', { replaceState: true });
+            }}
+            class="mt-3 rounded-md border border-amber-400/40 px-3 py-1.5 text-xs text-amber-100 transition-colors hover:bg-amber-400/10"
+          >
+            I understand, sign me out
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 {/if}
