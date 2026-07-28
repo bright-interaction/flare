@@ -66,6 +66,34 @@ func TestDropRunsInATransaction(t *testing.T) {
 	}
 }
 
+// TestEnsurePartitionAlsoBoundsItsLock covers the sibling.
+//
+// CREATE TABLE ... PARTITION OF takes ACCESS EXCLUSIVE on the PARENT exactly as
+// DROP does, so an unbounded CREATE convoys reads and ingest the same way. The
+// original audit finding named both; only the DROP was fixed, and a guard that
+// covers one of two identical statements reads as covering the class.
+func TestEnsurePartitionAlsoBoundsItsLock(t *testing.T) {
+	src, err := os.ReadFile("partition.go")
+	if err != nil {
+		t.Fatalf("read partition.go: %v", err)
+	}
+	body := funcBody(t, string(src), "ensurePartition")
+
+	if !strings.Contains(body, "SET LOCAL lock_timeout") {
+		t.Error("ensurePartition creates a partition with no lock_timeout. CREATE TABLE ... " +
+			"PARTITION OF takes ACCESS EXCLUSIVE on the parent, so it queues behind one " +
+			"in-flight read and convoys every read and ingest INSERT behind it.")
+	}
+	if regexp.MustCompile(`pool\.Exec\(ctx, q\)`).MatchString(body) {
+		t.Error("the CREATE still runs on a bare pool.Exec, outside any transaction, so a " +
+			"SET LOCAL alongside it would be discarded by Postgres")
+	}
+	if !strings.Contains(body, "tx.Commit(") || !strings.Contains(body, "tx.Rollback(") {
+		t.Error("ensurePartition must commit on success and roll back on the error paths, " +
+			"or a failure holds ACCESS EXCLUSIVE until the pooled connection is reused")
+	}
+}
+
 // funcBody returns the source of the named func, up to the next top-level func.
 func funcBody(t *testing.T, src, name string) string {
 	t.Helper()
