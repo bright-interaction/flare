@@ -42,15 +42,16 @@ type AlertRule struct {
 }
 
 type ApiKey struct {
-	ID         string             `json:"id"`
-	OrgID      string             `json:"org_id"`
-	Name       string             `json:"name"`
-	KeyHash    string             `json:"key_hash"`
-	KeyPrefix  string             `json:"key_prefix"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
-	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
-	Role       string             `json:"role"`
+	ID              string             `json:"id"`
+	OrgID           string             `json:"org_id"`
+	Name            string             `json:"name"`
+	KeyHash         string             `json:"key_hash"`
+	KeyPrefix       string             `json:"key_prefix"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	LastUsedAt      pgtype.Timestamptz `json:"last_used_at"`
+	Role            string             `json:"role"`
+	CreatedByUserID pgtype.Text        `json:"created_by_user_id"`
 }
 
 type AuditLog struct {

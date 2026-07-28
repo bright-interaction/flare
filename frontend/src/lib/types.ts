@@ -147,6 +147,9 @@ export interface ApiKey {
   name: string;
   prefix: string;
   role: ApiKeyRole;
+  /** Email of the user who minted it. Empty for keys created before the
+   *  creator column existed, which a password reset will NOT revoke. */
+  created_by: string;
   created_at: string;
   last_used_at: string | null;
 }

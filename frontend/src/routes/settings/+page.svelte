@@ -274,6 +274,7 @@
           name: k.name,
           prefix: k.prefix,
           role: k.role,
+          created_by: session.user?.email ?? '',
           created_at: new Date().toISOString(),
           last_used_at: null
         },
@@ -532,6 +533,16 @@
         >
           {k.role === 'member' ? 'read + write' : 'read-only'}
         </span>
+        {#if k.created_by}
+          <span class="text-xs text-zinc-600">by {k.created_by}</span>
+        {:else}
+          <span
+            class="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[11px] text-amber-200"
+            title="Created before Flare recorded key owners. A password reset will NOT revoke this key. Rotate it if you are unsure who holds it."
+          >
+            unknown owner
+          </span>
+        {/if}
         <span class="ml-auto text-xs text-zinc-600">
           {k.last_used_at ? 'used' : 'never used'}
         </span>
