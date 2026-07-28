@@ -39,5 +39,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # scripts/ci.sh runs the frontend deps, typecheck and build. Without bun on
+      # the runner all three report SKIPPED, which is honest but means the UI the
+      # binary embeds is never checked on a pull request.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: All checks (build, vet, test, gofmt, licenses, secrets, vulnerabilities)
         run: bash scripts/ci.sh
