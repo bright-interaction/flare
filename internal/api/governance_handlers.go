@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/bright-interaction/flare/internal/db/generated"
@@ -264,6 +265,16 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 // there is no tenant left to notice, no audit row that outlives the org, and
 // nobody to ask. Without this the obligation lived only in a log line.
 func (s *Server) recordPartialErasure(ctx context.Context, org, project, column, value, by, note string) {
+	// Detach from the request context before the durability write. Both callers
+	// pass r.Context(), which a client disconnect or proxy timeout can cancel at
+	// any moment, and here that moment is AFTER the hot-tier delete has already
+	// committed. A cancel between the commit and this insert would drop the only
+	// durable trace of an unfulfilled erasure - the exact pre-027 state this
+	// table exists to end, and unrecoverable for an org delete whose org row is
+	// already gone. Same pattern the delivery record uses (server.go), applied
+	// here because the obligation is the more critical of the two to persist.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if err := s.q.RecordPendingErasure(ctx, generated.RecordPendingErasureParams{
 		ID:          id.New(),
 		OrgID:       org,
@@ -303,4 +314,91 @@ func (s *Server) LogOpenErasures(ctx context.Context) {
 			"scope", r.ScopeColumn+"="+r.ScopeValue,
 			"reason", r.Reason)
 	}
+}
+
+// RunErasureReminder re-surfaces outstanding erasure obligations on a periodic
+// ticker, not only at boot. LogOpenErasures alone fires once at startup, so a
+// server that stays up for weeks after an org deletion stops announcing the
+// obligation and the operator loses the reminder to the log rotation. Repeating
+// it keeps a long-running instance honest about what it still owes. Best-effort:
+// a read error is logged and the loop continues.
+func (s *Server) RunErasureReminder(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 6 * time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.LogOpenErasures(ctx)
+		}
+	}
+}
+
+type pendingErasure struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"project_id,omitempty"`
+	ScopeColumn string    `json:"scope_column"`
+	ScopeValue  string    `json:"scope_value"`
+	ColdTier    string    `json:"cold_tier"`
+	Reason      string    `json:"reason"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
+// handleListOpenErasures returns this org's outstanding erasure obligations so an
+// admin can see what still has to be erased from the object store and get the id
+// to mark it done. Admin-gated at the router. Scoped to the caller's org: it
+// cannot surface a DELETED org's own obligation (there is no org to be admin of),
+// which is why the operator log path in LogOpenErasures spans every org.
+func (s *Server) handleListOpenErasures(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.q.ListOpenErasuresByOrg(r.Context(), orgIDFrom(r.Context()))
+	if err != nil {
+		slogError(w, "list open erasures", err)
+		return
+	}
+	out := make([]pendingErasure, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, pendingErasure{
+			ID:          row.ID,
+			ProjectID:   row.ProjectID.String,
+			ScopeColumn: row.ScopeColumn,
+			ScopeValue:  row.ScopeValue,
+			ColdTier:    row.ColdTier,
+			Reason:      row.Reason,
+			RequestedAt: row.RequestedAt.Time,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleCompleteErasure marks one obligation fulfilled once the operator has
+// erased the named scope from the object store by hand. Admin-gated. The write is
+// scoped to (id, org) so an admin can never clear another tenant's obligation by
+// guessing its id, and a wrong id or already-completed row returns 404 rather than
+// a phantom success. This is the app path that ends the old "hand-write SQL to
+// clear the row" requirement for a still-living org's obligations.
+func (s *Server) handleCompleteErasure(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	actor := pgtype.Text{}
+	if uid := userIDFrom(ctx); uid != "" {
+		actor = pgText(uid)
+	}
+	rows, err := s.q.CompletePendingErasure(ctx, generated.CompletePendingErasureParams{
+		ID:          chi.URLParam(r, "id"),
+		OrgID:       orgIDFrom(ctx),
+		CompletedBy: actor,
+	})
+	if err != nil {
+		slogError(w, "complete erasure", err)
+		return
+	}
+	if rows == 0 {
+		writeErr(w, http.StatusNotFound, "no open erasure obligation with that id in this org")
+		return
+	}
+	s.audit(ctx, "erasure.complete", chi.URLParam(r, "id"))
+	writeJSON(w, http.StatusNoContent, nil)
 }
