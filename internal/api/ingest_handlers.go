@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -126,18 +127,61 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 	}
 	eid, err := s.ingestOne(r.Context(), project, body)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid event")
+		// Distinguish a client PARSE failure from a server-side store/DB failure.
+		// Sentry SDKs treat 4xx as "malformed, drop it" and only retry on 5xx, so
+		// answering 400 on a DB blip silently loses a retryable event. Mirror
+		// handleEnvelope: 4xx only for a bad body, 503 for a store failure.
+		var perr *ingestParseError
+		if errors.As(err, &perr) {
+			writeErr(w, http.StatusBadRequest, "invalid event")
+			return
+		}
+		slog.Warn("store event failed", "project_id", project.ID, "error", err)
+		writeErr(w, http.StatusServiceUnavailable, "could not store event")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": eid})
 }
 
+// ingestParseError marks an ingestOne failure as a client-side parse problem (a
+// malformed event body) as opposed to a server-side store/DB failure. handleStore
+// maps it to 4xx; every other error is a store failure and maps to 5xx so the SDK
+// retries instead of discarding the event.
+type ingestParseError struct{ err error }
+
+func (e *ingestParseError) Error() string { return e.err.Error() }
+func (e *ingestParseError) Unwrap() error { return e.err }
+
 // ingestOne normalizes, groups, and persists one event. Returns the event id.
+// A parse failure is wrapped in *ingestParseError; a store failure is returned
+// bare, so callers can tell client errors from server errors.
 func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw []byte) (string, error) {
 	ev, err := ingest.ParseEvent(raw)
 	if err != nil {
-		return "", err
+		return "", &ingestParseError{err}
 	}
+
+	// Sanitize every client-controlled field before it reaches Postgres. This is
+	// the guard the logs/spans/metrics handlers already apply and the events path
+	// alone was missing: Postgres rejects a NUL byte (raw or the backslash-u-0000
+	// escape) and invalid UTF-8 in a TEXT or JSONB column, so an unsanitized field
+	// fails the INSERT and the SDK then DROPS the event (silent per-event data
+	// loss). SanitizeText strips those from TEXT fields; SanitizeJSON parse-
+	// remarshals the JSONB payload and stacktrace so an escaped NUL is removed
+	// without corrupting the document.
+	msg := ingest.SanitizeText(ev.Message)
+	excType := ingest.SanitizeText(ev.ExceptionType)
+	excValue := ingest.SanitizeText(ev.ExceptionValue)
+	title := ingest.SanitizeText(ev.Title)
+	culprit := ingest.SanitizeText(ev.Culprit)
+	level := ingest.SanitizeText(ev.Level)
+	platform := ingest.SanitizeText(ev.Platform)
+	environment := ingest.SanitizeText(ev.Environment)
+	release := ingest.SanitizeText(ev.Release)
+	traceID := ingest.SanitizeText(ev.TraceID)
+	spanID := ingest.SanitizeText(ev.SpanID)
+	payload := ingest.SanitizeJSON(ev.Raw)
+	stacktrace := ingest.SanitizeJSON(stacktraceJSON(ev.Frames))
 	eventID := ev.EventID
 	if eventID == "" {
 		eventID = id.New()
@@ -145,9 +189,9 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 
 	// Auto-track the release this event reports (deploy markers can also
 	// register one explicitly). Best-effort: a failure never blocks ingest.
-	if ev.Release != "" {
+	if release != "" {
 		_ = s.q.UpsertRelease(ctx, generated.UpsertReleaseParams{
-			ID: id.New(), ProjectID: project.ID, OrgID: project.OrgID, Version: ev.Release,
+			ID: id.New(), ProjectID: project.ID, OrgID: project.OrgID, Version: release,
 		})
 	}
 
@@ -156,11 +200,11 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		ProjectID:    project.ID,
 		OrgID:        project.OrgID,
 		Fingerprint:  ev.Fingerprint(),
-		Title:        ev.Title,
-		Culprit:      ev.Culprit,
-		Level:        ev.Level,
-		Platform:     ev.Platform,
-		FirstRelease: ev.Release,
+		Title:        title,
+		Culprit:      culprit,
+		Level:        level,
+		Platform:     platform,
+		FirstRelease: release,
 	})
 	if err != nil {
 		return "", err
@@ -180,17 +224,17 @@ func (s *Server) ingestOne(ctx context.Context, project *generated.Project, raw 
 		ProjectID:      project.ID,
 		OrgID:          project.OrgID,
 		IssueID:        pgText(issue.ID),
-		Level:          ev.Level,
-		Message:        ev.Message,
-		ExceptionType:  ev.ExceptionType,
-		ExceptionValue: ev.ExceptionValue,
-		Platform:       ev.Platform,
-		Environment:    ev.Environment,
-		Release:        ev.Release,
-		Stacktrace:     stacktraceJSON(ev.Frames),
-		Payload:        ev.Raw,
-		TraceID:        textOrNull(ev.TraceID),
-		SpanID:         textOrNull(ev.SpanID),
+		Level:          level,
+		Message:        msg,
+		ExceptionType:  excType,
+		ExceptionValue: excValue,
+		Platform:       platform,
+		Environment:    environment,
+		Release:        release,
+		Stacktrace:     stacktrace,
+		Payload:        payload,
+		TraceID:        textOrNull(traceID),
+		SpanID:         textOrNull(spanID),
 	}); err != nil {
 		return "", err
 	}
