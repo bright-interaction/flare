@@ -1,0 +1,40 @@
+-- +goose Up
+-- Second half of the safe split started in migration 025. 025 added the
+-- metrics_value_finite CHECK as NOT VALID: metadata-only, no scan, enforced on
+-- new writes immediately. This step validates the rows that already existed
+-- when 025 ran.
+--
+-- VALIDATE CONSTRAINT takes only ShareUpdateExclusive on the parent (and the
+-- same on each child as it walks them), which does NOT block INSERT/UPDATE, so
+-- metric ingest keeps flowing while the scan runs. That is the whole reason the
+-- work is split across two migrations instead of one AccessExclusive-holding
+-- ADD CONSTRAINT: the scan is moved off the write-blocking lock.
+--
+-- If a pre-existing non-finite row is found, this VALIDATE errors. That is
+-- intentional and strictly better than the pre-split behavior: the NOT VALID
+-- constraint from 025 is already rejecting every new bad write, and this scan
+-- runs without an ingest outage, so the operator learns a bad row exists (and
+-- must clean it, then this migration re-runs cleanly) rather than discovering
+-- it as a rolled-back AccessExclusive-locking deploy. The CHECK logic is not
+-- restated here; do not duplicate it.
+--
+-- Idempotent by construction. goose records applied migrations by version
+-- number, not by content, so on a database that already applied the OLD,
+-- full-validation form of 025 the edited 025 text is never re-run, and this
+-- VALIDATE is a no-op: the constraint is already marked validated, and
+-- VALIDATE CONSTRAINT on an already-valid constraint succeeds without work.
+-- On a fresh database 025 adds the constraint NOT VALID and this step validates
+-- it. Both paths converge on the same validated constraint.
+--
+-- No CONCURRENTLY here, so this can stay inside goose's default transaction
+-- (unlike the CREATE INDEX CONCURRENTLY in 023, which required NO TRANSACTION
+-- because CONCURRENTLY is the operation that cannot run in a transaction block;
+-- VALIDATE CONSTRAINT can). The statement is a single scan and commits as soon
+-- as it finishes.
+ALTER TABLE metrics VALIDATE CONSTRAINT metrics_value_finite;
+
+-- +goose Down
+-- Nothing to undo: VALIDATE only flips the constraint's validated flag, and the
+-- constraint itself is owned by 025's Down. Re-marking it NOT VALID is not
+-- something Postgres exposes, and dropping it here would fight 025's Down.
+SELECT 1;

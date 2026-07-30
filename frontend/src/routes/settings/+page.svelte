@@ -11,11 +11,13 @@
     AuditEntry,
     PartialErasure,
     Channel,
+    Project,
     GithubConfig,
     OidcConfig
   } from '$lib/types';
 
   let channels = $state<Channel[] | null>(null);
+  let projects = $state<Project[] | null>(null);
   let testResult = $state<Record<string, { ok: boolean; error?: string } | 'busy'>>({});
   let error = $state<string | null>(null);
   let type = $state('log');
@@ -56,6 +58,31 @@
   let pwBusy = $state(false);
   let pwError = $state<string | null>(null);
   let pwDone = $state(false);
+
+  // Mute without deleting. The enabled column has always existed and dispatch
+  // has always filtered on it; nothing could set it, so silencing a channel that
+  // started paging at 3am meant deleting it and re-entering a config the API
+  // redacts and will not read back.
+  async function toggleChannel(ch: Channel) {
+    const next = !ch.enabled;
+    try {
+      await api.updateChannel(ch.id, { enabled: next });
+      channels = (channels ?? []).map((c) => (c.id === ch.id ? { ...c, enabled: next } : c));
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Could not update channel';
+    }
+  }
+
+  // Routing. An empty selection means every project, which is the default and
+  // matches how channels behaved before routing existed.
+  async function setChannelProjects(ch: Channel, ids: string[]) {
+    try {
+      await api.updateChannel(ch.id, { project_ids: ids });
+      channels = (channels ?? []).map((c) => (c.id === ch.id ? { ...c, project_ids: ids } : c));
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : 'Could not update routing';
+    }
+  }
 
   async function changePassword(e: SubmitEvent) {
     e.preventDefault();
@@ -127,6 +154,9 @@
     mcpUrl = `${location.origin}/api/mcp`;
     try {
       channels = await api.channels();
+      // Needed to render channel routing. Any authenticated role can list
+      // projects, so this does not narrow who can see the Alerts page.
+      projects = await api.projects();
       apiKeys = await api.apiKeys();
       if (isAdmin) {
         github = await api.githubConfig();
@@ -505,11 +535,69 @@
             Send test
           </button>
           <button
+            onclick={() => toggleChannel(ch)}
+            class="text-xs transition-colors {ch.enabled
+              ? 'text-zinc-500 hover:text-amber-400'
+              : 'text-amber-400 hover:text-amber-300'}"
+            title={ch.enabled
+              ? 'Stop sending to this channel without deleting it'
+              : 'Resume sending to this channel'}
+          >
+            {ch.enabled ? 'Mute' : 'Unmute'}
+          </button>
+          <button
             onclick={() => removeChannel(ch.id)}
             class="text-xs text-zinc-600 transition-colors hover:text-rose-400"
           >
             Remove
           </button>
+        </div>
+        {#if !ch.enabled}
+          <p class="w-full pl-5 text-xs text-amber-300/80">
+            Muted. Alerts are not delivered to this channel.
+          </p>
+        {/if}
+        <!-- Routing. No selection = every project, which is the default and what
+             every channel did before routing existed. -->
+        <div class="flex w-full flex-wrap items-center gap-1.5 pl-5">
+          <span class="text-[11px] text-zinc-600">Sends for:</span>
+          <button
+            onclick={() => setChannelProjects(ch, [])}
+            class="rounded border px-1.5 py-0.5 text-[11px] transition-colors {ch.project_ids
+              ?.length
+              ? 'border-zinc-800 text-zinc-500 hover:border-zinc-700'
+              : 'border-amber-400/40 bg-amber-400/10 text-amber-200'}"
+          >
+            All projects
+          </button>
+          {#each projects ?? [] as p (p.id)}
+            {@const on = (ch.project_ids ?? []).includes(p.id)}
+            <button
+              onclick={() => {
+                const next = on
+                  ? (ch.project_ids ?? []).filter((x) => x !== p.id)
+                  : [...(ch.project_ids ?? []), p.id];
+                // Unchecking the last scoped project does not leave the channel with
+                // zero projects, it falls back to "every project" (see the note
+                // above). That is a silent scope expansion, so make it an explicit
+                // choice instead of a side effect of a checkbox.
+                if (on && next.length === 0) {
+                  if (
+                    !confirm(
+                      `Removing the last project will make this ${ch.type} channel send alerts for ALL projects, not none. Continue?`
+                    )
+                  )
+                    return;
+                }
+                setChannelProjects(ch, next);
+              }}
+              class="rounded border px-1.5 py-0.5 text-[11px] transition-colors {on
+                ? 'border-amber-400/40 bg-amber-400/10 text-amber-200'
+                : 'border-zinc-800 text-zinc-500 hover:border-zinc-700'}"
+            >
+              {p.name}
+            </button>
+          {/each}
         </div>
         {#if ch.last_error}
           <p class="w-full pl-5 font-mono text-xs text-rose-400/80">

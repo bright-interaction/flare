@@ -122,6 +122,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Post("/issues/{id}/triage", s.handleTriageIssue)
 					r.Post("/channels", s.handleCreateChannel)
 					r.Post("/channels/{id}/test", s.handleTestChannel)
+					r.Patch("/channels/{id}", s.handleUpdateChannel)
 					r.Delete("/channels/{id}", s.handleDeleteChannel)
 					r.Post("/issues/{id}/github", s.handleCreateGithubIssue)
 				})
@@ -163,6 +164,13 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 					r.Delete("/integrations/github", s.handleDeleteGithubConfig)
 					r.Get("/audit-log", s.handleListAuditLog)
 					r.Get("/export", s.handleExport)
+
+					// Outstanding right-to-erasure obligations for this org (cold
+					// tier not yet purged). An admin can see what still has to be
+					// erased from the object store and mark one done once they have,
+					// instead of hand-writing SQL against pending_erasures.
+					r.Get("/erasures", s.handleListOpenErasures)
+					r.Post("/erasures/{id}/complete", s.handleCompleteErasure)
 					r.Get("/integrations/oidc", s.handleGetOIDCConfig)
 					r.Get("/integrations/ai", s.handleGetAIConfig)
 					r.Put("/integrations/ai", s.handleSetAIConfig)

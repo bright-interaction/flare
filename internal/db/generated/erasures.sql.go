@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const completePendingErasure = `-- name: CompletePendingErasure :execrows
+UPDATE pending_erasures
+SET completed_at = now(), completed_by = $3
+WHERE id = $1 AND org_id = $2 AND completed_at IS NULL
+`
+
+type CompletePendingErasureParams struct {
+	ID          string      `json:"id"`
+	OrgID       string      `json:"org_id"`
+	CompletedBy pgtype.Text `json:"completed_by"`
+}
+
+// Marks one obligation fulfilled. Scoped by org_id as well as id so an admin can
+// only ever complete their OWN org's obligation, never another tenant's by id.
+// Idempotent guard on completed_at: a second call returns 0 rows rather than
+// overwriting the original actor/time. Returns the affected row count so the
+// handler can 404 a wrong id/org instead of reporting a phantom success.
+func (q *Queries) CompletePendingErasure(ctx context.Context, arg CompletePendingErasureParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completePendingErasure, arg.ID, arg.OrgID, arg.CompletedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countOpenErasures = `-- name: CountOpenErasures :one
 SELECT count(*) FROM pending_erasures WHERE completed_at IS NULL
 `
@@ -30,6 +55,49 @@ SELECT id, org_id, project_id, scope_column, scope_value, requested_at, requeste
 // ciguard:allow-unscoped operator-facing view of outstanding erasure obligations across every org, including deleted ones; scoping it to a live tenant would omit the deleted-org case this table exists for
 func (q *Queries) ListOpenErasures(ctx context.Context) ([]*PendingErasure, error) {
 	rows, err := q.db.Query(ctx, listOpenErasures)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*PendingErasure{}
+	for rows.Next() {
+		var i PendingErasure
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.ProjectID,
+			&i.ScopeColumn,
+			&i.ScopeValue,
+			&i.RequestedAt,
+			&i.RequestedBy,
+			&i.ColdTier,
+			&i.Reason,
+			&i.CompletedAt,
+			&i.CompletedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenErasuresByOrg = `-- name: ListOpenErasuresByOrg :many
+SELECT id, org_id, project_id, scope_column, scope_value, requested_at, requested_by, cold_tier, reason, completed_at, completed_by FROM pending_erasures
+WHERE completed_at IS NULL AND org_id = $1
+ORDER BY requested_at
+`
+
+// Org-scoped view of outstanding obligations for the admin endpoint. Unlike
+// ListOpenErasures (operator-facing, every org) this is filtered to the caller's
+// org so an admin never sees another tenant's obligations. It cannot surface a
+// deleted org's own obligation (there is no org left to authenticate as); that
+// case stays with the operator logs, which is why LogOpenErasures spans all orgs.
+func (q *Queries) ListOpenErasuresByOrg(ctx context.Context, orgID string) ([]*PendingErasure, error) {
+	rows, err := q.db.Query(ctx, listOpenErasuresByOrg, orgID)
 	if err != nil {
 		return nil, err
 	}

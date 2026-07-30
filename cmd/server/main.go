@@ -143,6 +143,12 @@ func run() error {
 	// alerts that cannot ride on ingest). Best-effort; shares alert channels.
 	go srv.RunWatchdog(ctx, 5*time.Minute)
 
+	// Re-surface outstanding right-to-erasure obligations on a ticker, not only at
+	// the boot log below. A long-uptime instance would otherwise announce them
+	// once and then go silent for weeks while the object store still holds the
+	// data, and for a deleted org there is no tenant left to notice.
+	go srv.RunErasureReminder(ctx, 6*time.Hour)
+
 	handler := srv.Routes(build, csrfMW)
 
 	httpServer := &http.Server{

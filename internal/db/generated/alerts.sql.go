@@ -12,6 +12,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addChannelProject = `-- name: AddChannelProject :exec
+INSERT INTO channel_projects (channel_id, project_id) VALUES ($1, $2) ON CONFLICT DO NOTHING
+`
+
+type AddChannelProjectParams struct {
+	ChannelID string `json:"channel_id"`
+	ProjectID string `json:"project_id"`
+}
+
+// ciguard:allow-unscoped same: the project and channel are both org-verified by the handler before this runs
+func (q *Queries) AddChannelProject(ctx context.Context, arg AddChannelProjectParams) error {
+	_, err := q.db.Exec(ctx, addChannelProject, arg.ChannelID, arg.ProjectID)
+	return err
+}
+
 const countEnabledAlertRulesByOrg = `-- name: CountEnabledAlertRulesByOrg :one
 SELECT count(*) FROM alert_rules WHERE org_id = $1 AND enabled = true
 `
@@ -216,6 +231,31 @@ func (q *Queries) ListAlertRulesByProject(ctx context.Context, arg ListAlertRule
 	return items, nil
 }
 
+const listChannelProjects = `-- name: ListChannelProjects :many
+SELECT project_id FROM channel_projects WHERE channel_id = $1
+`
+
+// ciguard:allow-unscoped read of a channel's routing; the channel is org-verified by the caller
+func (q *Queries) ListChannelProjects(ctx context.Context, channelID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listChannelProjects, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var project_id string
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnabledAlertRulesByProject = `-- name: ListEnabledAlertRulesByProject :many
 SELECT id, project_id, org_id, name, type, threshold, enabled, created_at, window_minutes, last_fired_at FROM alert_rules WHERE project_id = $1 AND org_id = $2 AND enabled = true
 `
@@ -245,6 +285,57 @@ func (q *Queries) ListEnabledAlertRulesByProject(ctx context.Context, arg ListEn
 			&i.CreatedAt,
 			&i.WindowMinutes,
 			&i.LastFiredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEnabledChannelsForProject = `-- name: ListEnabledChannelsForProject :many
+SELECT c.id, c.org_id, c.type, c.config, c.enabled, c.created_at, c.last_attempt_at, c.last_ok_at, c.last_error FROM notification_channels c
+WHERE c.org_id = $1
+  AND c.enabled = true
+  AND (
+    EXISTS (SELECT 1 FROM channel_projects cp WHERE cp.channel_id = c.id AND cp.project_id = $2)
+    OR NOT EXISTS (SELECT 1 FROM channel_projects cp WHERE cp.channel_id = c.id)
+  )
+`
+
+type ListEnabledChannelsForProjectParams struct {
+	OrgID     string `json:"org_id"`
+	ProjectID string `json:"project_id"`
+}
+
+// Channels that should receive an alert about ONE project: those routed to it,
+// plus every channel with no routing at all.
+//
+// The NOT EXISTS clause is what makes "no rows means all projects" true, and it
+// is the whole backward-compatibility story: every channel that predates routing
+// has no rows, so it keeps receiving everything exactly as before.
+func (q *Queries) ListEnabledChannelsForProject(ctx context.Context, arg ListEnabledChannelsForProjectParams) ([]*NotificationChannel, error) {
+	rows, err := q.db.Query(ctx, listEnabledChannelsForProject, arg.OrgID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*NotificationChannel{}
+	for rows.Next() {
+		var i NotificationChannel
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.Type,
+			&i.Config,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.LastAttemptAt,
+			&i.LastOkAt,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -349,4 +440,32 @@ func (q *Queries) RecordChannelDelivery(ctx context.Context, arg RecordChannelDe
 		arg.OrgID,
 	)
 	return err
+}
+
+const replaceChannelProjects = `-- name: ReplaceChannelProjects :exec
+DELETE FROM channel_projects WHERE channel_id = $1
+`
+
+// ciguard:allow-unscoped scoped through the channel, whose org is checked by the caller before this runs; channel_projects has no org_id of its own
+func (q *Queries) ReplaceChannelProjects(ctx context.Context, channelID string) error {
+	_, err := q.db.Exec(ctx, replaceChannelProjects, channelID)
+	return err
+}
+
+const setChannelEnabled = `-- name: SetChannelEnabled :execrows
+UPDATE notification_channels SET enabled = $3 WHERE id = $1 AND org_id = $2
+`
+
+type SetChannelEnabledParams struct {
+	ID      string `json:"id"`
+	OrgID   string `json:"org_id"`
+	Enabled bool   `json:"enabled"`
+}
+
+func (q *Queries) SetChannelEnabled(ctx context.Context, arg SetChannelEnabledParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setChannelEnabled, arg.ID, arg.OrgID, arg.Enabled)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
