@@ -41,3 +41,33 @@ SET last_attempt_at = @attempted_at,
     last_ok_at = CASE WHEN @ok::boolean THEN @attempted_at ELSE last_ok_at END,
     last_error = CASE WHEN @ok::boolean THEN NULL ELSE @error_msg END
 WHERE id = @id AND org_id = @org_id;
+
+-- name: ListEnabledChannelsForProject :many
+-- Channels that should receive an alert about ONE project: those routed to it,
+-- plus every channel with no routing at all.
+--
+-- The NOT EXISTS clause is what makes "no rows means all projects" true, and it
+-- is the whole backward-compatibility story: every channel that predates routing
+-- has no rows, so it keeps receiving everything exactly as before.
+SELECT c.* FROM notification_channels c
+WHERE c.org_id = $1
+  AND c.enabled = true
+  AND (
+    EXISTS (SELECT 1 FROM channel_projects cp WHERE cp.channel_id = c.id AND cp.project_id = $2)
+    OR NOT EXISTS (SELECT 1 FROM channel_projects cp WHERE cp.channel_id = c.id)
+  );
+
+-- name: SetChannelEnabled :execrows
+UPDATE notification_channels SET enabled = $3 WHERE id = $1 AND org_id = $2;
+
+-- name: ReplaceChannelProjects :exec
+-- ciguard:allow-unscoped scoped through the channel, whose org is checked by the caller before this runs; channel_projects has no org_id of its own
+DELETE FROM channel_projects WHERE channel_id = $1;
+
+-- name: AddChannelProject :exec
+-- ciguard:allow-unscoped same: the project and channel are both org-verified by the handler before this runs
+INSERT INTO channel_projects (channel_id, project_id) VALUES ($1, $2) ON CONFLICT DO NOTHING;
+
+-- name: ListChannelProjects :many
+-- ciguard:allow-unscoped read of a channel's routing; the channel is org-verified by the caller
+SELECT project_id FROM channel_projects WHERE channel_id = $1;

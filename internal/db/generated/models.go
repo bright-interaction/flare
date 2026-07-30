@@ -63,6 +63,11 @@ type AuditLog struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type ChannelProject struct {
+	ChannelID string `json:"channel_id"`
+	ProjectID string `json:"project_id"`
+}
+
 type Event struct {
 	ID             string             `json:"id"`
 	ProjectID      string             `json:"project_id"`
