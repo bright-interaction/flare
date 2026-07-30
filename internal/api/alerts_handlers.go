@@ -20,6 +20,10 @@ type channelResponse struct {
 	LastAttemptAt *string         `json:"last_attempt_at"`
 	LastOkAt      *string         `json:"last_ok_at"`
 	LastError     string          `json:"last_error"`
+	// ProjectIDs is the routing list. EMPTY MEANS ALL PROJECTS, which is both
+	// the pre-routing behaviour and the default, so an existing channel keeps
+	// receiving everything until someone narrows it deliberately.
+	ProjectIDs []string `json:"project_ids"`
 }
 
 // toChannelResponse maps a stored channel row to the API shape, redacting the
@@ -173,7 +177,19 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]channelResponse, 0, len(chans))
 	for _, c := range chans {
-		out = append(out, s.toChannelResponse(c))
+		resp := s.toChannelResponse(c)
+		// Routing, so the UI can show and edit it. A read error here must NOT
+		// degrade to empty: empty renders as "all projects", so a transient
+		// failure would display a narrowed channel as an estate-wide broadcast,
+		// and a subsequent save would then persist that wider set. Fail closed
+		// (500) rather than show a channel as broader than it really is.
+		pids, err := s.q.ListChannelProjects(r.Context(), c.ID)
+		if err != nil {
+			slogError(w, "list channel routing", err)
+			return
+		}
+		resp.ProjectIDs = pids
+		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -353,4 +369,123 @@ func (s *Server) handleListAlertRules(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// maxChannelProjects bounds a channel's routing list. A channel realistically
+// serves a handful of projects, so 256 is far above any honest fan-out while
+// still capping the sequential round trips one PATCH can drive: the 1MB body
+// cap in decodeJSON otherwise admits ~40k ids, and the AddChannelProject loop
+// issues one INSERT each. De-duplication (below) collapses the "same id 40k
+// times" case to one row before this bound is even checked.
+const maxChannelProjects = 256
+
+// handleUpdateChannel toggles a channel's enabled flag and its project routing.
+//
+// notification_channels.enabled has existed since the first schema and the
+// dispatch query has always filtered on it, but nothing could ever SET it: the
+// routes were create, test and delete. So silencing a channel that started
+// paging at 3am meant DELETING it and re-creating it afterwards, re-entering a
+// config the API deliberately redacts and will not read back. The column was
+// there; only the wiring was missing.
+func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled    *bool     `json:"enabled"`
+		ProjectIDs *[]string `json:"project_ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ctx := r.Context()
+	org := orgIDFrom(ctx)
+	chID := chi.URLParam(r, "id")
+
+	// De-duplicate and cap the routing list BEFORE any DB work, so a
+	// duplicate-heavy or oversized body is collapsed or rejected before it can
+	// drive thousands of INSERTs. Insertion order is preserved for a stable,
+	// testable result.
+	var projectIDs []string
+	if req.ProjectIDs != nil {
+		seen := make(map[string]struct{}, len(*req.ProjectIDs))
+		projectIDs = make([]string, 0, len(*req.ProjectIDs))
+		for _, pid := range *req.ProjectIDs {
+			if _, dup := seen[pid]; dup {
+				continue
+			}
+			seen[pid] = struct{}{}
+			projectIDs = append(projectIDs, pid)
+		}
+		if len(projectIDs) > maxChannelProjects {
+			writeErr(w, http.StatusBadRequest, "too many project_ids (max 256)")
+			return
+		}
+	}
+
+	// Everything runs in ONE transaction: the ownership checks, the enabled
+	// write, the per-project org validation, and the routing replace+insert.
+	// All validation happens before the first mutation, so nothing is written
+	// unless everything is valid. MVCC hides the DELETE-then-INSERT window from
+	// every other reader (so a concurrent dispatch never sees the empty
+	// channel_projects state, which reads as "all projects"), and any error
+	// rolls the whole PATCH back: a failed update leaves both the original
+	// routing and the original enabled flag untouched.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		slogError(w, "update channel: begin tx", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.q.WithTx(tx)
+
+	if req.Enabled != nil {
+		rows, err := qtx.SetChannelEnabled(ctx, generated.SetChannelEnabledParams{
+			ID: chID, OrgID: org, Enabled: *req.Enabled,
+		})
+		if err != nil {
+			slogError(w, "set channel enabled", err)
+			return
+		}
+		if rows == 0 {
+			writeErr(w, http.StatusNotFound, "channel not found")
+			return
+		}
+	}
+
+	if req.ProjectIDs != nil {
+		// Verify every project belongs to THIS org before storing it. The join
+		// table has no org_id of its own, so this handler is the only thing
+		// standing between a routing list and a cross-tenant reference.
+		for _, pid := range projectIDs {
+			if _, err := qtx.GetProjectByID(ctx, generated.GetProjectByIDParams{ID: pid, OrgScope: org}); err != nil {
+				writeErr(w, http.StatusBadRequest, "unknown project in project_ids")
+				return
+			}
+		}
+		// Confirm the channel is this org's before touching its routing: without
+		// this, an id from another tenant would have its routing rewritten.
+		if _, err := qtx.GetNotificationChannel(ctx, generated.GetNotificationChannelParams{ID: chID, OrgID: org}); err != nil {
+			writeErr(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		if err := qtx.ReplaceChannelProjects(ctx, chID); err != nil {
+			slogError(w, "clear channel routing", err)
+			return
+		}
+		for _, pid := range projectIDs {
+			if err := qtx.AddChannelProject(ctx, generated.AddChannelProjectParams{
+				ChannelID: chID, ProjectID: pid,
+			}); err != nil {
+				slogError(w, "set channel routing", err)
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slogError(w, "update channel: commit", err)
+		return
+	}
+
+	s.audit(ctx, "channel.update", chID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

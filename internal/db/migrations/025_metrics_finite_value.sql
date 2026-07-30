@@ -26,15 +26,28 @@
 -- ("INSERT 0 1"). The form below was verified against that same schema: NaN,
 -- Infinity and -Infinity are all rejected, and 42.5 inserts.
 --
--- Safe to add outright: the table is empty and partitioned, so this is instant
--- and cannot fail on existing rows.
+-- Added NOT VALID on purpose. metrics is a PARTITIONED parent, so a plain
+-- ADD CONSTRAINT would take AccessExclusive on the parent AND every child and
+-- scan every existing row before it commits. This migration runs in-process at
+-- server boot, so that scan is a metric-ingest outage for its whole duration,
+-- and a single pre-existing non-finite row (say from a second write path that
+-- did not go through handleIngestMetrics) would ABORT the ADD CONSTRAINT and
+-- roll back the entire goose deploy. NOT VALID is metadata-only: it takes a
+-- brief lock, does NOT scan, and cannot fail on existing rows, yet Postgres
+-- still enforces the CHECK on every INSERT/UPDATE from this point on, so the
+-- guarantee for new writes is immediate. The existing rows are verified
+-- separately by migration 029 (VALIDATE CONSTRAINT), which scans under
+-- ShareUpdateExclusive and does not block ingest.
+--
+-- Do NOT change the CHECK expression below. The '<>' form is deliberate (see
+-- the NaN note above); the only thing this edit changes is adding NOT VALID.
 ALTER TABLE metrics
     ADD CONSTRAINT metrics_value_finite
     CHECK (
         value <> 'NaN'::double precision
         AND value <> 'Infinity'::double precision
         AND value <> '-Infinity'::double precision
-    );
+    ) NOT VALID;
 
 -- +goose Down
 ALTER TABLE metrics DROP CONSTRAINT IF EXISTS metrics_value_finite;

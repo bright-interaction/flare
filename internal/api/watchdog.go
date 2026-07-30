@@ -94,7 +94,7 @@ func (s *Server) watchdogTick(ctx context.Context) {
 		// org with no channel (or a transient channel-load error) must not
 		// spend the cooldown: otherwise the first real alert is suppressed for
 		// up to an hour after a channel is finally added.
-		channels := s.orgChannels(ctx, rule.OrgID, chanCache)
+		channels := s.projectChannels(ctx, rule.OrgID, rule.ProjectID, chanCache)
 		if len(channels) == 0 {
 			continue
 		}
@@ -137,7 +137,7 @@ func (s *Server) checkMonitors(ctx context.Context, chanCache map[string][]alert
 		return
 	}
 	for _, m := range due {
-		channels := s.orgChannels(ctx, m.OrgID, chanCache)
+		channels := s.projectChannels(ctx, m.OrgID, m.ProjectID, chanCache)
 		if len(channels) == 0 {
 			continue
 		}
@@ -172,21 +172,29 @@ func (s *Server) checkMonitors(ctx context.Context, chanCache map[string][]alert
 // orgChannels returns an org's enabled notification channels, cached per tick.
 // A load error caches an empty slice so the rule is skipped (never dispatched
 // to nothing, never a spent cooldown) and retried on the next tick.
-func (s *Server) orgChannels(ctx context.Context, org string, cache map[string][]alerts.Channel) []alerts.Channel {
-	if channels, ok := cache[org]; ok {
+// projectChannels resolves the channels for one project, honouring routing.
+//
+// The cache key is (org, project), not org: watchdog alerts are per project, so
+// caching by org alone would hand project B the channel set computed for project
+// A and silently defeat routing on every alert after the first in a tick.
+func (s *Server) projectChannels(ctx context.Context, org, project string, cache map[string][]alerts.Channel) []alerts.Channel {
+	key := org + "|" + project
+	if channels, ok := cache[key]; ok {
 		return channels
 	}
-	chans, err := s.q.ListEnabledNotificationChannelsByOrg(ctx, org)
+	chans, err := s.q.ListEnabledChannelsForProject(ctx, generated.ListEnabledChannelsForProjectParams{
+		OrgID: org, ProjectID: project,
+	})
 	if err != nil {
-		slog.Error("watchdog: load channels failed", "org", org, "error", err)
-		cache[org] = nil
+		slog.Error("watchdog: load channels failed", "org", org, "project", project, "error", err)
+		cache[key] = nil
 		return nil
 	}
 	channels := make([]alerts.Channel, 0, len(chans))
 	for _, c := range chans {
 		channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
 	}
-	cache[org] = channels
+	cache[key] = channels
 	return channels
 }
 
