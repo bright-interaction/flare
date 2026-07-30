@@ -189,6 +189,10 @@ func scrubIssueForMCP(i issueResponse) issueResponse {
 	i.Culprit = ai.Scrub(i.Culprit)
 	i.AITriage = ai.Scrub(i.AITriage)
 	i.FirstRelease = ai.Scrub(i.FirstRelease)
+	// Platform is low-density but still client-supplied free text off the ingest
+	// payload, so scrub it too: the "reads are unconditionally scrubbed at the
+	// MCP boundary" contract admits no unscrubbed free-text field.
+	i.Platform = ai.Scrub(i.Platform)
 	return i
 }
 
