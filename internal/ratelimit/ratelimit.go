@@ -92,7 +92,7 @@ func (l *Limiter) get(key string, now time.Time) *entry {
 	// Still at the ceiling after reclaiming expired windows: evict the entries
 	// closest to expiry, which are the least useful to keep.
 	if e == nil && len(l.hits) >= maxKeys {
-		l.evictOldest(evictBatch)
+		l.evictOldest(evictBatch, now)
 	}
 	e = &entry{count: 0, reset: now.Add(l.window)}
 	l.hits[key] = e
@@ -120,13 +120,32 @@ func (l *Limiter) get(key string, now time.Time) *entry {
 // the same 200k map, milliseconds. Ties at the threshold may take slightly more
 // than n entries, which is harmless: these are the entries closest to expiry
 // and the limiter re-creates any key on its next request.
-func (l *Limiter) evictOldest(n int) {
+//
+// An UNEXPIRED at-limit entry (count >= limit, reset still in the future) is a
+// live lockout and is EXEMPT from eviction. Without this a flood of junk keys
+// evicts the attacker's own auth-lockout counter: it was created first, so it
+// carries the earliest reset and this scan would pick it before any of the
+// later junk, letting the attacker resume past the cap. The exemption cannot
+// grow the map without bound because a live lockout self-expires at its reset,
+// and creating one costs the attacker the full at-limit run of requests per key
+// (five failed logins, each paying a bcrypt, for the login limiter), so exempt
+// entries can only accumulate as fast as they can be earned and drain as the
+// window passes. Expired at-limit entries are NOT exempt: they are dead weight
+// and evict like any other stale key.
+func (l *Limiter) evictOldest(n int, now time.Time) {
 	if n <= 0 || len(l.hits) == 0 {
 		return
 	}
+	exempt := func(v *entry) bool { return v.count >= l.limit && now.Before(v.reset) }
 	resets := make([]time.Time, 0, len(l.hits))
 	for _, v := range l.hits {
+		if exempt(v) {
+			continue
+		}
 		resets = append(resets, v.reset)
+	}
+	if len(resets) == 0 {
+		return
 	}
 	if n > len(resets) {
 		n = len(resets)
@@ -134,6 +153,9 @@ func (l *Limiter) evictOldest(n int) {
 	slices.SortFunc(resets, func(a, b time.Time) int { return a.Compare(b) })
 	threshold := resets[n-1]
 	for k, v := range l.hits {
+		if exempt(v) {
+			continue
+		}
 		if !v.reset.After(threshold) {
 			delete(l.hits, k)
 		}
