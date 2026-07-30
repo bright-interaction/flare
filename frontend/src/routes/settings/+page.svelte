@@ -573,13 +573,24 @@
           {#each projects ?? [] as p (p.id)}
             {@const on = (ch.project_ids ?? []).includes(p.id)}
             <button
-              onclick={() =>
-                setChannelProjects(
-                  ch,
-                  on
-                    ? (ch.project_ids ?? []).filter((x) => x !== p.id)
-                    : [...(ch.project_ids ?? []), p.id]
-                )}
+              onclick={() => {
+                const next = on
+                  ? (ch.project_ids ?? []).filter((x) => x !== p.id)
+                  : [...(ch.project_ids ?? []), p.id];
+                // Unchecking the last scoped project does not leave the channel with
+                // zero projects, it falls back to "every project" (see the note
+                // above). That is a silent scope expansion, so make it an explicit
+                // choice instead of a side effect of a checkbox.
+                if (on && next.length === 0) {
+                  if (
+                    !confirm(
+                      `Removing the last project will make this ${ch.type} channel send alerts for ALL projects, not none. Continue?`
+                    )
+                  )
+                    return;
+                }
+                setChannelProjects(ch, next);
+              }}
               class="rounded border px-1.5 py-0.5 text-[11px] transition-colors {on
                 ? 'border-amber-400/40 bg-amber-400/10 text-amber-200'
                 : 'border-zinc-800 text-zinc-500 hover:border-zinc-700'}"
