@@ -40,7 +40,7 @@ func TestEvictOldestIsNotQuadratic(t *testing.T) {
 	}
 
 	start := time.Now()
-	l.evictOldest(evictBatch)
+	l.evictOldest(evictBatch, now)
 	elapsed := time.Since(start)
 
 	const budget = 500 * time.Millisecond
