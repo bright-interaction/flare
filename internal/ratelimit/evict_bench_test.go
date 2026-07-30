@@ -25,34 +25,49 @@ import (
 // pay. Rate-limiting the 2.76ms sweep while leaving a 6.45s eviction in place
 // moved the wedge threshold without removing it.
 //
-// The budget is deliberately loose. It is not trying to pin a precise duration
-// on unknown hardware; it is asserting the difference between milliseconds and
-// seconds, which is the difference between a bounded cost and a denial of
-// service.
+// HOW this is asserted matters as much as what.
+//
+// The first version of this test measured one eviction and compared it to a
+// fixed 500ms budget. That is a statement about the machine, not about the
+// algorithm, and it went red on 2026-07-30 while two mirror publishes were
+// building on the same runner. It passed on an idle one. Worse than the noise:
+// ci-go stops at the first failing directory, so this flake sat in front of a
+// real data race in hephaestus and a broken test in sentinel and hid both for
+// as long as it had been failing.
+//
+// So assert the SHAPE of the cost instead of its magnitude. Double the entry
+// count and the batch together and measure the ratio. Quadratic work goes up
+// about 4x; the sort-based implementation goes up about 2.1x. A threshold of 3
+// sits in the gap and does not care how fast the machine is, because both
+// measurements come from the same machine in the same run.
 func TestEvictOldestIsNotQuadratic(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fills a 200k-entry map")
 	}
-	l := New(100, time.Minute)
-	now := time.Now()
-	for i := 0; i < maxKeys; i++ {
-		l.hits["k"+strconv.Itoa(i)] = &entry{count: 1, reset: now.Add(time.Duration(i) * time.Millisecond)}
+
+	small := measureEvict(maxKeys / 2)
+	large := measureEvict(maxKeys)
+	t.Logf("evict at n=%d: %s; at n=%d: %s", maxKeys/2, small, maxKeys, large)
+
+	// A measurement too small to resolve makes the ratio meaningless: at
+	// microsecond scale the timer granularity dominates and the test would
+	// report noise as a complexity regression.
+	if small < 100*time.Microsecond {
+		t.Skipf("baseline %s is below timer resolution for a meaningful ratio", small)
 	}
 
-	start := time.Now()
-	l.evictOldest(evictBatch, now)
-	elapsed := time.Since(start)
-
-	const budget = 500 * time.Millisecond
-	if elapsed > budget {
-		t.Errorf("evictOldest took %s for one batch, budget %s. This runs under the single "+
-			"global mutex on a path an unauthenticated caller controls, so every millisecond "+
-			"here is lock contention every other request pays for.", elapsed, budget)
+	const maxRatio = 3.0
+	if ratio := float64(large) / float64(small); ratio > maxRatio {
+		t.Errorf("doubling n took %.1fx longer (%s -> %s), want under %.1fx. "+
+			"Quadratic eviction is ~4x per doubling. This runs under the single global "+
+			"mutex on a path an unauthenticated caller controls, so the cost here is lock "+
+			"contention every other request pays for.", ratio, small, large, maxRatio)
 	}
-	t.Logf("evictOldest(%d) over %d entries: %s", evictBatch, maxKeys, elapsed)
 
 	// It must still actually evict, and evict the RIGHT ones: the entries
 	// closest to expiry are the least useful to keep.
+	l := filledLimiter(maxKeys)
+	l.evictOldest(evictBatch, time.Now())
 	if got := len(l.hits); got > maxKeys-evictBatch {
 		t.Errorf("evicted too few: %d entries remain, want <= %d", got, maxKeys-evictBatch)
 	}
@@ -63,4 +78,37 @@ func TestEvictOldestIsNotQuadratic(t *testing.T) {
 	if _, ok := l.hits["k"+strconv.Itoa(maxKeys-1)]; !ok {
 		t.Error("the entry with the latest reset was evicted; eviction is picking the wrong end")
 	}
+}
+
+// filledLimiter builds a limiter holding n entries whose reset times ascend with
+// the key index, so "oldest" is unambiguous and k0 is always the first to go.
+func filledLimiter(n int) *Limiter {
+	l := New(100, time.Minute)
+	now := time.Now()
+	for i := 0; i < n; i++ {
+		l.hits["k"+strconv.Itoa(i)] = &entry{count: 1, reset: now.Add(time.Duration(i) * time.Millisecond)}
+	}
+	return l
+}
+
+// measureEvict returns the FASTEST of several evictions of n/10 entries from a
+// map of n. Minimum rather than mean on purpose: scheduling noise, GC and a busy
+// neighbour only ever ADD time, so the fastest sample is both the closest
+// estimate of the real cost and the one least disturbed by whatever else the
+// runner is doing. Taking the mean would import exactly the flakiness this test
+// was rewritten to remove.
+func measureEvict(n int) time.Duration {
+	const samples = 3
+	best := time.Duration(0)
+	for i := 0; i < samples; i++ {
+		l := filledLimiter(n)
+		now := time.Now()
+		start := time.Now()
+		l.evictOldest(n/10, now)
+		d := time.Since(start)
+		if best == 0 || d < best {
+			best = d
+		}
+	}
+	return best
 }
