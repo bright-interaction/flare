@@ -114,7 +114,8 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		// could otherwise loop ok->failed transitions and spawn one unbounded
 		// detached goroutine (plus one outbound alert) per request.
 		s.goBackground("monitor-failed", 15*time.Second, func(ctx context.Context) {
-			s.dispatchToOrg(ctx, org, alerts.Notification{
+			// A monitor belongs to a project, so this respects routing.
+			s.dispatchToProject(ctx, org, pid, alerts.Notification{
 				ProjectName: name,
 				Title:       "Monitor failed: " + slug,
 				Level:       "warning",
