@@ -333,10 +333,10 @@ func TestQueriesAreTenantScoped(t *testing.T) {
 			}
 			continue
 		}
-		if !orgPredicate.MatchString(q.Body) {
+		if !orgPredicate.MatchString(scopeScanBody(q.Body)) {
 			hint := "no org_id at all"
 			if reOrgCol.MatchString(q.Body) {
-				hint = "org_id is MENTIONED but never used as a filter (a SELECT list or RETURNING clause does not scope rows)"
+				hint = "org_id is MENTIONED but never used as a filter (a SELECT list, a RETURNING clause, a JOIN ... ON condition or a comment does not scope rows)"
 			}
 			t.Errorf("%s: query %q reads/mutates tenant table(s) %v without an org_id predicate: %s. Add the filter, or an `-- ciguard:allow-unscoped <reason>` marker.",
 				q.FileName, q.Name, touched, hint)
@@ -368,7 +368,7 @@ func TestTelemetryReadsAreProjectScoped(t *testing.T) {
 		if reIsInsert.MatchString(strings.TrimSpace(q.Body)) {
 			continue // an insert stamps project_id; the org check above covers it
 		}
-		if !projectPredicate.MatchString(q.Body) {
+		if !projectPredicate.MatchString(scopeScanBody(q.Body)) {
 			t.Errorf("%s: query %q reads/mutates telemetry table(s) %v without a project_id predicate. Add it, or a `-- ciguard:allow-no-project <reason>` marker.",
 				q.FileName, q.Name, touched)
 		}
