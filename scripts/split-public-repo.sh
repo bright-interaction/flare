@@ -92,9 +92,18 @@ if [ "${#STRIP_PATHS[@]}" -gt 0 ] || [ "${#STRIP_GLOBS[@]}" -gt 0 ]; then
 fi
 
 # Fail closed: no audit report may survive into the publish payload.
-if find "$CLONE" -name 'AUDIT*.md' -not -path '*/.git/*' | grep -q .; then
+#
+# This gate used to read `find ... | grep -q .`, which fails OPEN under the
+# `set -euo pipefail` at the top of this file: grep -q exits on the FIRST
+# match, find takes SIGPIPE, the pipeline status is 141, the `if` takes the
+# false branch and the gate reports "no audit report survived" exactly when
+# there is the most to find. The next line after it is an irreversible public
+# force-push. Capture the CONTENT and test that instead; see the "producer |
+# grep -q" rule in the repo-root CLAUDE.md.
+AUDIT_SURVIVORS="$(find "$CLONE" -name 'AUDIT*.md' -not -path '*/.git/*' || true)"
+if [ -n "$AUDIT_SURVIVORS" ]; then
   echo "ERROR: an audit report survived the strip step; refusing to publish." >&2
-  find "$CLONE" -name 'AUDIT*.md' -not -path '*/.git/*' >&2
+  printf '%s\n' "$AUDIT_SURVIVORS" >&2
   exit 1
 fi
 
