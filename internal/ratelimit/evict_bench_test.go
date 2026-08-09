@@ -59,20 +59,37 @@ import (
 //	n log n        ~2.1x          ~4.5x
 //	quadratic      ~4x            ~16x
 //
-// In a normal build, measured across idle and 8-way-loaded runs, the real
-// eviction lands in 3.32x-6.47x and a deliberately quadratic workload in
-// 18.36x-52.26x. Both sit above their theoretical values because of the
-// estimator (see quietestRatio), which is fine: they shift together, and the gap
-// between them is what matters. Under -race both shift again, and much further;
-// see maxGrowthRatio, which is where the threshold lives.
+// And then do NOT hardcode what that ratio should be, because it is not a
+// property of the algorithm. It is a property of the machine, and this test has
+// now been wrong about that three times.
+//
+// The measured ratio moves with the CPU, and it moves with instrumentation. On
+// an arm64 laptop under -race the real eviction reports 8.65x-19.31x per
+// quadrupling; on the amd64 CI runner, under the same -race flag and the same
+// image, it reports 4.86x. Same code, same build flags, roughly four times the
+// answer. A threshold calibrated on either machine is wrong on the other, and a
+// threshold calibrated on a developer laptop is wrong in CI, which is the only
+// place it runs.
+//
+// So calibrate IN the run. Measure a deliberately quadratic workload alongside
+// the real one, on the same machine, in the same conditions, and compare the two
+// measurements rather than either measurement against a constant. Whatever the
+// machine does to the real eviction it does to the reference too, so the
+// comparison survives what the absolute numbers cannot.
+//
+// A healthy eviction is far cheaper-growing than the reference. A regressed one
+// converges on it: if evictOldest went back to the O(n*batch) scan, its ratio
+// and the reference's would be the same number, and the separation collapses to
+// ~1.0. The smallest separation observed on healthy code, across both machines,
+// both build modes, idle and under an 8-way CPU load, was 2.40x.
 func TestEvictOldestIsNotQuadratic(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fills a 200k-entry map")
 	}
 
-	ratio, small, large := quietestEvictRatio(maxKeys/4, maxKeys)
-	t.Logf("evict at n=%d: %s; at n=%d: %s (ratio %.2fx)",
-		maxKeys/4, small, maxKeys, large, ratio)
+	realRatio, small, large := quietestEvictRatio(maxKeys/4, maxKeys)
+	t.Logf("evict at n=%d: %s; at n=%d: %s (growth %.2fx)",
+		maxKeys/4, small, maxKeys, large, realRatio)
 
 	// A measurement too small to resolve makes the ratio meaningless: at
 	// microsecond scale the timer granularity dominates and the test would
@@ -81,12 +98,40 @@ func TestEvictOldestIsNotQuadratic(t *testing.T) {
 		t.Skipf("baseline %s is below timer resolution for a meaningful ratio", small)
 	}
 
-	if ratio > maxGrowthRatio() {
-		t.Errorf("quadrupling n took %.1fx longer (%s -> %s), want under %.1fx. "+
-			"Quadratic eviction is ~16x per quadrupling, the sort-based one ~4.5x. This "+
-			"runs under the single global mutex on a path an unauthenticated caller "+
-			"controls, so the cost here is lock contention every other request pays "+
-			"for.", ratio, small, large, maxGrowthRatio())
+	// The reference, measured here and now, on the same 4x step.
+	//
+	// Sized 12500 -> 50000 rather than smaller. A quarter of this costs a quarter
+	// of the time and was tried first, but at 6250 -> 25000 the reference itself
+	// gets noisy in an uninstrumented build (measured 10.97x-14.64x against a
+	// theoretical 16x), and a noisy DENOMINATOR is the one thing the separation
+	// check cannot tolerate: it failed a healthy tree at 1.79x. The reference has
+	// to be the steady half of the comparison.
+	const refSmallN, refLargeN = 12500, 50000
+	reference, refSmall, refLarge := quietestRatio(quadraticEvict, refSmallN, refLargeN)
+	t.Logf("quadratic reference at n=%d: %s; at n=%d: %s (growth %.2fx)",
+		refSmallN, refSmall, refLargeN, refLarge, reference)
+
+	// If the reference does not itself look quadratic, nothing on this machine is
+	// resolving growth and the comparison below means nothing. Theory says 16x and
+	// the lowest ever measured was 15.89x, so 8x is a broken-harness floor rather
+	// than a calibration.
+	const referenceFloor = 8.0
+	if reference < referenceFloor {
+		t.Fatalf("the quadratic reference measured only %.2fx per quadrupling (%s -> %s), "+
+			"under the %.1fx floor. The harness is not resolving growth on this machine, "+
+			"so it cannot judge the real eviction either. Fix the measurement before "+
+			"trusting a pass here.", reference, refSmall, refLarge, referenceFloor)
+	}
+
+	// A quadratic regression makes these two numbers converge.
+	const minSeparation = 2.0
+	if realRatio*minSeparation > reference {
+		t.Errorf("eviction grew %.2fx per quadrupling (%s -> %s) against %.2fx for a "+
+			"deliberately quadratic reference measured in the same run: only %.2fx apart, "+
+			"want at least %.1fx. Eviction runs under the single global mutex on a path an "+
+			"unauthenticated caller controls, so this cost is lock contention every other "+
+			"request pays for.",
+			realRatio, small, large, reference, reference/realRatio, minSeparation)
 	}
 
 	// It must still actually evict, and evict the RIGHT ones: the entries
@@ -103,46 +148,6 @@ func TestEvictOldestIsNotQuadratic(t *testing.T) {
 	if _, ok := l.hits["k"+strconv.Itoa(maxKeys-1)]; !ok {
 		t.Error("the entry with the latest reset was evicted; eviction is picking the wrong end")
 	}
-}
-
-// maxGrowthRatio is the largest quadrupling ratio the eviction path may show
-// before this suite calls it a complexity regression. It is TWO numbers, because
-// the race detector changes what is being measured.
-//
-// ci-go runs `go test -race`, and -race instruments every memory access through
-// shadow memory whose own cost grows with the working set. At n=50000 the real
-// eviction measures ~72ms instrumented against ~6.5ms uninstrumented, but at
-// n=200000 it measures ~1.06s against ~30ms. So the SAME sort-based algorithm
-// reports ~4.6x per quadrupling in a normal build and ~13x under -race. The
-// detector manufactures precisely the superlinear signal this test exists to
-// detect.
-//
-// That is the real reason this test kept going red, and it is why the 2026-08-08
-// failure at 3.03x-against-3.0 looked like runner load and was not: every number
-// in that CI log was an instrumented number compared against a threshold picked
-// from uninstrumented reasoning. A busy runner made it worse, but the bias was
-// already there and permanent.
-//
-// Skipping under -race would be the tidier answer and the wrong one: ci-go always
-// passes -race, so the guard would never run anywhere that matters. Instead,
-// calibrate per build. Measured over 10 runs per mode, idle and under an 8-way
-// CPU load, real eviction against the deliberately quadratic stand-in:
-//
-//	            real             quadratic        threshold
-//	normal      3.32x-6.47x      18.36x-52.26x    10
-//	-race       8.65x-19.31x     43.59x-82.12x    30
-//
-// Each threshold clears the worst real reading by ~1.5x and sits ~1.5x under the
-// best quadratic one. Load pushes BOTH sides up, which is why the binding
-// constraint on the upper bound is an idle quadratic run, not a loaded one.
-// TestQuietestEvictRatioCatchesQuadraticGrowth re-proves the lower bound in
-// whichever build it runs in, so a threshold that drifts out of its gap fails
-// there rather than silently disarming this test.
-func maxGrowthRatio() float64 {
-	if raceDetectorEnabled {
-		return 30.0
-	}
-	return 10.0
 }
 
 // filledLimiter builds a limiter holding n entries whose reset times ascend with
@@ -193,9 +198,10 @@ func measureEvict(n int) time.Duration {
 }
 
 // quietestEvictRatio reduces each size to its fastest observed eviction and
-// returns large/small. See quietestRatio for why it is built the way it is, and
-// TestQuietestEvictRatioCatchesQuadraticGrowth for the proof that it still
-// refuses a genuinely quadratic implementation.
+// returns large/small. See quietestRatio for why it is built the way it is; the
+// proof that it still refuses a genuinely quadratic implementation is the
+// reference measurement inside TestEvictOldestIsNotQuadratic, which runs the
+// same estimator over a workload that IS quadratic.
 func quietestEvictRatio(nSmall, nLarge int) (ratio float64, small, large time.Duration) {
 	return quietestRatio(measureEvict, nSmall, nLarge)
 }
@@ -224,45 +230,6 @@ func quietestRatio(measure func(int) time.Duration, nSmall, nLarge int) (ratio f
 	// sample took 64ms instead of 11ms. Reducing each side on its own discards that
 	// outlier instead of preferring it.
 	return float64(large) / float64(small), small, large
-}
-
-// TestQuietestEvictRatioCatchesQuadraticGrowth is the guard on the guard.
-//
-// quietestRatio takes a MINIMUM, which biases toward passing. That bias is
-// deliberate (see its comment) but it has a failure mode worth pinning: bias it
-// far enough and the estimator stops discriminating, and then
-// TestEvictOldestIsNotQuadratic keeps passing while the eviction path regresses
-// to the quadratic implementation it exists to refuse. A guard that cannot fail
-// is not a guard, and this test suite has shipped that mistake before.
-//
-// So run the same estimator against a workload that IS quadratic and require it
-// to report growth the real threshold would reject.
-func TestQuietestEvictRatioCatchesQuadraticGrowth(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs a deliberately quadratic workload")
-	}
-
-	// Same 4x step either way, sized for the build. Instrumentation makes this
-	// workload roughly 25x more expensive, so the pair that costs about a second
-	// normally costs ~19s under -race; a quarter of the work brings that back to
-	// ~5s without changing the verdict. Measured ratios: 18.36x-52.26x for
-	// 12500 -> 50000 uninstrumented against a threshold of 10, and 43.59x-82.12x
-	// for 6250 -> 25000 instrumented against a threshold of 30.
-	nSmall, nLarge := 12500, 50000
-	if raceDetectorEnabled {
-		nSmall, nLarge = 6250, 25000
-	}
-	ratio, small, large := quietestRatio(quadraticEvict, nSmall, nLarge)
-	t.Logf("quadratic stand-in at n=%d: %s; at n=%d: %s (ratio %.2fx, threshold %.1fx)",
-		nSmall, small, nLarge, large, ratio, maxGrowthRatio())
-
-	if ratio <= maxGrowthRatio() {
-		t.Errorf("the estimator reported %.2fx for a deliberately quadratic workload, "+
-			"which is at or under the %.1fx threshold TestEvictOldestIsNotQuadratic uses. "+
-			"It has stopped discriminating, so that test would now pass a real "+
-			"regression. Either the estimator has been biased low, or the threshold has "+
-			"been raised out of its gap.", ratio, maxGrowthRatio())
-	}
 }
 
 // quadraticEvict reproduces the SHAPE of the implementation the guard refuses:
