@@ -73,6 +73,16 @@ type Server struct {
 	// bounds an honestly-flapping cron and bounds nothing at all against someone
 	// varying the slug.
 	monitorAlertLimiter *ratelimit.Limiter
+	// issueAlertLimiter caps issue alerts PER ORG, the same way
+	// monitorAlertLimiter caps monitor alerts.
+	//
+	// The monitor path spells out this exact attack and caps it twice; the
+	// new-issue path had no equivalent at all. bgAlertWorkers is a CONCURRENCY
+	// bound, not a volume bound: it holds parallel sends at 24 and drops the
+	// overflow, so a sustained flood of unique fingerprints from one DSN key
+	// produced a sustained 24-way email/Slack/webhook send with nothing
+	// throttling total volume, into the org's own recipients.
+	issueAlertLimiter *ratelimit.Limiter
 
 	// Security-event recording: Flare's own security signals (ingest-auth
 	// rejections, login lockouts) become grouped issues in a per-org
@@ -98,6 +108,10 @@ type Server struct {
 	// human, was dropped while the optional nice-to-have ran.
 	bgSlots     map[string]chan struct{}
 	bgSlotsOnce sync.Once
+	// orgSlots counts the background slots each org currently holds, per job
+	// class, so no single tenant can occupy the shared pool.
+	orgSlotMu sync.Mutex
+	orgSlots  map[string]int
 	// bgWG tracks in-flight background jobs so shutdown can wait for them.
 	// Without it SIGTERM dropped alert dispatches that were mid-flight and
 	// abandoned AI triage calls whose token budget had already been claimed.
@@ -124,6 +138,18 @@ func (s *Server) WaitBackground(ctx context.Context) {
 const (
 	bgAlertWorkers  = 24
 	bgTriageWorkers = 8
+	// bgPerOrgWorkers is the share of a class's slots any ONE tenant may hold.
+	//
+	// A global pool with no per-tenant accounting is a pool one tenant can own.
+	// Two webhook channels pointing at a host that accepts the TCP connection
+	// and never answers, plus a flood of distinct fingerprints to that org's
+	// own DSN (1200/min is allowed), occupied every alert-eval slot
+	// continuously; goBackground then DROPS the overflow with a log line, no
+	// retry and no queue, so every OTHER tenant's new-issue, regression, spike,
+	// monitor-failed and watchdog alert silently stopped. That is the product's
+	// core promise failing under one tenant's control, and one org with a
+	// genuinely dead endpoint does it by accident.
+	bgPerOrgWorkers = 6
 )
 
 // bgPool returns the worker pool for a job class, lazily initialised so a Server
@@ -149,11 +175,30 @@ func (s *Server) bgPool(name string) chan struct{} {
 
 // goBackground runs fn on a bounded worker slot with its own detached, deadlined
 // context. Returns false (and drops fn) when every slot for that class is busy.
+//
+// Prefer goBackgroundFor for anything a tenant can trigger.
 func (s *Server) goBackground(name string, timeout time.Duration, fn func(context.Context)) bool {
+	return s.goBackgroundFor("", name, timeout, fn)
+}
+
+// goBackgroundFor is goBackground with per-org accounting on top of the global
+// pool: one tenant may hold at most bgPerOrgWorkers slots of a class, so a
+// tenant whose delivery endpoints hang cannot starve every other tenant's
+// alerts. An empty org means server-owned work with no tenant to attribute it
+// to and takes the global pool only.
+func (s *Server) goBackgroundFor(org, name string, timeout time.Duration, fn func(context.Context)) bool {
 	pool := s.bgPool(name)
+	if org != "" && !s.claimOrgSlot(org, name) {
+		slog.Warn("background work dropped: org is at its share of the pool",
+			"job", name, "org_id", org, "per_org_capacity", bgPerOrgWorkers)
+		return false
+	}
 	select {
 	case pool <- struct{}{}:
 	default:
+		if org != "" {
+			s.releaseOrgSlot(org, name)
+		}
 		slog.Warn("background work dropped: all worker slots busy", "job", name, "capacity", cap(pool))
 		return false
 	}
@@ -161,6 +206,9 @@ func (s *Server) goBackground(name string, timeout time.Duration, fn func(contex
 	go func() {
 		defer s.bgWG.Done()
 		defer func() { <-pool }()
+		if org != "" {
+			defer s.releaseOrgSlot(org, name)
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("background job panicked", "job", name, "panic", r)
@@ -171,6 +219,34 @@ func (s *Server) goBackground(name string, timeout time.Duration, fn func(contex
 		fn(ctx)
 	}()
 	return true
+}
+
+// claimOrgSlot takes one of an org's per-class slots, or reports that it has
+// none left. Counters are deleted at zero so the map cannot grow with the
+// tenant list over the process lifetime.
+func (s *Server) claimOrgSlot(org, class string) bool {
+	key := class + "\x00" + org
+	s.orgSlotMu.Lock()
+	defer s.orgSlotMu.Unlock()
+	if s.orgSlots == nil {
+		s.orgSlots = map[string]int{}
+	}
+	if s.orgSlots[key] >= bgPerOrgWorkers {
+		return false
+	}
+	s.orgSlots[key]++
+	return true
+}
+
+func (s *Server) releaseOrgSlot(org, class string) {
+	key := class + "\x00" + org
+	s.orgSlotMu.Lock()
+	defer s.orgSlotMu.Unlock()
+	if s.orgSlots[key] <= 1 {
+		delete(s.orgSlots, key)
+		return
+	}
+	s.orgSlots[key]--
 }
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
@@ -197,11 +273,16 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		// rows, was not. Keyed on IP alone because the bootstrap gate below makes
 		// the email irrelevant to the outcome once an install has a user.
 		signupLimiter: ratelimit.New(5, time.Hour),
-		testLimiter:   ratelimit.New(10, time.Minute),   // <=10 test-sends per org / min
+		testLimiter:   ratelimit.New(10, time.Minute), // <=10 test-sends per org / min
 		// <=20 monitor-failure alerts per ORG per minute, whatever the slug.
 		// Above any real estate (a flapping fleet transitions a handful of
 		// monitors a minute) and far below what a mailbox tolerates.
 		monitorAlertLimiter: ratelimit.New(20, time.Minute),
+		// <=30 issue alerts per ORG per minute. Above any real incident (an
+		// outage produces a handful of distinct fingerprints a minute, and
+		// TrySetIssueSpike already dedups per issue) and far below what a
+		// mailbox or a Slack channel tolerates.
+		issueAlertLimiter: ratelimit.New(30, time.Minute),
 
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s

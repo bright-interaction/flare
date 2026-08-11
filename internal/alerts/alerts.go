@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -88,14 +89,34 @@ func NewDispatcher(mailer *email.Mailer) *Dispatcher {
 
 // Dispatch sends the notification to every channel, best-effort. Failures are
 // recorded and logged, never propagated: alerting must not block or fail ingest.
+//
+// Channels are delivered CONCURRENTLY. Sequentially, a dispatch held its
+// background worker slot for up to 10s per channel, so one org pointing two
+// webhooks at a host that accepts the connection and never answers occupied a
+// slot for 20s at a time; 24 slots is the whole estate's alert capacity, and
+// every other tenant's alerts were then dropped with a log line, no retry and
+// no queue. Concurrent delivery makes the hold time ONE timeout instead of N,
+// which is the half of that fix that lives here. The other half is the per-org
+// slot accounting in api.goBackgroundFor and the per-org channel cap.
 func (d *Dispatcher) Dispatch(ctx context.Context, channels []Channel, n Notification) {
+	var wg sync.WaitGroup
 	for _, ch := range channels {
-		err := d.send(ctx, ch, n)
-		d.record(ctx, ch, err)
-		if err != nil {
-			slog.Warn("alert delivery failed", "type", ch.Type, "error", err)
-		}
+		wg.Add(1)
+		go func(ch Channel) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("alert delivery panicked", "type", ch.Type, "panic", r)
+				}
+			}()
+			err := d.send(ctx, ch, n)
+			d.record(ctx, ch, err)
+			if err != nil {
+				slog.Warn("alert delivery failed", "type", ch.Type, "error", err)
+			}
+		}(ch)
 	}
+	wg.Wait()
 }
 
 // DispatchOne sends to a single channel and RETURNS the delivery result, so the
@@ -222,8 +243,20 @@ func slackPayload(n Notification) []byte {
 			{"type": "mrkdwn", "text": slackEsc(meta)},
 		}},
 	}
+	// The fallback `text` is what Slack renders as the push and desktop
+	// notification, i.e. the FIRST thing the on-call engineer sees, and it was
+	// the one string here that skipped slackEsc. So an exception value of
+	// "boom <!channel> <https://evil.example|Click here to reset your Flare
+	// password>" paged the whole channel and showed an attacker-chosen
+	// hyperlink with attacker-chosen label text, attributed to the Flare app,
+	// while the blocks they only see after opening the message showed it
+	// escaped. Anyone holding a project DSN key can write that string.
+	//
+	// Built from the already-escaped values rather than escaped again here, so
+	// the fallback cannot drift from the blocks a second time.
+	escReason, escTitle := slackEsc(reason), slackEsc(n.Title)
 	b, _ := json.Marshal(map[string]any{
-		"text":   fmt.Sprintf("[Flare] %s: %s", reason, n.Title),
+		"text":   fmt.Sprintf("[Flare] %s: %s", escReason, escTitle),
 		"blocks": blocks,
 	})
 	return b

@@ -155,6 +155,14 @@ func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	org := orgIDFrom(ctx)
 
+	// Workspace erasure is the single most destructive action in the product
+	// and it was the one with no record at all. An audit_log row is no use
+	// here: audit_log is FK-linked to orgs, so the cascade below deletes the
+	// evidence along with everything else. The durable record is the server
+	// log, written BEFORE the transaction so it exists whether or not the
+	// delete succeeds.
+	slog.Warn("workspace erasure requested", "org_id", org, "actor_user_id", userIDFrom(ctx))
+
 	// Right-to-erasure must reach the raw telemetry. events/logs/spans are
 	// partitioned hot tables with NO foreign key to projects/orgs, so the
 	// ON DELETE CASCADE from orgs never touches them (this is exactly why

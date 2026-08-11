@@ -119,5 +119,6 @@ func (s *Server) handleCreateGithubIssue(w http.ResponseWriter, r *http.Request)
 		slogError(w, "github issue: save url", err)
 		return
 	}
+	s.audit(ctx, "github.issue_create", issue.ID)
 	writeJSON(w, http.StatusCreated, map[string]string{"github_url": url})
 }

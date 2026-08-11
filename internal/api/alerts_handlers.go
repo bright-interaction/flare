@@ -159,15 +159,42 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap the channels an org may hold. Every enabled channel is one more
+	// outbound delivery per alert, each holding a background slot for up to its
+	// own timeout, so "how many channels can one tenant create" was directly
+	// "how much of the shared alert pool can one tenant occupy". Nothing capped
+	// it: CountEnabledNotificationChannelsByOrg existed and only the dashboard
+	// read it.
+	org := orgIDFrom(r.Context())
+	if n, cerr := s.q.CountEnabledNotificationChannelsByOrg(r.Context(), org); cerr == nil && n >= maxChannelsPerOrg {
+		writeErr(w, http.StatusConflict, "this workspace already has the maximum number of notification channels")
+		return
+	} else if cerr != nil {
+		slogError(w, "count channels", cerr)
+		return
+	}
+
 	ch, err := s.q.CreateNotificationChannel(r.Context(), generated.CreateNotificationChannelParams{
-		ID: id.New(), OrgID: orgIDFrom(r.Context()), Type: req.Type, Config: s.encryptChannelConfig(req.Type, req.Config), Enabled: true,
+		ID: id.New(), OrgID: org, Type: req.Type, Config: s.encryptChannelConfig(req.Type, req.Config), Enabled: true,
 	})
 	if err != nil {
 		slogError(w, "create channel", err)
 		return
 	}
+	// Audited, because creating a channel is how an alert stream is redirected.
+	// channel.update was audited and create and delete were not, which is the
+	// one operation on this resource that IS recorded being the least
+	// sensitive: a compromised member could point a new webhook at their own
+	// endpoint, mirror every alert in the org (including the
+	// sensitive-data-in-payload security events), and the audit log an admin
+	// reads showed nothing. Deleting it afterwards was equally invisible.
+	s.audit(r.Context(), "channel.create", ch.ID+" ("+ch.Type+")")
 	writeJSON(w, http.StatusCreated, s.toChannelResponse(ch))
 }
+
+// maxChannelsPerOrg bounds the fan-out of one alert. Well above any real
+// workspace (a handful of Slack channels, a webhook, a couple of mailboxes).
+const maxChannelsPerOrg = 25
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	chans, err := s.q.ListNotificationChannelsByOrg(r.Context(), orgIDFrom(r.Context()))
@@ -221,9 +248,11 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	if derr := s.dispatcher.DispatchOne(r.Context(), alerts.Channel{
 		ID: ch.ID, OrgID: ch.OrgID, Type: ch.Type, Config: s.decryptChannelConfig(ch.Type, ch.Config),
 	}, n); derr != nil {
+		s.audit(r.Context(), "channel.test", ch.ID+" (failed)")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": derr.Error()})
 		return
 	}
+	s.audit(r.Context(), "channel.test", ch.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -316,6 +345,7 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "create alert rule", err)
 		return
 	}
+	s.audit(r.Context(), "alert_rule.create", rule.Type+" on "+proj.Slug)
 	writeJSON(w, http.StatusCreated, alertRuleResponse{
 		ID: rule.ID, Name: rule.Name, Type: rule.Type, Threshold: rule.Threshold, WindowMinutes: rule.WindowMinutes, Enabled: rule.Enabled,
 	})
@@ -335,12 +365,14 @@ func (s *Server) handleDeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "alert rule not found")
 		return
 	}
+	s.audit(r.Context(), "alert_rule.delete", chi.URLParam(r, "ruleID"))
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	channelID := chi.URLParam(r, "id")
 	rows, err := s.q.DeleteNotificationChannel(r.Context(), generated.DeleteNotificationChannelParams{
-		ID:    chi.URLParam(r, "id"),
+		ID:    channelID,
 		OrgID: orgIDFrom(r.Context()),
 	})
 	if err != nil {
@@ -351,6 +383,7 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "channel not found")
 		return
 	}
+	s.audit(r.Context(), "channel.delete", channelID)
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
