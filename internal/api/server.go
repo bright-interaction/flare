@@ -56,6 +56,10 @@ type Server struct {
 	// resetLimiter caps password-reset requests per email+IP so /forgot-password
 	// cannot be used for account enumeration or reset-email bombing.
 	resetLimiter *ratelimit.Limiter
+
+	// signupLimiter caps registration attempts per IP so the one unauthenticated
+	// route that creates rows cannot be looped.
+	signupLimiter *ratelimit.Limiter
 	// testLimiter caps per-org "send test notification" calls so the test route
 	// cannot be looped to spam a configured recipient or probe public hosts.
 	testLimiter *ratelimit.Limiter
@@ -188,6 +192,11 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
 		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
 		resetLimiter:  ratelimit.New(5, 15*time.Minute), // <=5 reset requests per (email, ip) / 15m
+		// <=5 registration attempts per IP / hour. Login and password reset were
+		// both limited; register, the only unauthenticated route that WRITES two
+		// rows, was not. Keyed on IP alone because the bootstrap gate below makes
+		// the email irrelevant to the outcome once an install has a user.
+		signupLimiter: ratelimit.New(5, time.Hour),
 		testLimiter:   ratelimit.New(10, time.Minute),   // <=10 test-sends per org / min
 		// <=20 monitor-failure alerts per ORG per minute, whatever the slug.
 		// Above any real estate (a flapping fleet transitions a handful of

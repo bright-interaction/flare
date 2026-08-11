@@ -44,6 +44,18 @@ type Config struct {
 	// It is now on everywhere unless this is explicitly set, which is what a
 	// developer pointing at a local Ollama/vLLM needs.
 	AllowPrivateAIEndpoint bool
+
+	// AllowSignup keeps POST /api/auth/register open after the first user
+	// exists. Off by default: the route is the self-host FIRST-RUN path, and
+	// users.sql has carried a CountUsers query documented as the "pre-auth
+	// bootstrap check (is this a fresh install)" since it was written, with no
+	// caller. Open registration on a deployed instance lets anyone mint an org,
+	// and every new org carries its own INGEST_RATE_PER_MIN budget, so ingest
+	// capacity scales with the number of orgs an attacker creates.
+	//
+	// Turn it on only where public signup is the product.
+	AllowSignup bool
+
 	S3Endpoint             string
 	S3Bucket               string
 	S3AccessKey            string
@@ -103,6 +115,7 @@ func Load() (Config, error) {
 		// object-storage credentials in the clear.
 		S3UseSSL:               !isFalse(env("FLARE_PARQUET_S3_USE_SSL", "true")),
 		AllowPrivateAIEndpoint: isTrue(env("FLARE_ALLOW_PRIVATE_AI_ENDPOINT", "")),
+		AllowSignup:            isTrue(env("FLARE_ALLOW_SIGNUP", "")),
 		SessionKey:             env("SESSION_KEY", ""),
 		CSRFKey:                env("CSRF_KEY", ""),
 		SessionLifetime:        time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,
