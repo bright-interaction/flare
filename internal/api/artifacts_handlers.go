@@ -77,6 +77,7 @@ func (s *Server) handleUploadSourceMap(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "upsert source map", err)
 		return
 	}
+	s.audit(r.Context(), "sourcemap.upload", row.Release+"/"+row.Name)
 	writeJSON(w, http.StatusCreated, artifactResponse{
 		ID: row.ID, Release: row.Release, Name: row.Name, Size: int64(row.Size), CreatedAt: row.CreatedAt.Time,
 	})
@@ -111,5 +112,6 @@ func (s *Server) handleDeleteSourceMap(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "source map not found")
 		return
 	}
+	s.audit(r.Context(), "sourcemap.delete", chi.URLParam(r, "artifactID"))
 	writeJSON(w, http.StatusNoContent, nil)
 }

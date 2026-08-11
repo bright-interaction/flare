@@ -113,7 +113,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		// DSN-authed check-in endpoint, so anyone holding a project's public key
 		// could otherwise loop ok->failed transitions and spawn one unbounded
 		// detached goroutine (plus one outbound alert) per request.
-		s.goBackground("monitor-failed", 15*time.Second, func(ctx context.Context) {
+		s.goBackgroundFor(org, "monitor-failed", 15*time.Second, func(ctx context.Context) {
 			// A monitor belongs to a project, so this respects routing.
 			s.dispatchToProject(ctx, org, pid, alerts.Notification{
 				ProjectName: name,
@@ -192,6 +192,7 @@ func (s *Server) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "could not create monitor (slug may already exist)")
 		return
 	}
+	s.audit(r.Context(), "monitor.create", req.Slug)
 	writeJSON(w, http.StatusCreated, s.toMonitorResponse(m, proj))
 }
 
@@ -229,6 +230,7 @@ func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
+	s.audit(r.Context(), "monitor.update", m.Slug)
 	writeJSON(w, http.StatusOK, s.toMonitorResponse(m, proj))
 }
 
@@ -244,5 +246,6 @@ func (s *Server) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "monitor not found")
 		return
 	}
+	s.audit(r.Context(), "monitor.delete", chi.URLParam(r, "id"))
 	writeJSON(w, http.StatusNoContent, nil)
 }

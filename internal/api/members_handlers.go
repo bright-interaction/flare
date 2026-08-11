@@ -236,6 +236,7 @@ func (s *Server) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "invite not found")
 		return
 	}
+	s.audit(r.Context(), "invite.revoke", chi.URLParam(r, "inviteID"))
 	writeJSON(w, http.StatusNoContent, nil)
 }
 

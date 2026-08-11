@@ -312,7 +312,7 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 	if !pageableLevel(issue.Level) {
 		return
 	}
-	s.goBackground("alert-eval", 15*time.Second, func(ctx context.Context) {
+	s.goBackgroundFor(project.OrgID, "alert-eval", 15*time.Second, func(ctx context.Context) {
 		rules, err := s.q.ListEnabledAlertRulesByProject(ctx, generated.ListEnabledAlertRulesByProjectParams{
 			ProjectID: project.ID,
 			OrgID:     project.OrgID,
@@ -367,6 +367,16 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 			return
 		}
 
+		// Per-org volume cap, matching the monitor path. Checked AFTER the
+		// reason is settled so an event that was never going to alert does not
+		// consume the org's budget, and BEFORE the channel load so a throttled
+		// alert costs one query rather than a fan-out.
+		if !s.issueAlertLimiter.Allow("issue-alert-org:" + project.OrgID) {
+			slog.Warn("issue alert throttled: org is over its per-minute alert budget",
+				"org_id", project.OrgID, "project_id", project.ID, "issue_id", issue.ID)
+			return
+		}
+
 		// Respect per-project routing: an issue alert is about this project.
 		chans, err := s.q.ListEnabledChannelsForProject(ctx, generated.ListEnabledChannelsForProjectParams{
 			OrgID: project.OrgID, ProjectID: project.ID,
@@ -378,20 +388,29 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 		for _, c := range chans {
 			channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
 		}
-		// When the detector flagged this issue, the title and culprit ARE the
-		// leaked value. Alerts go out over email/Slack/webhooks, i.e. off-box to
-		// third parties, so scrub before dispatch: otherwise the feature that
-		// exists to catch a leaked secret is what forwards it.
-		alertTitle, alertCulprit := issue.Title, issue.Culprit
-		if sensitive != "" {
-			alertTitle, alertCulprit = ai.Scrub(alertTitle), ai.Scrub(alertCulprit)
-		}
+		// Alerts leave the tenant boundary: three of the four channel types
+		// (webhook, slack, email) deliver to a third party. So the scrub is
+		// UNCONDITIONAL, the way recordSecurityEvent already does it.
+		//
+		// It used to be gated on `sensitive != ""`, which is the detector's
+		// verdict, and the detector is strictly narrower than the scrubber it
+		// then calls. Seven of eight measured shapes walked straight through:
+		// a postgres URL with credentials, an Authorization header, an
+		// assignment-style secret, a plain database password, a customer email,
+		// a customer IP, a GitLab PAT. Every one of them is a string an
+		// anonymous holder of a DSN public key can put in an exception message,
+		// so the gate turned "catch a leaked secret" into "forward an arbitrary
+		// string to an endpoint the attacker chose". The comment two lines up
+		// said exactly what would happen; the condition made it happen.
+		//
+		// detectSensitive decides whether to raise the badge. It never decides
+		// whether redaction runs.
 		s.dispatcher.Dispatch(ctx, channels, alerts.Notification{
 			ProjectName: project.Name,
 			IssueID:     issue.ID,
-			Title:       alertTitle,
+			Title:       ai.Scrub(issue.Title),
 			Level:       issue.Level,
-			Culprit:     alertCulprit,
+			Culprit:     ai.Scrub(issue.Culprit),
 			EventCount:  issue.EventCount,
 			Reason:      reason,
 			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/issues/" + issue.ID,
