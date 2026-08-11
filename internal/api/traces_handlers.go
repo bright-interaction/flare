@@ -52,14 +52,14 @@ func (s *Server) persistSpans(ctx context.Context, project *generated.Project, s
 		params = append(params, generated.InsertSpansParams{
 			// CopyFrom is all-or-nothing: sanitize every client-supplied string
 			// so one bad byte cannot fail the whole batch forever under retry.
-			TraceID:      ingest.SanitizeText(sp.TraceID),
-			SpanID:       ingest.SanitizeText(sp.SpanID),
-			ParentSpanID: ingest.SanitizeText(sp.ParentSpanID),
+			TraceID:      ingest.SanitizeColumn(sp.TraceID),
+			SpanID:       ingest.SanitizeColumn(sp.SpanID),
+			ParentSpanID: ingest.SanitizeColumn(sp.ParentSpanID),
 			ProjectID:    project.ID,
 			OrgID:        project.OrgID,
-			Name:         ingest.SanitizeText(sp.Name),
-			Kind:         ingest.SanitizeText(sp.Kind),
-			Status:       ingest.SanitizeText(sp.Status),
+			Name:         ingest.SanitizeColumn(sp.Name),
+			Kind:         ingest.SanitizeColumn(sp.Kind),
+			Status:       ingest.SanitizeColumn(sp.Status),
 			StartTime:    pgtype.Timestamptz{Time: sp.Start, Valid: true},
 			EndTime:      pgtype.Timestamptz{Time: sp.End, Valid: true},
 			DurationMs:   sp.DurationMs,

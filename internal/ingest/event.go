@@ -149,7 +149,7 @@ func ParseEvent(raw []byte) (NormalizedEvent, error) {
 	if ev.Culprit == "" {
 		ev.Culprit = culprit(ev.Frames)
 	}
-	return ev, nil
+	return bound(ev), nil
 }
 
 // Fingerprint is the stable grouping key. Exceptions group by type + in-app
@@ -178,6 +178,73 @@ func (e NormalizedEvent) Fingerprint() string {
 // so an 8 MiB exception message became an 8 MiB title that the issues list then
 // returned 50 of per request.
 const titleMax = 200
+
+// Byte bounds for the rest of the client-supplied text.
+//
+// The reasoning behind titleMax applies unchanged to every column beside it, and
+// for a while it was applied to none of them. `TEXT NOT NULL` in the migration
+// is not a bound: Postgres TEXT holds up to 1 GB. Culprit, level and platform
+// sit in the same issues row that the list endpoint returns 50 of; message,
+// exception_value, release and environment sit on the events row; release is
+// also upserted into the releases table and listed in the UI. Each was capped
+// only by the 8 MiB body limit, which is a per-request bound, not a per-row one.
+//
+// The caps are sized to the semantics of each column rather than uniformly, so
+// truncation cannot bite real data: a level is an enum word, a platform is a
+// language name, a culprit is a module path.
+const (
+	// maxTextBytes is the universal backstop applied by SanitizeText, so a
+	// pillar that never goes near ParseEvent (logs, spans, metrics, and whatever
+	// is added next) still cannot write an unbounded column. Deliberately
+	// generous: a log body legitimately carries a formatted stack trace.
+	maxTextBytes = 16 << 10
+
+	maxMessageBytes        = 8 << 10
+	maxExceptionValueBytes = 8 << 10
+	maxExceptionTypeBytes  = 256
+	maxCulpritBytes        = 500
+	maxFrameTextBytes      = 500
+	maxReleaseBytes        = 200
+	maxEnvironmentBytes    = 64
+	maxPlatformBytes       = 64
+	maxEventIDBytes        = 64
+	maxTraceIDBytes        = 64
+	maxLevelBytes          = 32
+)
+
+// bound clips every stored string on the event to its column's cap.
+//
+// Called at the end of ParseEvent so the whole package returns a bounded
+// NormalizedEvent by construction, rather than leaving each persist site to
+// remember. Frames are included: they are stored in the stacktrace JSONB and
+// culprit() copies a module and function straight into the issues row.
+//
+// This runs BEFORE Fingerprint is ever computed, so grouping is over bounded
+// text too. That is a deliberate behaviour change at the pathological end: two
+// events whose messages match for the first 8 KiB and diverge after now group
+// together, where before they did not. For an error tracker that is the better
+// answer, and hashing megabytes per event was itself work one request bought.
+func bound(ev NormalizedEvent) NormalizedEvent {
+	ev.EventID = truncate(ev.EventID, maxEventIDBytes)
+	ev.Level = truncate(ev.Level, maxLevelBytes)
+	ev.Platform = truncate(ev.Platform, maxPlatformBytes)
+	ev.Environment = truncate(ev.Environment, maxEnvironmentBytes)
+	ev.Release = truncate(ev.Release, maxReleaseBytes)
+	ev.Title = truncate(ev.Title, titleMax)
+	ev.Culprit = truncate(ev.Culprit, maxCulpritBytes)
+	ev.ExceptionType = truncate(ev.ExceptionType, maxExceptionTypeBytes)
+	ev.ExceptionValue = truncate(ev.ExceptionValue, maxExceptionValueBytes)
+	ev.Message = truncate(ev.Message, maxMessageBytes)
+	ev.TraceID = truncate(ev.TraceID, maxTraceIDBytes)
+	ev.SpanID = truncate(ev.SpanID, maxTraceIDBytes)
+	for i := range ev.Frames {
+		ev.Frames[i].Filename = truncate(ev.Frames[i].Filename, maxFrameTextBytes)
+		ev.Frames[i].Function = truncate(ev.Frames[i].Function, maxFrameTextBytes)
+		ev.Frames[i].Module = truncate(ev.Frames[i].Module, maxFrameTextBytes)
+		ev.Frames[i].ContextLine = truncate(ev.Frames[i].ContextLine, maxFrameTextBytes)
+	}
+	return ev
+}
 
 func title(e NormalizedEvent) string {
 	if e.ExceptionType != "" {
@@ -266,6 +333,26 @@ func SanitizeText(s string) string {
 		s = strings.ToValidUTF8(s, "�")
 	}
 	return s
+}
+
+// SanitizeColumn is SanitizeText plus the universal length backstop, for text on
+// its way into a TEXT COLUMN.
+//
+// Every pillar meets here: persistLogs, persistSpans and persistMetrics write
+// their columns through it, and ParseEvent applies tighter per-column caps on
+// top for the events path. That makes this the one place a bound covers a pillar
+// added later by someone who never reads this file.
+//
+// It is deliberately NOT folded into SanitizeText, because SanitizeText also
+// runs over every string leaf and key inside the payload JSONB. That document is
+// what an operator opens to see the request body and breadcrumbs behind an
+// error, and quietly clipping its contents would damage the one job the product
+// has. A column and a document want different answers.
+//
+// Truncation runs last so it cuts a valid string rather than manufacturing the
+// invalid UTF-8 SanitizeText just removed.
+func SanitizeColumn(s string) string {
+	return truncate(SanitizeText(s), maxTextBytes)
 }
 
 // SanitizeJSON makes a client-supplied JSON document safe for a JSONB column.

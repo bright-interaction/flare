@@ -209,6 +209,50 @@ func TestEveryPersistPathSpendsTheBudget(t *testing.T) {
 	}
 }
 
+// TestEveryPersistPathBoundsItsColumns is the same guard for text length.
+//
+// SanitizeText makes client text safe for Postgres (NUL bytes, invalid UTF-8)
+// but says nothing about how long it may be, and "TEXT NOT NULL" in the
+// migration is not a bound either: Postgres TEXT holds up to 1 GB. SanitizeColumn
+// is the variant that also bounds, and a persist path that reaches for the wrong
+// one writes an unbounded column while looking entirely correct at the call site.
+func TestEveryPersistPathBoundsItsColumns(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	fset := token.NewFileSet()
+
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || !strings.HasPrefix(fn.Name.Name, "persist") {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if ok && sel.Sel.Name == "SanitizeText" {
+					t.Errorf("%s: %s writes a column through SanitizeText, which does not "+
+						"bound length; use SanitizeColumn", name, fn.Name.Name)
+				}
+				return true
+			})
+		}
+	}
+}
+
 func callsBudgetTake(fn *ast.FuncDecl) bool {
 	spends := false
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
