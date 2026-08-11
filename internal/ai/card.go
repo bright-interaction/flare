@@ -53,6 +53,24 @@ var cardRanges = []cardRange{
 	{81, 81, 2, []int{16, 17, 18, 19}}, // RuPay
 }
 
+// TextHasPaymentCard reports whether text contains a payment card number.
+//
+// This exists so the ingest detector and the scrubber share the CANDIDATE
+// SEARCH as well as the decision. Sharing only IsPaymentCard was not enough:
+// the two files kept their own candidate regexes, and they were not the same
+// pattern. api/sensitive.go had no \b anchors while ai/scrub.go had them on
+// both ends, so "id=abc4111111111111111def" flagged the issue as carrying a
+// card while every scrub site the flag turns on left the digits intact. The
+// operator got a "sensitive data" badge pointing at a value served in full.
+func TextHasPaymentCard(text string) bool {
+	for _, m := range reCardCandidate.FindAllString(text, -1) {
+		if IsPaymentCard(onlyDigits(m)) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsPaymentCard reports whether a digits-only string is plausibly a real
 // payment card: a known issuer prefix, a PAN length that issuer mints, AND a
 // valid Luhn check digit. All three are required. See the file comment for why
