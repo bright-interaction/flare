@@ -152,9 +152,22 @@ func (s *Server) handleListIssueEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// If the issue is flagged sensitive, scrub the leaked value out of the
-	// event text before returning it. Missing issue -> no scrub (no events).
-	issue, _ := s.store.GetIssue(ctx, issueID, org)
-	writeJSON(w, http.StatusOK, s.toEventResponses(ctx, issueID, org, events, issue.Sensitive != ""))
+	// event text before returning it.
+	//
+	// Fails CLOSED on anything except a genuine not-found. Discarding the error
+	// left issue.Sensitive as "" and returned the events unscrubbed, so the
+	// PERMISSIVE branch was the error branch: a transient database blip served
+	// the flagged value in full. A missing issue means there are no events to
+	// scrub, so that one case is safe to treat as unflagged.
+	issue, err := s.store.GetIssue(ctx, issueID, org)
+	sensitive := issue.Sensitive != ""
+	if err != nil {
+		var nf telemetry.ErrNotFound
+		if !errors.As(err, &nf) {
+			sensitive = true
+		}
+	}
+	writeJSON(w, http.StatusOK, s.toEventResponses(ctx, issueID, org, events, sensitive))
 }
 
 // toEventResponses maps stored events to the clean API shape, symbolicating
