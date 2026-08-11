@@ -14,8 +14,8 @@ import (
 // database work and holds it for the whole 15-minute window, so each distinct
 // oversized email retained its own multi-megabyte key:
 //
-//	  500 unauthenticated POSTs ->   483 MiB retained
-//	 2000 unauthenticated POSTs ->  1924 MiB retained
+//	 500 unauthenticated POSTs ->   483 MiB retained
+//	2000 unauthenticated POSTs ->  1924 MiB retained
 //
 // Linear, unauthenticated, and no account needed. maxKeys does not help because
 // it bounds the NUMBER of entries, not their size, so 200,000 entries of 1 MiB

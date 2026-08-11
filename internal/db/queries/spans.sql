@@ -14,7 +14,10 @@ SELECT
        ORDER BY (r.parent_span_id = '') DESC, r.start_time
        LIMIT 1) AS root_name
 FROM spans s
-WHERE s.project_id = $1 AND s.org_id = $2
+-- A time predicate, not just a LIMIT. Without one this grouped the WHOLE spans
+-- table for the project before the LIMIT could discard anything, so the cost
+-- grew with retention rather than with the page size.
+WHERE s.project_id = $1 AND s.org_id = $2 AND s.start_time >= sqlc.arg(since)
 -- project_id MUST be grouped: the root_name subquery correlates on it, and
 -- Postgres rejects an ungrouped outer reference ("subquery uses ungrouped
 -- column"). The WHERE pins it to one value, so this does not change cardinality.
@@ -25,6 +28,16 @@ LIMIT $3;
 -- name: GetTraceSpans :many
 -- project_id scoped: trace_id is not project-unique (a distributed trace can
 -- span projects), so org_id alone would mix projects' spans.
+--
+-- CAPPED. This was the only read tool with no result cap at any layer, while
+-- its siblings cap at 200 (list_issues), 20 (get_issue events), 500
+-- (search_logs) and 5000 points (query_metrics). trace_id is chosen by the
+-- caller and ingest is rate-limited per DSN key rather than per trace, so spans
+-- accumulate under one id: 100,000 spans in one trace rendered a single MCP
+-- tool result of 52 MB, about 13.7M tokens, after running the scrubber over
+-- every name and attributes document. On a self-host that allocation lands on
+-- a shared process, so it takes ingest down for every other tenant.
 SELECT * FROM spans
 WHERE trace_id = $1 AND project_id = $2 AND org_id = $3
-ORDER BY start_time;
+ORDER BY start_time
+LIMIT $4;

@@ -418,6 +418,13 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
+				// Capped like every sibling read tool. Projects are
+				// member-created rather than attacker-created, so this is the
+				// weakest of the caps, but "the one tool with no limit" is how
+				// get_trace got to 52 MB.
+				if len(projects) > maxProjectsListed {
+					projects = projects[:maxProjectsListed]
+				}
 				out := make([]map[string]string, 0, len(projects))
 				for _, p := range projects {
 					out = append(out, map[string]string{"id": p.ID, "name": p.Name, "slug": p.Slug, "platform": p.Platform})
@@ -595,7 +602,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
-				spans, err := s.store.GetTraceSpans(ctx, a.TraceID, proj.ID, org)
+				spans, err := s.store.GetTraceSpans(ctx, a.TraceID, proj.ID, org, maxTraceSpans)
 				if err != nil {
 					return nil, err
 				}
@@ -626,8 +633,12 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				// label the surface untrusted like every sibling read tool.
 				return map[string]any{
 					"spans": out,
-					"trust": "untrusted",
-					"note":  untrustedTelemetryNote,
+					// Truncation is stated. A partial trace presented as a whole
+					// one is the same silent-corruption shape as a scrubber that
+					// rewrites a field without saying so.
+					"truncated": len(spans) == maxTraceSpans,
+					"trust":     "untrusted",
+					"note":      untrustedTelemetryNote,
 				}, nil
 			},
 		},
@@ -647,7 +658,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					return nil, err
 				}
 				if a.Name == "" {
-					names, err := s.store.ListMetricNames(ctx, proj.ID, org)
+					names, err := s.store.ListMetricNames(ctx, proj.ID, org, maxMetricNames)
 					if err != nil {
 						return nil, err
 					}

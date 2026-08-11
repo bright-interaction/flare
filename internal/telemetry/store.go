@@ -21,9 +21,16 @@ type Store interface {
 	GetIssue(ctx context.Context, issueID, orgID string) (Issue, error)
 	ListEventsByIssue(ctx context.Context, issueID, orgID string, limit int32) ([]Event, error)
 	SearchLogs(ctx context.Context, projectID, orgID string, f LogFilter) ([]Log, error)
-	ListTraces(ctx context.Context, projectID, orgID string, limit int32) ([]TraceSummary, error)
-	GetTraceSpans(ctx context.Context, traceID, projectID, orgID string) ([]Span, error)
-	ListMetricNames(ctx context.Context, projectID, orgID string) ([]MetricName, error)
+	ListTraces(ctx context.Context, projectID, orgID string, since time.Time, limit int32) ([]TraceSummary, error)
+	// GetTraceSpans returns at most limit spans. The trace id is caller-chosen
+	// and ingest is rate-limited per DSN key rather than per trace, so an
+	// uncapped read let one accumulated trace return 52 MB in a single tool
+	// result.
+	GetTraceSpans(ctx context.Context, traceID, projectID, orgID string, limit int32) ([]Span, error)
+	// ListMetricNames returns at most limit distinct names. Metric-name
+	// cardinality is attacker-chosen: 364,722 distinct names came out of one
+	// 8 MiB request.
+	ListMetricNames(ctx context.Context, projectID, orgID string, limit int32) ([]MetricName, error)
 	QueryMetricSeries(ctx context.Context, projectID, orgID, name string, since time.Time, limit int32) ([]MetricPoint, error)
 	Healthy(ctx context.Context) bool
 }

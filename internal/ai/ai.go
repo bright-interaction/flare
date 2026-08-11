@@ -44,7 +44,20 @@ func New(guardSSRF bool) *Client {
 			},
 		}).DialContext
 	}
-	return &Client{http: &http.Client{Timeout: 60 * time.Second, Transport: tr}}
+	return &Client{http: &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: tr,
+		// No redirects, matching internal/alerts. Go strips Authorization on a
+		// cross-host redirect but does NOT strip custom headers, and the
+		// "anthropic" format sends the org's key as x-api-key, so a provider
+		// (or anyone who can answer as one) could bounce the request and
+		// collect the credential at the next hop. netguard still blocks
+		// internal targets per dial, so this is credential leak rather than
+		// SSRF, which is why it stayed open: the SSRF fix did not cover it.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("redirects disabled")
+		},
+	}}
 }
 
 type Config struct {

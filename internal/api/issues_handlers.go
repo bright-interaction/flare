@@ -349,12 +349,22 @@ func truncateRunes(s string, n int) string {
 	return s[:n]
 }
 
+// maxOffset ceilings OFFSET paging. An unbounded offset reaches
+// events.sql's `OFFSET $4`, and Postgres computes and discards every row up to
+// it, so ?offset=2000000000 is a full scan the caller pays nothing for. Nobody
+// pages 100 issues at a time to row 500,000; beyond this the answer is a
+// filter, not another page.
+const maxOffset = 10000
+
 func parsePaging(r *http.Request) (limit, offset int32) {
 	limit, offset = 50, 0
 	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 100 {
 		limit = int32(v)
 	}
 	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		if v > maxOffset {
+			v = maxOffset
+		}
 		offset = int32(v)
 	}
 	return limit, offset

@@ -10,6 +10,7 @@ import (
 	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
+	"github.com/bright-interaction/flare/internal/netguard"
 )
 
 type channelResponse struct {
@@ -130,16 +131,28 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		var cfg struct {
 			URL string `json:"url"`
 		}
-		if json.Unmarshal(req.Config, &cfg) != nil || !strings.HasPrefix(cfg.URL, "http") {
-			writeErr(w, http.StatusBadRequest, "webhook channel requires config.url (http/https)")
+		if json.Unmarshal(req.Config, &cfg) != nil {
+			writeErr(w, http.StatusBadRequest, "webhook channel requires config.url (https)")
+			return
+		}
+		// strings.HasPrefix(cfg.URL, "http") accepted "http://169.254.169.254"
+		// and, being a prefix test, "httpfoo" too. The dial guard blocks the
+		// delivery, so what shipped was a channel the UI shows as configured
+		// whose every alert fails silently.
+		if err := netguard.ValidatePublicURL(cfg.URL); err != nil {
+			writeErr(w, http.StatusBadRequest, "webhook config.url "+err.Error())
 			return
 		}
 	case "slack":
 		var cfg struct {
 			WebhookURL string `json:"webhook_url"`
 		}
-		if json.Unmarshal(req.Config, &cfg) != nil || !strings.HasPrefix(cfg.WebhookURL, "https://") {
+		if json.Unmarshal(req.Config, &cfg) != nil {
 			writeErr(w, http.StatusBadRequest, "slack channel requires config.webhook_url (https incoming webhook)")
+			return
+		}
+		if err := netguard.ValidatePublicURL(cfg.WebhookURL); err != nil {
+			writeErr(w, http.StatusBadRequest, "slack config.webhook_url "+err.Error())
 			return
 		}
 	case "email":

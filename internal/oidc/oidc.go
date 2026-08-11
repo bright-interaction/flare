@@ -43,6 +43,14 @@ var httpClient = &http.Client{
 			},
 		}).DialContext,
 	},
+	// No redirects. The token request carries client_secret in its body, and a
+	// discovery document that redirects is indistinguishable from one that
+	// moves the credential somewhere else. sameAuthority pins the discovered
+	// endpoints to the issuer host; a redirect would step outside that check
+	// after it had already passed.
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return errors.New("redirects disabled")
+	},
 }
 
 // sameAuthority reports whether endpoint is https and its host equals the

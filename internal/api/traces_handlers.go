@@ -80,7 +80,8 @@ type traceSummary struct {
 }
 
 func (s *Server) handleListTraces(w http.ResponseWriter, r *http.Request) {
-	traces, err := s.store.ListTraces(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), 100)
+	traces, err := s.store.ListTraces(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()),
+		time.Now().Add(-maxTraceWindowHours*time.Hour), 100)
 	if err != nil {
 		slogError(w, "list traces", err)
 		return
@@ -106,8 +107,30 @@ type spanResponse struct {
 	Attributes   json.RawMessage `json:"attributes"`
 }
 
+// Read caps, declared once and shared by the REST and MCP surfaces.
+//
+// They used to be per-surface literals and they had drifted: REST list_issues
+// 100 against MCP 200, REST metric points 1000 against MCP 5000, a log window
+// of 2160h against an analytics view over the same table at 720h. get_trace and
+// list_projects had no cap at all. A cap that differs by surface is not a cap,
+// it is a routing decision an attacker gets to make.
+const (
+	// maxTraceSpans is generous for a real distributed trace and bounds the
+	// pathological one: 100,000 spans under a caller-chosen trace id rendered
+	// a 52 MB tool result.
+	maxTraceSpans = 2000
+	// maxTraceWindowHours bounds ListTraces, which grouped the whole spans
+	// table for the project before any LIMIT could apply.
+	maxTraceWindowHours = 24 * 30
+	// maxMetricNames bounds a GROUP BY over a caller-chosen, unbounded-
+	// cardinality column.
+	maxMetricNames = 5000
+	// maxProjectsListed bounds the last uncapped read tool.
+	maxProjectsListed = 500
+)
+
 func (s *Server) handleGetTrace(w http.ResponseWriter, r *http.Request) {
-	spans, err := s.store.GetTraceSpans(r.Context(), chi.URLParam(r, "traceID"), chi.URLParam(r, "id"), orgIDFrom(r.Context()))
+	spans, err := s.store.GetTraceSpans(r.Context(), chi.URLParam(r, "traceID"), chi.URLParam(r, "id"), orgIDFrom(r.Context()), maxTraceSpans)
 	if err != nil {
 		slogError(w, "get trace", err)
 		return
@@ -124,6 +147,12 @@ func (s *Server) handleGetTrace(w http.ResponseWriter, r *http.Request) {
 			StartUnixMs: sp.StartUnixMs, DurationMs: sp.DurationMs,
 			Attributes: sp.Attributes,
 		})
+	}
+	// Say so when the trace was cut, rather than presenting a partial trace as
+	// a whole one.
+	if len(spans) == maxTraceSpans {
+		writeJSON(w, http.StatusOK, map[string]any{"spans": out, "truncated": true, "limit": maxTraceSpans})
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
