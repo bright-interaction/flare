@@ -146,6 +146,34 @@ func (q *Queries) GetProjectByDsnID(ctx context.Context, dsnID string) (*Project
 	return &i, err
 }
 
+const getProjectByDsnIDScoped = `-- name: GetProjectByDsnIDScoped :one
+SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects WHERE dsn_id = $1 AND org_id = $2
+`
+
+type GetProjectByDsnIDScopedParams struct {
+	DsnID string `json:"dsn_id"`
+	OrgID string `json:"org_id"`
+}
+
+// The authenticated resolver behind /projects/dsn/<id>. The unscoped sibling
+// above answers an ANONYMOUS caller, which made /go/{dsnID} an existence oracle
+// over the 12-digit dsn id space and handed out the internal cuid with it.
+func (q *Queries) GetProjectByDsnIDScoped(ctx context.Context, arg GetProjectByDsnIDScopedParams) (*Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByDsnIDScoped, arg.DsnID, arg.OrgID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.Slug,
+		&i.Platform,
+		&i.PublicKey,
+		&i.CreatedAt,
+		&i.DsnID,
+	)
+	return &i, err
+}
+
 const getProjectByID = `-- name: GetProjectByID :one
 SELECT id, org_id, name, slug, platform, public_key, created_at, dsn_id FROM projects
 WHERE id = $1

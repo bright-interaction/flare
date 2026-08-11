@@ -27,6 +27,12 @@ SELECT * FROM projects WHERE org_id = $1 AND slug = $2;
 -- name: GetProjectByDsnID :one
 SELECT * FROM projects WHERE dsn_id = $1;
 
+-- name: GetProjectByDsnIDScoped :one
+-- The authenticated resolver behind /projects/dsn/<id>. The unscoped sibling
+-- above answers an ANONYMOUS caller, which made /go/{dsnID} an existence oracle
+-- over the 12-digit dsn id space and handed out the internal cuid with it.
+SELECT * FROM projects WHERE dsn_id = $1 AND org_id = $2;
+
 -- name: DeleteProject :execrows
 -- Cascades to issues + alert_rules via ON DELETE CASCADE. events/logs/spans
 -- have no FK (partitioned hot tables), so the handler deletes those explicitly

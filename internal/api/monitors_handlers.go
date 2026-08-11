@@ -37,8 +37,12 @@ func (s *Server) checkinURL(proj *generated.Project, slug string) string {
 	return strings.TrimRight(s.cfg.BaseURL, "/") + "/api/" + proj.DsnID + "/checkins/" + slug + "?sentry_key=" + proj.PublicKey
 }
 
-func (s *Server) toMonitorResponse(m *generated.Monitor, proj *generated.Project) monitorResponse {
-	return monitorResponse{
+// toMonitorResponse renders a monitor. checkin_url embeds the project's ingest
+// public key, so it is the same write credential as the DSN and is omitted for
+// a viewer for the same reason: GET /api/{dsnID}/checkins/{slug} CREATES the
+// monitor, so a read-only credential could persist rows.
+func (s *Server) toMonitorResponse(ctx context.Context, m *generated.Monitor, proj *generated.Project) monitorResponse {
+	out := monitorResponse{
 		ID:              m.ID,
 		Slug:            m.Slug,
 		Name:            m.Name,
@@ -47,8 +51,11 @@ func (s *Server) toMonitorResponse(m *generated.Monitor, proj *generated.Project
 		LastPingAt:      tsPtr(m.LastPingAt),
 		LastStatus:      m.LastStatus,
 		State:           m.State,
-		CheckinURL:      s.checkinURL(proj, m.Slug),
 	}
+	if roleAtLeast(roleFrom(ctx), "member") {
+		out.CheckinURL = s.checkinURL(proj, m.Slug)
+	}
+	return out
 }
 
 // handleCheckin records a scheduled-job check-in. DSN-authed (same as ingest),
@@ -144,7 +151,7 @@ func (s *Server) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]monitorResponse, 0, len(mons))
 	for _, m := range mons {
-		out = append(out, s.toMonitorResponse(m, proj))
+		out = append(out, s.toMonitorResponse(r.Context(), m, proj))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -193,7 +200,7 @@ func (s *Server) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r.Context(), "monitor.create", req.Slug)
-	writeJSON(w, http.StatusCreated, s.toMonitorResponse(m, proj))
+	writeJSON(w, http.StatusCreated, s.toMonitorResponse(r.Context(), m, proj))
 }
 
 func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +238,7 @@ func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r.Context(), "monitor.update", m.Slug)
-	writeJSON(w, http.StatusOK, s.toMonitorResponse(m, proj))
+	writeJSON(w, http.StatusOK, s.toMonitorResponse(r.Context(), m, proj))
 }
 
 func (s *Server) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
