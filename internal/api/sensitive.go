@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/ingest"
 )
 
@@ -44,7 +45,7 @@ func detectSensitive(ev ingest.NormalizedEvent) []string {
 		found["secret"] = true
 	}
 	for _, m := range reCardCandidate.FindAllString(text, -1) {
-		if luhnValid(m) {
+		if ai.IsPaymentCard(onlyDigits(m)) {
 			found["card"] = true
 			break
 		}
@@ -60,29 +61,19 @@ func detectSensitive(ev ingest.NormalizedEvent) []string {
 	return kinds
 }
 
-// luhnValid strips non-digits from s and reports whether the remaining 13-19
-// digit number passes the Luhn checksum (the property real card numbers have).
-// This keeps the card detector from firing on ordinary long integers.
-func luhnValid(s string) bool {
-	digits := make([]int, 0, len(s))
+// onlyDigits strips every non-digit from s.
+//
+// Card recognition itself lives in ai.IsPaymentCard, deliberately shared with
+// the scrubber rather than reimplemented here. This file used to carry its own
+// luhnValid, and the two copies had to agree for a flagged issue and a scrubbed
+// title to tell the operator the same story. They agreed on being wrong: both
+// gated on Luhn alone, which one in ten arbitrary digit runs passes.
+func onlyDigits(s string) string {
+	b := make([]byte, 0, len(s))
 	for _, r := range s {
 		if r >= '0' && r <= '9' {
-			digits = append(digits, int(r-'0'))
+			b = append(b, byte(r))
 		}
 	}
-	if len(digits) < 13 || len(digits) > 19 {
-		return false
-	}
-	sum, dbl := 0, false
-	for i := len(digits) - 1; i >= 0; i-- {
-		d := digits[i]
-		if dbl {
-			if d *= 2; d > 9 {
-				d -= 9
-			}
-		}
-		sum += d
-		dbl = !dbl
-	}
-	return sum%10 == 0
+	return string(b)
 }
