@@ -61,3 +61,53 @@ func TestProductionLoadsWithAllSecrets(t *testing.T) {
 		t.Fatalf("production Load with all secrets set should succeed, got: %v", err)
 	}
 }
+
+// TestSignupIsClosedByDefault locks the default. POST /api/auth/register is the
+// self-host first-run path and users.sql has carried the CountUsers bootstrap
+// check since it was written; the route shipped ungated anyway, so anyone could
+// mint an org on any deployment. The gate is only as good as this default: if
+// FLARE_ALLOW_SIGNUP ever reads as true when unset, the gate is a no-op again.
+func TestSignupIsClosedByDefault(t *testing.T) {
+	prodEnv(t, "")
+	t.Setenv("FLARE_ALLOW_SIGNUP", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AllowSignup {
+		t.Fatal("AllowSignup must default to false: open registration is not a safe default for a deployed instance")
+	}
+}
+
+// TestSignupOptInSpellings keeps the escape hatch usable. An operator who wants
+// public signup must be able to turn it on the same way every other boolean in
+// this file is turned on, or they will set it, see no effect, and conclude the
+// flag is broken.
+func TestSignupOptInSpellings(t *testing.T) {
+	for _, v := range []string{"true", "1", "yes", "on", "TRUE", " True "} {
+		t.Run(v, func(t *testing.T) {
+			prodEnv(t, "")
+			t.Setenv("FLARE_ALLOW_SIGNUP", v)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !cfg.AllowSignup {
+				t.Errorf("FLARE_ALLOW_SIGNUP=%q did not enable signup", v)
+			}
+		})
+	}
+	for _, v := range []string{"", "false", "0", "no", "off", "maybe"} {
+		t.Run("not/"+v, func(t *testing.T) {
+			prodEnv(t, "")
+			t.Setenv("FLARE_ALLOW_SIGNUP", v)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.AllowSignup {
+				t.Errorf("FLARE_ALLOW_SIGNUP=%q must NOT enable signup", v)
+			}
+		})
+	}
+}
