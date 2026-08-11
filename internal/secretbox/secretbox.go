@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -88,21 +89,41 @@ func (c *Cipher) Encrypt(plaintext string) string {
 	return prefix + base64.StdEncoding.EncodeToString(ct)
 }
 
-// Decrypt reverses Encrypt. A value without the version prefix is legacy
-// plaintext and returned unchanged; a value that cannot be decrypted is also
-// returned unchanged (never panics, never drops the row).
-func (c *Cipher) Decrypt(s string) string {
+// ErrUndecryptable is returned when a value carries the version prefix and
+// cannot be opened: a rotated or mistyped FLARE_SECRET_KEY, a backup restored
+// against a differently-keyed instance, or a corrupted column.
+var ErrUndecryptable = errors.New("secretbox: value cannot be decrypted with the configured key")
+
+// Decrypt reverses Encrypt.
+//
+// It FAILS CLOSED. It used to return the input on every failure path, which
+// meant a wrong key made it hand back the CIPHERTEXT as if it were the
+// credential. The server booted green and then:
+//
+//	ai_handlers     sent   x-api-key: enc:v1:<base64>   to the BYOAI endpoint
+//	github_handlers sent   Authorization: Bearer enc:v1:... to api.github.com
+//	oidc_handlers   POSTed client_secret=enc:v1:...     to the IdP
+//
+// so the ciphertext of every org's live credential ended up in three third
+// parties' access logs, every integration was silently broken, and nothing in
+// any error named the cause. This is the estate's own recorded shape: a read
+// helper that returns a fallback on failure.
+//
+// A value WITHOUT the prefix is legacy plaintext from before encryption was
+// introduced and is still returned as-is; that is a real state on deployed
+// databases, not an error.
+func (c *Cipher) Decrypt(s string) (string, error) {
 	if !strings.HasPrefix(s, prefix) || !c.Enabled() {
-		return s
+		return s, nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, prefix))
 	if err != nil || len(raw) < c.aead.NonceSize() {
-		return s
+		return "", ErrUndecryptable
 	}
 	nonce, ct := raw[:c.aead.NonceSize()], raw[c.aead.NonceSize():]
 	pt, err := c.aead.Open(nil, nonce, ct, nil)
 	if err != nil {
-		return s
+		return "", ErrUndecryptable
 	}
-	return string(pt)
+	return string(pt), nil
 }

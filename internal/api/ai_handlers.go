@@ -238,7 +238,16 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 		"Only use what the report supports; do not invent details. " +
 		untrustedRule
 
-	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: s.secrets.Decrypt(cfg.ApiKey), Model: cfg.Model, Format: cfg.Format}, system, fenced)
+	// Fail closed. Returning the ciphertext on a decrypt failure sent
+	// "x-api-key: enc:v1:<base64>" to the org's provider, putting the encrypted
+	// form of their live credential in a third party's access log and breaking
+	// every triage with no error naming why.
+	apiKey, err := s.secrets.Decrypt(cfg.ApiKey)
+	if err != nil {
+		slog.Error("ai triage: stored provider key cannot be decrypted; check FLARE_SECRET_KEY", "org", org, "error", err)
+		return "", false, errTriageNotConfigured
+	}
+	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: apiKey, Model: cfg.Model, Format: cfg.Format}, system, fenced)
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", errTriageEndpoint, err)
 	}

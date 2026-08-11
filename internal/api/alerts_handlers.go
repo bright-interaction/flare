@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -83,8 +84,21 @@ func mapChannelSecret(chType string, cfg json.RawMessage, fn func(string) string
 func (s *Server) encryptChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
 	return mapChannelSecret(chType, cfg, s.secrets.Encrypt)
 }
+
+// decryptChannelConfig opens the stored webhook secret at the dispatch
+// boundary. An undecryptable value becomes EMPTY rather than the ciphertext:
+// posting "enc:v1:<base64>" at a third-party webhook host both leaks the
+// encrypted credential and looks like a working delivery. Empty makes the send
+// fail, which is what a broken key should look like.
 func (s *Server) decryptChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
-	return mapChannelSecret(chType, cfg, s.secrets.Decrypt)
+	return mapChannelSecret(chType, cfg, func(v string) string {
+		out, err := s.secrets.Decrypt(v)
+		if err != nil {
+			slog.Error("alert channel secret cannot be decrypted; check FLARE_SECRET_KEY", "error", err)
+			return ""
+		}
+		return out
+	})
 }
 
 // redactChannelConfig decrypts then masks the webhook secret before it is
@@ -92,7 +106,13 @@ func (s *Server) decryptChannelConfig(chType string, cfg json.RawMessage) json.R
 // short suffix for identification, mirroring the "shown once" rule for API keys
 // and the GitHub token. Email destinations and the empty log config are kept.
 func (s *Server) redactChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
-	return mapChannelSecret(chType, cfg, func(v string) string { return maskURL(s.secrets.Decrypt(v)) })
+	return mapChannelSecret(chType, cfg, func(v string) string {
+		out, err := s.secrets.Decrypt(v)
+		if err != nil {
+			return "(unreadable: check FLARE_SECRET_KEY)"
+		}
+		return maskURL(out)
+	})
 }
 
 // maskURL keeps scheme://host and a 4-char suffix, dropping the secret path so

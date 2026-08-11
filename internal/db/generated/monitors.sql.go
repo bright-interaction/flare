@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countMonitorsByProject = `-- name: CountMonitorsByProject :one
+SELECT count(*) FROM monitors WHERE project_id = $1 AND org_id = $2
+`
+
+type CountMonitorsByProjectParams struct {
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+func (q *Queries) CountMonitorsByProject(ctx context.Context, arg CountMonitorsByProjectParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countMonitorsByProject, arg.ProjectID, arg.OrgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createMonitor = `-- name: CreateMonitor :one
 INSERT INTO monitors (id, org_id, project_id, slug, name, interval_seconds, grace_seconds)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -217,6 +233,30 @@ func (q *Queries) ListMonitorsByProject(ctx context.Context, arg ListMonitorsByP
 		return nil, err
 	}
 	return items, nil
+}
+
+const pruneUnconfiguredMonitors = `-- name: PruneUnconfiguredMonitors :execrows
+DELETE FROM monitors
+WHERE project_id = $1 AND org_id = $2
+  AND interval_seconds = 0
+  AND (last_ping_at IS NULL OR last_ping_at < $3)
+`
+
+type PruneUnconfiguredMonitorsParams struct {
+	ProjectID  string             `json:"project_id"`
+	OrgID      string             `json:"org_id"`
+	LastPingAt pgtype.Timestamptz `json:"last_ping_at"`
+}
+
+// Deletes auto-created monitors (interval_seconds = 0, i.e. never configured by
+// a human) that have not pinged inside the window. A configured monitor is
+// never touched: its whole purpose is to alert when it STOPS pinging.
+func (q *Queries) PruneUnconfiguredMonitors(ctx context.Context, arg PruneUnconfiguredMonitorsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneUnconfiguredMonitors, arg.ProjectID, arg.OrgID, arg.LastPingAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const trySetMonitorMissing = `-- name: TrySetMonitorMissing :execrows
