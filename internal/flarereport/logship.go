@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bright-interaction/flare/internal/ai"
 )
 
 // logShipMinDefault is the default floor for shipping a log line to Flare.
@@ -289,7 +291,21 @@ func (h *flareSlogHandler) ship(r slog.Record) {
 	var attrs json.RawMessage
 	if len(m) > 0 {
 		if b, err := json.Marshal(m); err == nil && len(b) <= logShipMaxAttrs {
-			attrs = b
+			// Second layer, over the VALUES. The key layer above cannot catch
+			// this: the key used everywhere in Go error logging is "error",
+			// which is not and must not be a sensitive key, yet the value under
+			// it is routinely a *url.Error whose exported URL field carries the
+			// endpoint and its ?token= query. slog.Error("...", "error", err)
+			// therefore shipped webhook credentials to the shared logs store in
+			// cleartext, which is a different trust boundary from the process
+			// that logged them.
+			//
+			// ScrubJSON walks string leaves only and always returns valid JSON.
+			// Do NOT swap it for a bare Scrub over the marshalled bytes: the
+			// number rules rewrite unquoted numeric values and corrupt the
+			// document, which is a failure this codebase has already shipped
+			// once.
+			attrs = json.RawMessage(ai.ScrubJSON(b))
 		}
 	}
 	h.shipper.enqueue(nativeLogLine{
