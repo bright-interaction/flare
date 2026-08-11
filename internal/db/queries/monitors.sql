@@ -10,6 +10,18 @@ SET last_ping_at = EXCLUDED.last_ping_at,
     state = EXCLUDED.state
 RETURNING *;
 
+-- name: CountMonitorsByProject :one
+SELECT count(*) FROM monitors WHERE project_id = $1 AND org_id = $2;
+
+-- name: PruneUnconfiguredMonitors :execrows
+-- Deletes auto-created monitors (interval_seconds = 0, i.e. never configured by
+-- a human) that have not pinged inside the window. A configured monitor is
+-- never touched: its whole purpose is to alert when it STOPS pinging.
+DELETE FROM monitors
+WHERE project_id = $1 AND org_id = $2
+  AND interval_seconds = 0
+  AND (last_ping_at IS NULL OR last_ping_at < $3);
+
 -- name: GetMonitorBySlug :one
 SELECT * FROM monitors WHERE project_id = $1 AND org_id = $2 AND slug = $3;
 

@@ -232,7 +232,13 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		ssoError(w, r, "sso_discovery")
 		return
 	}
-	accessToken, err := provider.Exchange(ctx, cfg.ClientID, s.secrets.Decrypt(cfg.ClientSecret), code, s.oidcRedirectURI())
+	clientSecret, err := s.secrets.Decrypt(cfg.ClientSecret)
+	if err != nil {
+		slog.Error("sso: stored client secret cannot be decrypted; check FLARE_SECRET_KEY", "error", err)
+		ssoError(w, r, "sso_exchange")
+		return
+	}
+	accessToken, err := provider.Exchange(ctx, cfg.ClientID, clientSecret, code, s.oidcRedirectURI())
 	if err != nil {
 		ssoError(w, r, "sso_exchange")
 		return

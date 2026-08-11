@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,6 +30,17 @@ type monitorResponse struct {
 	State           string  `json:"state"`
 	CheckinURL      string  `json:"checkin_url"`
 }
+
+const (
+	// maxMonitorsPerProject bounds auto-created monitors. Far above any real
+	// cron fleet and far below the 1.7M rows a day a DSN key could otherwise
+	// mint.
+	maxMonitorsPerProject = 500
+	// monitorPruneAfter is how long an unconfigured monitor may stay quiet
+	// before the cap sweep removes it. A CONFIGURED monitor is never pruned:
+	// going quiet is exactly what it exists to report.
+	monitorPruneAfter = 30 * 24 * time.Hour
+)
 
 // checkinURL is the DSN-authed URL a scheduled job pings each run. The public
 // key is the ingest key (already embedded in the project DSN), so carrying it as
@@ -83,6 +95,43 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		ProjectID: project.ID, OrgID: project.OrgID, Slug: slug,
 	}); err == nil {
 		priorState = prior.State
+	}
+
+	// Bound the monitors one project can accumulate.
+	//
+	// UpsertMonitorCheckin CREATES the monitor on first ping and the slug is
+	// caller-chosen on a DSN-authed endpoint, so the slug regex bounded LENGTH
+	// and nothing bounded CARDINALITY: at 1200 requests/min per key that is 1.7M
+	// monitor rows a day per project. ListDueMonitors then sequentially scans
+	// that table every five minutes forever (EXTRACT(EPOCH ...) per row, so no
+	// index applies) and ListMonitorsByProject returns all of them to the
+	// dashboard.
+	//
+	// The cap only applies to a slug that does not exist yet, so an established
+	// monitor never stops being able to check in. Before refusing, sweep the
+	// unconfigured ones that have gone quiet: an honest project that churned
+	// through job names self-heals instead of wedging.
+	if priorState == "" {
+		n, cerr := s.q.CountMonitorsByProject(r.Context(), generated.CountMonitorsByProjectParams{
+			ProjectID: project.ID, OrgID: project.OrgID,
+		})
+		if cerr == nil && n >= maxMonitorsPerProject {
+			if _, perr := s.q.PruneUnconfiguredMonitors(r.Context(), generated.PruneUnconfiguredMonitorsParams{
+				ProjectID: project.ID, OrgID: project.OrgID,
+				LastPingAt: pgtype.Timestamptz{Time: now.Add(-monitorPruneAfter), Valid: true},
+			}); perr != nil {
+				slog.Warn("prune unconfigured monitors failed", "project_id", project.ID, "error", perr)
+			}
+			n, cerr = s.q.CountMonitorsByProject(r.Context(), generated.CountMonitorsByProjectParams{
+				ProjectID: project.ID, OrgID: project.OrgID,
+			})
+			if cerr == nil && n >= maxMonitorsPerProject {
+				slog.Warn("monitor check-in refused: project is at its monitor cap",
+					"project_id", project.ID, "slug", slug, "cap", maxMonitorsPerProject)
+				writeErr(w, http.StatusTooManyRequests, "this project has reached its monitor limit")
+				return
+			}
+		}
 	}
 
 	if _, err := s.q.UpsertMonitorCheckin(r.Context(), generated.UpsertMonitorCheckinParams{

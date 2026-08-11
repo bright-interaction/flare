@@ -29,8 +29,15 @@ func slogError(w http.ResponseWriter, msg string, err error) {
 	writeErr(w, http.StatusInternalServerError, "internal error")
 }
 
+// maxJSONBody bounds a decoded request body.
+const maxJSONBody = 1 << 20
+
 func decodeJSON(r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
+	// nil ResponseWriter is safe (the cap is still enforced) but loses the
+	// connection-close signal, so an oversized body is read to the cap and the
+	// client is never told why. There is one body-cap idiom in this tree now
+	// and it is this one, spelled the same way everywhere.
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxJSONBody))
 	dec.DisallowUnknownFields()
 	return dec.Decode(dst)
 }

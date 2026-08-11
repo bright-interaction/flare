@@ -96,6 +96,11 @@ func userErr(format string, a ...any) error { return mcpUserError{msg: fmt.Sprin
 
 const mcpProtocol = "2025-03-26"
 
+// maxMCPBody bounds one JSON-RPC request. Generous for a tool call; the point
+// is that the cap is enforced by a reader that ERRORS rather than one that
+// truncates.
+const maxMCPBody = 1 << 20
+
 type mcpRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      any             `json:"id,omitempty"`
@@ -150,8 +155,18 @@ func (s *Server) mcpHandler() http.Handler {
 			mcpWriteErr(w, nil, -32600, "not authenticated")
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		// MaxBytesReader, not io.LimitReader. LimitReader TRUNCATES silently,
+		// so a request one byte over the cap arrived as a valid prefix of JSON
+		// and was reported to the caller as "-32700 invalid JSON": the client
+		// is told its request was malformed when the real answer is "too
+		// large". MaxBytesReader errors instead, and signals the connection.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMCPBody))
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				mcpWriteErr(w, nil, -32600, "request body too large")
+				return
+			}
 			mcpWriteErr(w, nil, -32700, "read body failed")
 			return
 		}

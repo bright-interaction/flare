@@ -80,6 +80,14 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 
 	var lastID string
 	var events, stored int
+	// Transactions are counted the same way events are. They were the ONE
+	// ingest path that discarded data on a DB error and still answered 200: a
+	// Sentry SDK reads 200 as "accepted" and drops the payload, so every
+	// database blip permanently lost tracing data on the Sentry-wire path,
+	// while the OTLP trace path beside it returned 500 and the client retried.
+	// This is the prior audit's "4xx on ingest failure" fix applied to the
+	// events arm and not to the arm next to it.
+	var transactions, storedTransactions int
 	for _, item := range items {
 		switch item.Type {
 		case "transaction":
@@ -91,9 +99,12 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("envelope transaction parse failed", "project_id", project.ID, "error", perr)
 				continue
 			}
+			transactions++
 			if perr := s.persistSpans(r.Context(), project, spans, budget); perr != nil {
 				slog.Warn("persist transaction spans failed", "project_id", project.ID, "error", perr)
+				continue
 			}
+			storedTransactions++
 		case "event":
 			events++
 			eid, ierr := s.ingestOne(r.Context(), project, item.Payload)
@@ -115,6 +126,13 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 	// because the SDK cannot retry individual items.
 	if events > 0 && stored == 0 {
 		writeErr(w, http.StatusServiceUnavailable, "no event in the envelope could be stored")
+		return
+	}
+	// Same rule for an envelope that carried only transactions. A parse failure
+	// is the client's problem and is not counted here; a persist failure is
+	// ours, and telling the SDK "accepted" is how the span tree is lost.
+	if events == 0 && transactions > 0 && storedTransactions == 0 {
+		writeErr(w, http.StatusServiceUnavailable, "no transaction in the envelope could be stored")
 		return
 	}
 	budget.report(project.ID, "spans")

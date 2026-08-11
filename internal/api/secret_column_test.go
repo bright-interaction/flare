@@ -33,7 +33,7 @@ func TestSecretColumnForUpdate(t *testing.T) {
 
 	const realKey = "sk-live-provider-key"
 	atRest := c.Encrypt(realKey)
-	if atRest == realKey || c.Decrypt(atRest) != realKey {
+	if plain, derr := c.Decrypt(atRest); atRest == realKey || derr != nil || plain != realKey {
 		t.Fatalf("ABORT: setup did not produce usable ciphertext (%q)", atRest)
 	}
 
@@ -42,7 +42,7 @@ func TestSecretColumnForUpdate(t *testing.T) {
 	if col == realKey {
 		t.Fatal("supplied key was stored in cleartext")
 	}
-	if got := c.Decrypt(col); got != realKey {
+	if got := mustDecrypt(t, c, col); got != realKey {
 		t.Fatalf("supplied key did not round-trip: %q", got)
 	}
 
@@ -52,7 +52,7 @@ func TestSecretColumnForUpdate(t *testing.T) {
 	if col != atRest {
 		t.Fatal("stored secret was re-encrypted on a keep-existing update: double-wrapped and orphaned")
 	}
-	if got := c.Decrypt(col); got != realKey {
+	if got := mustDecrypt(t, c, col); got != realKey {
 		t.Fatalf("stored secret no longer decrypts after a keep-existing update: %q", got)
 	}
 
@@ -60,7 +60,7 @@ func TestSecretColumnForUpdate(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		col = secretColumnForUpdate(c, "", col)
 	}
-	if got := c.Decrypt(col); got != realKey {
+	if got := mustDecrypt(t, c, col); got != realKey {
 		t.Fatalf("secret broke after repeated keep-existing updates: %q", got)
 	}
 
@@ -71,10 +71,10 @@ func TestSecretColumnForUpdate(t *testing.T) {
 	if col == lifted {
 		t.Fatal("ORACLE OPEN: attacker-supplied ciphertext stored verbatim; the read path would decrypt the victim's secret")
 	}
-	if got := c.Decrypt(col); got != lifted {
+	if got := mustDecrypt(t, c, col); got != lifted {
 		t.Fatalf("attacker input should come back as their own literal string, got %q", got)
 	}
-	if strings.Contains(c.Decrypt(col), "victim-github-token") {
+	if strings.Contains(mustDecrypt(t, c, col), "victim-github-token") {
 		t.Fatal("ORACLE OPEN: the victim's plaintext was returned")
 	}
 
@@ -82,4 +82,18 @@ func TestSecretColumnForUpdate(t *testing.T) {
 	if strings.Contains(col, strings.TrimPrefix(lifted, "enc:v1:")) {
 		t.Fatal("ORACLE OPEN: attacker blob embedded verbatim in the stored column")
 	}
+}
+
+// mustDecrypt opens a stored column and fails the test if it cannot, so a
+// broken decrypt reads as a failure rather than as a passing assertion against
+// the ciphertext. Decrypt fails CLOSED now (audit M9): it used to return the
+// input on every failure path, which sent "enc:v1:<base64>" to three third
+// parties as if it were the credential.
+func mustDecrypt(t *testing.T, c *secretbox.Cipher, col string) string {
+	t.Helper()
+	out, err := c.Decrypt(col)
+	if err != nil {
+		t.Fatalf("stored column could not be decrypted: %v", err)
+	}
+	return out
 }
