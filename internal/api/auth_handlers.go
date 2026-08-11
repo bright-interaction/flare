@@ -348,7 +348,39 @@ func (s *Server) sendResetEmail(to, link string) {
 }
 
 // handleResetPassword consumes a valid token and sets the new password.
+//
+// Rate limited per IP, before the body is parsed. /forgot-password above has had
+// a limiter since it shipped and this route, the other half of the same flow,
+// had none of any kind. That split is the whole bug: the mint was capped and the
+// SPEND was not, and the spend is the half that runs bcrypt.
+//
+// Two costs sat open. Every request, token or no token, bought an
+// unauthenticated Postgres lookup. And a request carrying a LIVE token bought a
+// bcrypt at cost 12, the most expensive call in the binary. The live-token case
+// is not the one-shot it looks like: there is no transaction here and the SELECT
+// below takes no lock, so the whole bcrypt runs inside the window between
+// reading the token and invalidating it. N concurrent requests replaying one
+// forwarded link therefore all pass the lookup and all run bcrypt. One link out
+// of a mailbox bought as many bcrypts as the caller could open sockets for.
+//
+// The key is the IP and NOTHING the caller sends. The token stays out of it,
+// hashed or not, for the reason handleAcceptInvite spells out: a caller-chosen
+// key component mints a fresh budget per request instead of capping anything.
+// That also rules out reusing resetLimiter, whose key folds in an email address
+// this request does not carry.
+//
+// What this does NOT defend is token guessing. The token is 32 random bytes, so
+// entropy is the control there and this limit adds nothing to it. The cost is
+// the point.
 func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	// Before decodeJSON: a limit the body parser can skip is not a limit,
+	// because an unparseable body is the cheapest thing an attacker can send.
+	if !s.resetConsumeLimiter.Allow("reset-consume:" + clientIP(r)) {
+		w.Header().Set("Retry-After", "900")
+		writeErr(w, http.StatusTooManyRequests, "too many reset attempts, try again later")
+		return
+	}
+
 	var req struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`

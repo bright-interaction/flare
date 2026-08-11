@@ -56,6 +56,11 @@ type Server struct {
 	// resetLimiter caps password-reset requests per email+IP so /forgot-password
 	// cannot be used for account enumeration or reset-email bombing.
 	resetLimiter *ratelimit.Limiter
+	// resetConsumeLimiter caps the OTHER half of the reset flow, per IP.
+	// /forgot-password only MINTS a link; /auth/reset-password is the step that
+	// spends it, and it is the one that runs bcrypt. Limiting the mint and not
+	// the spend leaves the expensive half open, which is exactly how it shipped.
+	resetConsumeLimiter *ratelimit.Limiter
 
 	// signupLimiter caps registration attempts per IP so the one unauthenticated
 	// route that creates rows cannot be looped.
@@ -197,6 +202,23 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
 		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
 		resetLimiter:  ratelimit.New(5, 15*time.Minute), // <=5 reset requests per (email, ip) / 15m
+		// <=10 reset COMPLETIONS per IP / 15m, keyed on IP alone. resetLimiter
+		// above covers /forgot-password and cannot cover this route: its key
+		// folds in the email address, and this request carries no address, only
+		// an opaque token, which must stay out of the key for the same reason
+		// inviteLimiter keeps its own token out (a caller-chosen component is a
+		// fresh budget, not a ceiling).
+		//
+		// A real reset costs ONE request. The two retries a person actually
+		// makes, a password under 8 characters and a mismatched confirmation,
+		// are both caught in the browser (minlength={8} and a password !==
+		// confirm check in reset-password/+page.svelte), so neither reaches
+		// here. Ten rather than resetLimiter's five because this bucket has no
+		// email in it to spread a shared address across: a whole office behind
+		// one NAT lands in a single bucket, and 15 minutes matches the token's
+		// own life so a wrongly-locked address is never stuck past the link it
+		// is trying to use.
+		resetConsumeLimiter: ratelimit.New(10, 15*time.Minute),
 		// <=5 registration attempts per IP / hour. Login and password reset were
 		// both limited; register, the only unauthenticated route that WRITES two
 		// rows, was not. Keyed on IP alone because the bootstrap gate below makes
