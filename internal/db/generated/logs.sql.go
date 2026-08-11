@@ -29,7 +29,12 @@ SELECT id, project_id, org_id, severity, body, attributes, trace_id, span_id, ob
 WHERE project_id = $1
   AND org_id = $2
   AND ($4::text IS NULL OR severity = $4)
-  AND ($5::text IS NULL OR body ILIKE '%' || $5 || '%')
+  -- ESCAPE '\' matches the issues pillar. Without it the backslashes escapeLike
+  -- writes are literal characters, so a term containing % or _ still matches as
+  -- a wildcard and an operator searching for "50%" or "user_id" gets silently
+  -- wrong rows. The escaping fix reached the issues queries and never reached
+  -- this one.
+  AND ($5::text IS NULL OR body ILIKE '%' || $5 || '%' ESCAPE '\')
   AND ($6::text IS NULL OR trace_id = $6)
   AND ($7::timestamptz IS NULL OR observed_at >= $7)
   -- Keyset paging, NOT OFFSET. Logs stream in continuously, so an OFFSET over a

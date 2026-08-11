@@ -115,6 +115,28 @@ func (e *exceptionField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// canonicalLevel folds a client-supplied level to the one spelling the whole
+// system compares against, at the trust boundary, once.
+//
+// The Go alert gate lowercased and trimmed; the SQL ranking CASE lowercased;
+// and TEN SQL filter predicates spelled `AND level NOT IN ('info', 'debug')`
+// with raw case-sensitive equality. So "INFO", which is what an
+// OTLP-conventional service emits, was informational to the code that decides
+// whether to page and actionable to every query that counts errors.
+//
+// That is not hypothetical. CountActionableEventsForProjectSince exists
+// BECAUSE "an error-rate anomaly must not fire on heartbeat volume", and its
+// own comment records the whole estate tripping that rule on 2026-07-11 when
+// the heartbeat shipped. Any service emitting uppercase levels reproduces that
+// incident exactly: heartbeats counted as errors against a zero baseline, and
+// the anomaly rule pages everyone.
+//
+// Fixing the ten predicates individually is the wrong shape; the eleventh would
+// be written next month. The column only ever holds a canonical level now.
+func canonicalLevel(level string) string {
+	return firstNonEmpty(strings.ToLower(strings.TrimSpace(level)), "error")
+}
+
 // ParseEvent decodes a single event payload and normalizes it.
 func ParseEvent(raw []byte) (NormalizedEvent, error) {
 	var se sentryEvent
@@ -124,7 +146,7 @@ func ParseEvent(raw []byte) (NormalizedEvent, error) {
 
 	ev := NormalizedEvent{
 		EventID:     se.EventID,
-		Level:       firstNonEmpty(se.Level, "error"),
+		Level:       canonicalLevel(se.Level),
 		Platform:    se.Platform,
 		Environment: se.Environment,
 		Release:     se.Release,

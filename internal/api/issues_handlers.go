@@ -107,14 +107,7 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("status"); v != "" {
 		status = &v
 	}
-	var q *string
-	if v := strings.TrimSpace(r.URL.Query().Get("q")); v != "" {
-		// Rune-safe: a raw v[:200] byte slice splits a multi-byte character and
-		// hands Postgres invalid UTF-8, which errors the whole query. Same bug
-		// class as the issue-title truncation fixed in internal/ingest.
-		v = escapeLike(ingest.SanitizeText(truncateRunes(v, 200)))
-		q = &v
-	}
+	q := searchTerm(r.URL.Query().Get("q"))
 
 	issues, err := s.store.ListIssues(ctx, projectID, org, limit, offset, status, q)
 	if err != nil {
@@ -294,6 +287,35 @@ func (s *Server) handleUpdateIssueStatus(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, genIssueToResponse(i))
 }
+
+// searchTerm turns a raw ?q= into the value handed to a query, or nil for an
+// empty one. Three guards, always together, for every search surface:
+//
+//   - truncate to maxSearchTermBytes, rune-safe. A raw v[:200] byte slice
+//     splits a multi-byte character and hands Postgres invalid UTF-8, which
+//     errors the whole query.
+//   - SanitizeText, so ?q=%00 cannot reach pgx as invalid UTF-8 and 500 the
+//     endpoint for anyone with dashboard access.
+//   - escapeLike, so an operator searching for "50%" or "user_id" gets the
+//     rows they asked for instead of silently wrong ones.
+//
+// It exists because those three were applied to the issue search term and none
+// of them to the log search term, even though the commit that wired log search
+// says in its own message "six surfaces in one commit, per the repo's
+// incomplete-migration rule". One helper, four call sites, and a ciguard rule
+// that fails CI on an ILIKE without its ESCAPE clause.
+func searchTerm(raw string) *string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return nil
+	}
+	v = escapeLike(ingest.SanitizeText(truncateRunes(v, maxSearchTermBytes)))
+	return &v
+}
+
+// maxSearchTermBytes bounds a search term. The logs surface accepted 5000 bytes
+// while its issues twin capped at 200.
+const maxSearchTermBytes = 200
 
 // escapeLike neutralises LIKE/ILIKE metacharacters so a search term is matched
 // literally. The queries declare ESCAPE '\', so the backslash must be escaped
