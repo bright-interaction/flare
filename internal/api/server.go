@@ -60,6 +60,11 @@ type Server struct {
 	// signupLimiter caps registration attempts per IP so the one unauthenticated
 	// route that creates rows cannot be looped.
 	signupLimiter *ratelimit.Limiter
+	// inviteLimiter caps invite acceptances per IP. /auth/accept-invite is the
+	// OTHER unauthenticated POST, and once register was gated it was the last one
+	// with no ceiling at all: a bcrypt at cost 12 plus two queries, reachable
+	// without an account.
+	inviteLimiter *ratelimit.Limiter
 	// testLimiter caps per-org "send test notification" calls so the test route
 	// cannot be looped to spam a configured recipient or probe public hosts.
 	testLimiter *ratelimit.Limiter
@@ -197,7 +202,23 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		// rows, was not. Keyed on IP alone because the bootstrap gate below makes
 		// the email irrelevant to the outcome once an install has a user.
 		signupLimiter: ratelimit.New(5, time.Hour),
-		testLimiter:   ratelimit.New(10, time.Minute),   // <=10 test-sends per org / min
+		// <=10 invite acceptances per IP / 15m. Wider than register's 5/hour and
+		// on a shorter window, because the two routes have different shapes:
+		// registration happens once per install, while invites arrive in batches
+		// and a whole team can accept from one office NAT inside one window.
+		//
+		// A legitimate accept costs ONE request. The two retries a real person
+		// makes, a password under 8 characters and a confirmation that does not
+		// match, are both caught in the browser (minlength and an equality check
+		// in accept-invite/+page.svelte), so neither reaches here. What does
+		// reach here is a stale link, a network retry, and anyone driving the
+		// API directly. So ten leaves room for several colleagues behind one
+		// address and no room at all for a loop, and a wrongly-locked office is
+		// back in fifteen minutes rather than an hour. What it buys: an address
+		// can force at most 40 bcrypts an hour instead of as many as it can open
+		// sockets for.
+		inviteLimiter: ratelimit.New(10, 15*time.Minute),
+		testLimiter:   ratelimit.New(10, time.Minute), // <=10 test-sends per org / min
 		// <=20 monitor-failure alerts per ORG per minute, whatever the slug.
 		// Above any real estate (a flapping fleet transitions a handful of
 		// monitors a minute) and far below what a mailbox tolerates.
