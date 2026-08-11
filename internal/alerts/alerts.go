@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"syscall"
 	"time"
@@ -106,8 +107,54 @@ func (d *Dispatcher) DispatchOne(ctx context.Context, ch Channel, n Notification
 	return err
 }
 
-// send delivers to one channel and returns the delivery error (nil on success).
+// send delivers to one channel and returns the delivery error (nil on success),
+// with the destination URL reduced to scheme+host first.
+//
+// This wrapper is the whole point: every delivery error in this package reaches
+// the caller through here, so DispatchOne, Dispatch and the Recorder all
+// inherit the redaction and none of them can be the one that forgets.
+//
+// Go's *url.Error embeds the COMPLETE request URL. For a Slack incoming webhook
+// the credential IS the path (/services/T0/B0/<secret>), and for a generic
+// webhook it rides in the query. That error was persisted verbatim into
+// notification_channels.last_error and served on GET /api/channels, which is a
+// VIEWER route, so the least-privileged role in the org could read the org's
+// Slack webhook URL and post into company Slack as Flare. redactChannelConfig
+// and maskURL exist specifically to stop that URL being re-displayed; the error
+// field sitting beside them in the same JSON object went around both.
+//
+// Note ai.Scrub is NOT sufficient here and is deliberately not used: it catches
+// URL userinfo and key=value secrets, but a Slack webhook secret is a bare PATH
+// segment with no key to match on. Dropping everything after the host is what
+// makes this safe.
 func (d *Dispatcher) send(ctx context.Context, ch Channel, n Notification) error {
+	return redactDeliveryError(d.deliver(ctx, ch, n))
+}
+
+// redactDeliveryError rewrites any *url.Error in err's chain so only the method
+// and scheme+host survive, keeping the underlying cause for diagnosis.
+func redactDeliveryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uerr *url.Error
+	if !errors.As(err, &uerr) {
+		return err
+	}
+	dest := "the destination"
+	if u, perr := url.Parse(uerr.URL); perr == nil && u.Host != "" {
+		dest = u.Scheme + "://" + u.Host
+	}
+	cause := "delivery failed"
+	if uerr.Err != nil {
+		cause = uerr.Err.Error()
+	}
+	return fmt.Errorf("%s to %s failed: %s", uerr.Op, dest, cause)
+}
+
+// deliver dispatches to the channel implementation for ch.Type. Call send, not
+// this: the error returned here still carries the full destination URL.
+func (d *Dispatcher) deliver(ctx context.Context, ch Channel, n Notification) error {
 	switch ch.Type {
 	case "webhook":
 		return d.webhook(ctx, ch.Config, n)
