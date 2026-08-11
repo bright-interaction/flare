@@ -37,7 +37,7 @@ func JSON(raw []byte) []byte {
 		// it, so a blob whose second half held the secret came back "clean".
 		return unparsed(raw)
 	}
-	out, err := marshalJSON(scrubValue(v))
+	out, err := marshalJSON(scrubValueAt(v, 0))
 	if err != nil {
 		return []byte(`{"_scrub_error":"redacted"}`)
 	}
@@ -64,17 +64,30 @@ func unparsed(raw []byte) []byte {
 // Key order is not preserved (encoding/json emits map keys alphabetically).
 // That is cosmetic for the model reading it, but worth knowing before anyone
 // diffs a stack trace across the scrub.
-func scrubValue(v any) any {
+func scrubValue(v any) any { return scrubValueAt(v, 0) }
+
+// maxScrubDepth bounds the recursive walk.
+//
+// encoding/json refuses documents past its own 10000-frame limit, so this was
+// never reachable, but that means the safety was INHERITED from a dependency's
+// implementation detail rather than owned here. A depth this walk cannot handle
+// is a document no operator wants to read either.
+const maxScrubDepth = 64
+
+func scrubValueAt(v any, depth int) any {
+	if depth > maxScrubDepth {
+		return "[too-deep]"
+	}
 	switch t := v.(type) {
 	case string:
 		return Text(t)
 	case json.Number:
 		return scrubNumber(t)
 	case map[string]any:
-		return scrubObject(t)
+		return scrubObjectAt(t, depth)
 	case []any:
 		for i := range t {
-			t[i] = scrubValue(t[i])
+			t[i] = scrubValueAt(t[i], depth+1)
 		}
 		return t
 	default:
@@ -82,7 +95,7 @@ func scrubValue(v any) any {
 	}
 }
 
-func scrubObject(t map[string]any) map[string]any {
+func scrubObjectAt(t map[string]any, depth int) map[string]any {
 	// Deterministic order so a key collision resolves the same way every run.
 	keys := make([]string, 0, len(t))
 	for k := range t {
@@ -98,7 +111,7 @@ func scrubObject(t map[string]any) map[string]any {
 		if s, ok := val.(string); ok {
 			val = Field(k, s)
 		} else {
-			val = scrubValue(val)
+			val = scrubValueAt(val, depth+1)
 		}
 		// Two distinct keys can scrub to one string. Suffix rather than
 		// overwrite: dropping a value silently is worse than an odd key.

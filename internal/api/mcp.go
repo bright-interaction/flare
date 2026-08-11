@@ -10,6 +10,7 @@ package api
 // registered in mcpToolset are exposed.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -170,9 +171,33 @@ func (s *Server) mcpHandler() http.Handler {
 			mcpWriteErr(w, nil, -32700, "read body failed")
 			return
 		}
+		// DisallowUnknownFields is deliberately NOT set (a client may send
+		// protocol extensions), but duplicate keys ARE rejected below, because
+		// encoding/json resolves them last-wins: a body carrying two "method"
+		// or two "name" keys means a first-wins policy inspector in front of
+		// Flare and Flare itself disagree about what was called. No such
+		// inspector exists here today, so this is a latent primitive rather
+		// than a live bypass, and it costs one scan to remove.
+		if dupJSONKey(body) {
+			mcpWriteErr(w, nil, -32600, "duplicate keys in the JSON-RPC request")
+			return
+		}
 		var req mcpRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			mcpWriteErr(w, nil, -32700, "invalid JSON")
+			return
+		}
+		// The envelope is validated rather than assumed. A missing or wrong
+		// jsonrpc field used to execute the call anyway, a bare `null` body and
+		// an explicit `"id": null` were both treated as notifications, and a
+		// batch was rejected as a parse error rather than as unsupported.
+		// Interop risk only, but "we accept whatever arrives" is not a protocol.
+		if req.JSONRPC != "2.0" {
+			mcpWriteErr(w, req.ID, -32600, `"jsonrpc" must be "2.0"`)
+			return
+		}
+		if req.Method == "" {
+			mcpWriteErr(w, req.ID, -32600, `"method" is required`)
 			return
 		}
 		if req.ID == nil { // notification
@@ -314,6 +339,53 @@ func mcpJSON(v any) string {
 }
 
 func schema(raw string) json.RawMessage { return json.RawMessage(raw) }
+
+// dupJSONKey reports whether any object in the document declares the same key
+// twice. encoding/json takes the LAST one silently, so a duplicate is a way to
+// show one value to an inspector and another to the server.
+func dupJSONKey(raw []byte) bool {
+	return hasDupKeys(json.NewDecoder(bytes.NewReader(raw)))
+}
+
+func hasDupKeys(dec *json.Decoder) bool {
+	tok, err := dec.Token()
+	if err != nil {
+		return false
+	}
+	switch d := tok.(type) {
+	case json.Delim:
+		switch d {
+		case '{':
+			seen := map[string]bool{}
+			for dec.More() {
+				kt, kerr := dec.Token()
+				if kerr != nil {
+					return false
+				}
+				key, ok := kt.(string)
+				if !ok {
+					return false
+				}
+				if seen[key] {
+					return true
+				}
+				seen[key] = true
+				if hasDupKeys(dec) {
+					return true
+				}
+			}
+			_, _ = dec.Token() // closing brace
+		case '[':
+			for dec.More() {
+				if hasDupKeys(dec) {
+					return true
+				}
+			}
+			_, _ = dec.Token() // closing bracket
+		}
+	}
+	return false
+}
 
 // resolveProjectRef finds a project by its id OR its slug, scoped to org.
 func (s *Server) resolveProjectRef(ctx context.Context, org, ref string) (*generated.Project, error) {

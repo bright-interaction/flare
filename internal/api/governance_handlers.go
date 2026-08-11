@@ -92,10 +92,23 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	projOut := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
+		// ListAllIssuesForExport, not ListIssues: the latter carries
+		// `level NOT IN ('info','debug')` for the dashboard, so the bundle
+		// whose own comment says "data portability means ALL of it" was
+		// dropping every informational issue silently.
+		//
+		// Keyset paging, not OFFSET. last_seen MUTATES on every ingested event,
+		// so an OFFSET walk over a DESC last_seen ordering is computed against
+		// a list that moved between pages: rows are skipped and repeated under
+		// live ingest, which is the exact bug SearchLogs was switched away from
+		// OFFSET to avoid.
 		var issues []*generated.Issue
-		for offset := int32(0); ; offset += exportPage {
-			page, err := s.q.ListIssues(ctx, generated.ListIssuesParams{
-				ProjectID: p.ID, OrgID: org, Limit: exportPage, Offset: offset,
+		var cursorSeen pgtype.Timestamptz
+		var cursorID pgtype.Text
+		for {
+			page, err := s.q.ListAllIssuesForExport(ctx, generated.ListAllIssuesForExportParams{
+				ProjectID: p.ID, OrgID: org, Limit: exportPage,
+				AfterLastSeen: cursorSeen, AfterID: cursorID,
 			})
 			if err != nil {
 				exportWarnings = append(exportWarnings,
@@ -103,9 +116,11 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			issues = append(issues, page...)
-			if len(page) < exportPage {
+			if len(page) < int(exportPage) {
 				break
 			}
+			last := page[len(page)-1]
+			cursorSeen, cursorID = last.LastSeen, pgText(last.ID)
 		}
 		issueOut := make([]map[string]any, 0, len(issues))
 		for _, i := range issues {

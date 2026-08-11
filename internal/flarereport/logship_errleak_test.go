@@ -73,7 +73,7 @@ func TestErrorAttrLeakShapes(t *testing.T) {
 	}{
 		{"dsn in a plain string", "detail", "connect failed: postgres://svc:hunter2primary@db:5432/flare", "hunter2primary"},
 		{"bearer token in an error", "error", errString("GET /v1/x: 401 with Authorization: Bearer abcdef0123456789"), "abcdef0123456789"},
-		{"api key in a nested struct", "request", struct{ URL string }{"https://api.vendor.io/v1?api_key=live_EXAMPLE_NOT_A_REAL_KEY"}, "live_EXAMPLE_NOT_A_REAL_KEY"},
+		{"api key in a nested struct", "request", struct{ URL string }{"https://api.vendor.io/v1?api_key=sk_live_EXAMPLEFGHIJKLMNOP"}, "sk_live_EXAMPLEFGHIJKLMNOP"},
 	}
 	for _, c := range cases {
 		sh := &logShipper{ch: make(chan nativeLogLine, 4)}

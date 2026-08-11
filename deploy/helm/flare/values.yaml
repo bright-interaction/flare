@@ -1,6 +1,10 @@
 image:
   repository: flare
-  tag: latest
+  # Pinned, not "latest". A floating tag means the deploy is not reproducible
+  # and there is no rollback target: two pods of the same ReplicaSet can be
+  # running different code, and "roll back" has nothing to roll back to. Bump
+  # this with flare/VERSION.
+  tag: v0.3.0
   pullPolicy: IfNotPresent
 
 replicaCount: 1

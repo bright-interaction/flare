@@ -259,7 +259,11 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 	if err := s.q.SetIssueTriage(ctx, generated.SetIssueTriageParams{ID: issue.ID, OrgID: org, AiTriage: triage}); err != nil {
 		return "", false, err
 	}
-	s.audit(ctx, "ai.triage", issue.Title)
+	// Scrubbed and capped. Every other egress site scrubs; this one wrote the
+	// raw, unbounded issue title into audit_log, which handleListAuditLog then
+	// serves to admins, so a leaked secret in an exception title survived in a
+	// second place nobody was scrubbing.
+	s.audit(ctx, "ai.triage", ai.Line(ai.Scrub(issue.Title)))
 	return triage, false, nil
 }
 
