@@ -24,6 +24,7 @@ import (
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/ingest"
+	"github.com/bright-interaction/flare/internal/scan"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
@@ -79,8 +80,13 @@ func (e mcpUserError) Error() string { return e.msg }
 func metricNamesForMCP(names []telemetry.MetricName) map[string]any {
 	out := make([]metricNameResponse, 0, len(names))
 	for _, m := range names {
-		out = append(out, metricNameResponse{Name: ai.Scrub(m.Name), Kind: m.Kind, Points: m.Points, LastSeen: m.LastSeen})
+		out = append(out, metricNameResponse{Name: m.Name, Kind: m.Kind, Points: m.Points, LastSeen: m.LastSeen})
 	}
+	// By struct, not by field. The previous version of this function scrubbed
+	// Name and left Kind raw beside it, and ParseNativeMetrics passes the
+	// client's kind straight through, so 512 bytes of attacker text reached the
+	// org's model provider next to a name that WAS redacted.
+	scan.Struct(out)
 	return map[string]any{
 		"metrics": out,
 		"trust":   "untrusted",
@@ -229,7 +235,24 @@ func (s *Server) mcpCall(ctx context.Context, org string, params json.RawMessage
 	if err != nil {
 		return mcpToolResult{IsError: true, Content: []mcpContent{{Type: "text", Text: s.mcpErrText(p.Name, err)}}}, nil
 	}
-	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: mcpJSON(val)}}}, nil
+	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: mcpJSON(scrubForMCP(val))}}}, nil
+}
+
+// scrubForMCP is the LAST thing every tool result passes through before it is
+// rendered for the model, and it scrubs by structure rather than by field list.
+//
+// Twelve attacker-writable fields were crossing this boundary raw, in four
+// tools whose siblings WERE scrubbed. The sharpest instance is the one that
+// proves a list cannot hold: metricNamesForMCP is the function a previous fix
+// pass wrote to close "unscrubbed metric names", and it scrubbed Name while
+// leaving Kind raw beside it. The fix introduced its own twin.
+//
+// Handlers still scrub what they own, which is defence in depth and keeps the
+// REST paths that share those helpers correct. This pass is the guarantee: a
+// response field added next year is covered the day it is added.
+func scrubForMCP(v any) any {
+	scan.Struct(&v)
+	return v
 }
 
 // mcpErrText renders a tool error for the client, returning only messages that

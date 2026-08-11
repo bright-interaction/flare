@@ -1,33 +1,36 @@
 package api
 
 import (
-	"regexp"
-	"sort"
 	"strings"
 
-	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/ingest"
+	"github.com/bright-interaction/flare/internal/scan"
 )
 
 // Sensitive-data detection runs on ingest and flags an issue whose telemetry
-// contains a value that should NEVER be there: an API secret, a JWT, or a
-// payment card number. It is deliberately HIGH-PRECISION (secrets + Luhn-valid
-// cards only, no emails/IPs/hashes) so the "sensitive" flag stays trustworthy
-// and does not decorate every ordinary error. Emails/PII are noisier and left
-// as a future opt-in.
-var (
-	reJWT    = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}`)
-	reSecret = regexp.MustCompile(`\b(?:sk|pk|ghp|gho|ghs|xox[baprs]|AKIA)[-_A-Za-z0-9]{16,}\b`)
-)
+// contains a value that should NEVER be there.
+//
+// There is deliberately NO regex in this file. Every shape it can report comes
+// from internal/scan, the same table the scrubber rewrites with, because this
+// file used to keep its own copies and they drifted: the scrubber learned six
+// more token families and a lower minimum length, the detector did not, and a
+// leaked GitLab token was scrubbed on its way to the model and served in plain
+// text to the dashboard with no badge, no security event and no alert. The
+// customer never learned to rotate it.
+//
+// scan.Kinds reports only the high-confidence kinds (secrets, JWTs, cards,
+// private keys, personnummer). Emails and IP addresses are scrubbed but not
+// flagged: the flag has to stay trustworthy, and it also raises a security
+// event and seeds an alert.
 
-// NOTE: there is deliberately no card regex here. Card detection, candidate
-// search included, lives in ai.TextHasPaymentCard and is shared with the
-// scrubber. This file used to keep its own unanchored copy, which flagged
-// issues whose card the scrubber then left intact. Do not reintroduce one.
-
-// detectSensitive returns the sorted, distinct sensitive-data kinds found in an
-// event's high-signal text fields, or nil when clean.
-func detectSensitive(ev ingest.NormalizedEvent) []string {
+// sensitiveText is the ONE declared list of an event's payload-text fields.
+// The detector scans it and the redactors rewrite it, so a field cannot be
+// scanned without also being redacted. That gap was the audit's only CRITICAL:
+// detectSensitive read frame context lines, the REST response scrubbed exactly
+// two fields, and the single most common way the flag fires (a JWT in a source
+// context line) produced a flagged issue whose flagged value was served raw by
+// the endpoint the flag exists to protect.
+func sensitiveText(ev ingest.NormalizedEvent) string {
 	var b strings.Builder
 	for _, s := range []string{ev.Message, ev.ExceptionType, ev.ExceptionValue, ev.Culprit} {
 		b.WriteString(s)
@@ -37,25 +40,11 @@ func detectSensitive(ev ingest.NormalizedEvent) []string {
 		b.WriteString(f.ContextLine)
 		b.WriteByte('\n')
 	}
-	text := b.String()
+	return b.String()
+}
 
-	found := map[string]bool{}
-	if reJWT.MatchString(text) {
-		found["jwt"] = true
-	}
-	if reSecret.MatchString(text) {
-		found["secret"] = true
-	}
-	if ai.TextHasPaymentCard(text) {
-		found["card"] = true
-	}
-	if len(found) == 0 {
-		return nil
-	}
-	kinds := make([]string, 0, len(found))
-	for k := range found {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	return kinds
+// detectSensitive returns the sorted, distinct sensitive-data kinds found in an
+// event's high-signal text fields, or nil when clean.
+func detectSensitive(ev ingest.NormalizedEvent) []string {
+	return scan.Kinds(sensitiveText(ev))
 }
