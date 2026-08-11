@@ -18,12 +18,10 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
-	"github.com/bright-interaction/flare/internal/ingest"
 	"github.com/bright-interaction/flare/internal/scan"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
@@ -420,12 +418,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Status != "" && a.Status != "all" {
 					statusFilter = &a.Status
 				}
-				var qFilter *string
-				if q := strings.TrimSpace(a.Q); q != "" {
-					// Same bounds and LIKE escaping as the REST sibling.
-					q = escapeLike(ingest.SanitizeText(truncateRunes(q, 200)))
-					qFilter = &q
-				}
+				qFilter := searchTerm(a.Q)
 				issues, err := s.store.ListIssues(ctx, proj.ID, org, a.Limit, 0, statusFilter, qFilter)
 				if err != nil {
 					return nil, err
@@ -525,12 +518,11 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Severity != "" {
 					f.Severity = &a.Severity
 				}
-				if a.Query != "" {
-					f.Query = &a.Query
-				}
+				f.Query = searchTerm(a.Query)
 				if a.TraceID != "" {
 					f.TraceID = &a.TraceID
 				}
+				clampLogWindow(&f)
 				logs, err := s.store.SearchLogs(ctx, proj.ID, org, f)
 				if err != nil {
 					return nil, err
