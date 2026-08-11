@@ -30,14 +30,20 @@ func (s *Server) handleOTLPTraces(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid OTLP traces payload")
 		return
 	}
-	if err := s.persistSpans(r.Context(), project, spans); err != nil {
+	budget := newIngestBudget()
+	if err := s.persistSpans(r.Context(), project, spans, budget); err != nil {
 		slogError(w, "persist spans", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	budget.report(project.ID, "spans")
+	writeJSON(w, http.StatusOK, otlpResponse(budget.dropped, otlpRejectedSpans))
 }
 
-func (s *Server) persistSpans(ctx context.Context, project *generated.Project, spans []ingest.SpanRecord) error {
+func (s *Server) persistSpans(ctx context.Context, project *generated.Project, spans []ingest.SpanRecord, budget *ingestBudget) error {
+	// Spend the request's row budget first. handleEnvelope calls this once per
+	// transaction item, so the budget has to be the REQUEST's, not this call's.
+	// See maxIngestRecords.
+	spans = spans[:budget.take(len(spans))]
 	if len(spans) == 0 {
 		return nil
 	}
