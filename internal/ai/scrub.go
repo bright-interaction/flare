@@ -27,8 +27,8 @@ var (
 	// Authorization: Bearer <token> and Basic <b64>.
 	reBearer = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._+/=\-]{8,}`)
 	// Formatted or bare payment card: 13-19 digits with optional single space or
-	// dash between groups. Luhn-validated before replacement so ordinary long
-	// numbers (ids, timestamps) are left intact.
+	// dash between groups. Deliberately loose; IsPaymentCard does the real
+	// filtering so ordinary long numbers (ids, timestamps) are left intact.
 	reCardCandidate = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
 )
 
@@ -66,10 +66,11 @@ func Scrub(s string) string {
 	s = reURLCreds.ReplaceAllString(s, "${1}[redacted]${2}")
 	s = reBearer.ReplaceAllString(s, "${1} [secret]")
 	s = reAssignSecret.ReplaceAllString(s, "${1}${2}[secret]")
-	// Payment cards (Luhn-checked) before the generic number rule below.
+	// Payment cards (issuer prefix + length + Luhn) before the generic number
+	// rule below. See card.go: Luhn alone matches one in ten arbitrary digit
+	// runs, which ate 10% of every long id and timestamp that came through here.
 	s = reCardCandidate.ReplaceAllStringFunc(s, func(m string) string {
-		d := onlyDigits(m)
-		if len(d) >= 13 && len(d) <= 19 && luhn(d) {
+		if IsPaymentCard(onlyDigits(m)) {
 			return "[card]"
 		}
 		return m
