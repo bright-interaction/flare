@@ -3,21 +3,25 @@ package ciguard
 // Structural backstop for the "search term guards applied to one pillar and not
 // its twin" family (audit finding M1, 2026-08-11).
 //
-// escapeLike writes a backslash in front of every LIKE metacharacter in a user
-// search term. That backslash only MEANS anything if the query declares
-// ESCAPE '\'. Without the clause Postgres treats the backslash as an ordinary
-// character, so the metacharacter still matches as a wildcard and the escaping
-// silently does nothing.
+// CORRECTION, 2026-08-11: the clause is NOT load-bearing on PostgreSQL.
 //
-// That is exactly what shipped: the issues pillar got escapeLike AND the ESCAPE
-// clause; the logs pillar, wired later, got neither, and the commit that wired
-// it says in its own message "six surfaces in one commit, per the repo's
-// incomplete-migration rule". An operator searching logs for "50%" or "user_id"
-// got silently wrong rows, and nothing in the build noticed.
+// This guard was written believing that without ESCAPE '\' the backslashes
+// escapeLike writes are inert, so a "%" in a search term still wildcards.
+// Measured against postgres:16-alpine with standard_conforming_strings=on:
+// false. Backslash is ALREADY the default LIKE escape character, so with the
+// clause and without it the results are identical. The 2026-08-11 audit's
+// finding M1 asserted the same thing about its SQL half and was wrong; the
+// real defect was entirely Go-side (the logs search term got no escapeLike, no
+// SanitizeText and no length cap), and that half is fixed.
 //
-// So the pairing is enforced here rather than remembered: any ILIKE/LIKE
-// against an interpolated search parameter must carry ESCAPE '\' in the same
-// statement.
+// The guard is KEPT, for a smaller and honest reason: the two pillars must
+// spell the same predicate the same way, and the clause makes the dependency
+// on the escape character explicit instead of inherited from a server default
+// that a future standard_conforming_strings or a different engine could change.
+// It is a consistency rule now, not a correctness one, and this comment exists
+// so nobody re-derives the wrong justification from the rule's existence.
+//
+// internal/db/dbtest/sql_behaviour_test.go holds the executed proof.
 
 import (
 	"os"
@@ -61,9 +65,11 @@ func TestLikeAgainstAParameterDeclaresItsEscape(t *testing.T) {
 			}
 			found++
 			if !strings.Contains(strings.ToUpper(line), `ESCAPE '\'`) {
-				t.Errorf("%s: a LIKE/ILIKE against a parameter has no ESCAPE '\\' clause, so "+
-					"escapeLike's backslashes are literal characters and %% / _ still match as "+
-					"wildcards.\n\n  %s", path, strings.TrimSpace(line))
+				t.Errorf("%s: a LIKE/ILIKE against a parameter has no ESCAPE '\\' clause. "+
+					"On PostgreSQL that is harmless today (backslash is already the default "+
+					"escape character, measured) but the two search pillars must spell the "+
+					"predicate the same way and state the dependency rather than inherit "+
+					"it.\n\n  %s", path, strings.TrimSpace(line))
 			}
 		}
 	}

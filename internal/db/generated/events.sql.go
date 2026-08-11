@@ -34,9 +34,22 @@ const countIssues = `-- name: CountIssues :one
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
   AND ($3::text IS NULL OR status = $3)
-  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
-  -- "%" matches every issue and "_" matches any character, so the search box
-  -- silently lies about what it found.
+  -- ESCAPE '\' is a REDUNDANT restatement of PostgreSQL's default, kept as
+  -- documentation. Measured 2026-08-11 against postgres:16-alpine with
+  -- standard_conforming_strings=on: with the clause and without it, the term
+  -- escapeLike("50%") produces identical results (matches the literal-50% row,
+  -- does not match the other). Backslash is already the LIKE escape character
+  -- when no ESCAPE clause is given.
+  --
+  -- The comment this replaces claimed the opposite, and the 2026-08-11 audit
+  -- repeated it as finding M1's SQL half. That half was WRONG. The real defect
+  -- was entirely Go-side: the logs search term got no escapeLike, no
+  -- SanitizeText and no length cap, which is where all three of M1's named
+  -- harms came from.
+  --
+  -- The clause stays because it makes the dependency on the escape character
+  -- explicit rather than inherited, and internal/ciguard keeps both pillars
+  -- spelling it the same way.
   AND ($4::text IS NULL
        OR title ILIKE '%' || $4 || '%' ESCAPE '\'
        OR culprit ILIKE '%' || $4 || '%' ESCAPE '\')
@@ -305,9 +318,22 @@ SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platf
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
-  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
-  -- "%" matches every issue and "_" matches any character, so the search box
-  -- silently lies about what it found.
+  -- ESCAPE '\' is a REDUNDANT restatement of PostgreSQL's default, kept as
+  -- documentation. Measured 2026-08-11 against postgres:16-alpine with
+  -- standard_conforming_strings=on: with the clause and without it, the term
+  -- escapeLike("50%") produces identical results (matches the literal-50% row,
+  -- does not match the other). Backslash is already the LIKE escape character
+  -- when no ESCAPE clause is given.
+  --
+  -- The comment this replaces claimed the opposite, and the 2026-08-11 audit
+  -- repeated it as finding M1's SQL half. That half was WRONG. The real defect
+  -- was entirely Go-side: the logs search term got no escapeLike, no
+  -- SanitizeText and no length cap, which is where all three of M1's named
+  -- harms came from.
+  --
+  -- The clause stays because it makes the dependency on the escape character
+  -- explicit rather than inherited, and internal/ciguard keeps both pillars
+  -- spelling it the same way.
   AND ($6::text IS NULL
        OR title ILIKE '%' || $6 || '%' ESCAPE '\'
        OR culprit ILIKE '%' || $6 || '%' ESCAPE '\')

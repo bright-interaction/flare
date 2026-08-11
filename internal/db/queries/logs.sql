@@ -7,11 +7,13 @@ SELECT * FROM logs
 WHERE project_id = $1
   AND org_id = $2
   AND (sqlc.narg(severity)::text IS NULL OR severity = sqlc.narg(severity))
-  -- ESCAPE '\' matches the issues pillar. Without it the backslashes escapeLike
-  -- writes are literal characters, so a term containing % or _ still matches as
-  -- a wildcard and an operator searching for "50%" or "user_id" gets silently
-  -- wrong rows. The escaping fix reached the issues queries and never reached
-  -- this one.
+  -- ESCAPE '\' matches the issues pillar. It is a redundant restatement of
+  -- PostgreSQL's default (backslash is already the LIKE escape character), kept
+  -- so the dependency is explicit rather than inherited. Verified against a
+  -- real postgres:16 on 2026-08-11: with and without the clause, escapeLike's
+  -- output behaves identically. The defect finding M1 actually named here was
+  -- Go-side, not SQL-side; see internal/db/queries/events.sql for the full
+  -- correction.
   AND (sqlc.narg(q)::text IS NULL OR body ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\')
   AND (sqlc.narg(trace_id)::text IS NULL OR trace_id = sqlc.narg(trace_id))
   AND (sqlc.narg(since)::timestamptz IS NULL OR observed_at >= sqlc.narg(since))
