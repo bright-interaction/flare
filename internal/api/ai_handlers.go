@@ -15,6 +15,7 @@ import (
 
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/netguard"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
@@ -71,8 +72,18 @@ func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Format == "" {
 		req.Format = "openai"
 	}
-	if !strings.HasPrefix(req.BaseURL, "https://") || req.Model == "" {
+	if req.Model == "" {
 		writeErr(w, http.StatusBadRequest, "base_url (https) and model are required")
+		return
+	}
+	// Validated at the trust boundary, not only at dial time. The runtime guard
+	// blocks the connection, so this is not a breach; what it fixes is a stored
+	// config the UI shows as working while every triage silently fails with
+	// nothing saying why. It also closes the case the dial guard cannot cover:
+	// FLARE_ALLOW_PRIVATE_AI_ENDPOINT turns that guard off process-wide, and
+	// then there is no check at either layer.
+	if err := netguard.ValidatePublicURL(req.BaseURL); err != nil && !s.allowPrivateAI {
+		writeErr(w, http.StatusBadRequest, "base_url "+err.Error())
 		return
 	}
 	if req.Format != "openai" && req.Format != "anthropic" {

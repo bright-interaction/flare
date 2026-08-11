@@ -32,11 +32,13 @@ FROM metrics
 WHERE project_id = $1 AND org_id = $2 AND observed_at > now() - interval '24 hours'
 GROUP BY name
 ORDER BY name
+LIMIT $3
 `
 
 type ListMetricNamesParams struct {
 	ProjectID string `json:"project_id"`
 	OrgID     string `json:"org_id"`
+	Limit     int32  `json:"limit"`
 }
 
 type ListMetricNamesRow struct {
@@ -48,8 +50,13 @@ type ListMetricNamesRow struct {
 
 // Distinct metric names for a project in the last 24h, with a point count, for
 // the metrics browser.
+// CAPPED. The metric name is caller-chosen and unbounded in cardinality: one
+// 8 MiB request produced 364,722 distinct names against the real parser, and
+// handleListMetrics returned every row. The cap turns an attacker-chosen
+// cardinality into a bounded response; a project with more real series than
+// this has a naming problem the browser cannot help with anyway.
 func (q *Queries) ListMetricNames(ctx context.Context, arg ListMetricNamesParams) ([]*ListMetricNamesRow, error) {
-	rows, err := q.db.Query(ctx, listMetricNames, arg.ProjectID, arg.OrgID)
+	rows, err := q.db.Query(ctx, listMetricNames, arg.ProjectID, arg.OrgID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

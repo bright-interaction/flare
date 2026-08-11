@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -80,11 +78,12 @@ func (s *Server) handleSetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	// already blocks the fetch, but accepting https://169.254.169.254 as a
 	// stored issuer passed a live probe on 2026-06-30; validation belongs at
 	// the trust boundary too.
-	if u, err := url.Parse(req.Issuer); err != nil || u.Hostname() == "" {
-		writeErr(w, http.StatusBadRequest, "issuer is not a valid URL")
-		return
-	} else if ip := net.ParseIP(u.Hostname()); ip != nil && netguard.IsBlockedIP(ip) {
-		writeErr(w, http.StatusBadRequest, "issuer host must be a public address")
+	//
+	// This check was written HERE and nowhere else, so the BYOAI base_url and
+	// the notification webhook URL, which are the two an ordinary member can
+	// set, kept accepting anything. One helper, all three surfaces.
+	if err := netguard.ValidatePublicURL(req.Issuer); err != nil {
+		writeErr(w, http.StatusBadRequest, "issuer "+err.Error())
 		return
 	}
 	// A blank secret on update keeps the stored one (so admins can toggle

@@ -106,7 +106,12 @@ type Server struct {
 	// burst of new fingerprints could fill every slot with 90-second BYOAI
 	// completions, so 15-second alert evaluation, the thing that actually pages a
 	// human, was dropped while the optional nice-to-have ran.
-	bgSlots     map[string]chan struct{}
+	bgSlots map[string]chan struct{}
+	// allowPrivateAI is the EFFECTIVE value of FLARE_ALLOW_PRIVATE_AI_ENDPOINT
+	// after the multi-workspace check in NewServer. Read this, never cfg: the
+	// config value is what the operator asked for, this is what applies.
+	allowPrivateAI bool
+
 	bgSlotsOnce sync.Once
 	// orgSlots counts the background slots each org currently holds, per job
 	// class, so no single tenant can occupy the shared pool.
@@ -251,18 +256,44 @@ func (s *Server) releaseOrgSlot(org, class string) {
 
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
 	mailer := email.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom, cfg.SMTPFromName, cfg.SMTPTLS)
+
+	// FLARE_ALLOW_PRIVATE_AI_ENDPOINT exists so a developer can point BYOAI at
+	// a local Ollama. On a SHARED deployment it is a global kill switch on a
+	// per-tenant control: with it set, ANY org can point base_url at an
+	// internal address and read the response back through triage. So it only
+	// applies while the instance is what it was written for, one workspace.
+	//
+	// Fails closed by ignoring the flag rather than refusing to boot: an
+	// operator who added a second workspace to a dev instance should lose the
+	// escape hatch, not lose the server.
+	allowPrivateAI := cfg.AllowPrivateAIEndpoint
+	if allowPrivateAI {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		n, err := generated.New(pool).CountOrgs(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("could not count workspaces; ignoring FLARE_ALLOW_PRIVATE_AI_ENDPOINT", "error", err)
+			allowPrivateAI = false
+		} else if n > 1 {
+			slog.Error("FLARE_ALLOW_PRIVATE_AI_ENDPOINT is set on an instance with more than one "+
+				"workspace, which would let any tenant reach internal addresses through AI triage. "+
+				"Ignoring it; the SSRF guard stays on.", "workspaces", n)
+			allowPrivateAI = false
+		}
+	}
 	srv := &Server{
-		q:            generated.New(pool),
-		pool:         pool,
-		store:        pgstore.New(pool),
-		analytics:    analyticsMgr,
-		sessions:     sessions,
-		cfg:          cfg,
-		dispatcher:   alerts.NewDispatcher(mailer),
-		mailer:       mailer,
-		symbolicator: sourcemaps.NewResolver(),
-		ai:           ai.New(!cfg.AllowPrivateAIEndpoint),
-		secrets:      secretbox.New(cfg.SecretKey),
+		q:              generated.New(pool),
+		pool:           pool,
+		store:          pgstore.New(pool),
+		analytics:      analyticsMgr,
+		sessions:       sessions,
+		cfg:            cfg,
+		dispatcher:     alerts.NewDispatcher(mailer),
+		mailer:         mailer,
+		symbolicator:   sourcemaps.NewResolver(),
+		ai:             ai.New(!allowPrivateAI),
+		allowPrivateAI: allowPrivateAI,
+		secrets:        secretbox.New(cfg.SecretKey),
 
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
