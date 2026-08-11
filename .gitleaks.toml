@@ -1,29 +1,56 @@
 # gitleaks config for Flare (used by the public-mirror publish gate and any local
-# scan). Extends the default ruleset, then allowlists documentation/config-example
-# PLACEHOLDERS: .env.example and test fixtures use obvious change-me markers, never
-# real secrets. A real leaked credential would not carry these markers, so it is
-# still caught; only the placeholders are suppressed.
+# scan). Extends the default ruleset, then allowlists PLACEHOLDERS by MARKER.
+#
+# The previous shape had two allowlists that were both broader than the thing
+# they excused, and they are the same mistake twice:
+#
+#  1. The placeholder markers were global and un-path-scoped, so any finding
+#     anywhere whose secret contained "EXAMPLE", "_here_", "changeme",
+#     "your_*" or "0123456789abcdef" was suppressed. That is the "allowlist
+#     shipped with the offenders in it" shape.
+#  2. internal/ai/ai_test.go and internal/api/sensitive_test.go were exempt BY
+#     PATH, entire files. Those are exactly the files where somebody
+#     reproducing a production leak pastes the real credential to see whether
+#     the scrubber catches it, and they publish to the mirror.
+#
+# The fix is to key on the marker and drop `paths` entirely.
+#
+# `paths` is not used here on purpose. gitleaks v8.30.0 resolves `paths` and
+# `regexes` as OR even with condition = "AND": measured by planting an unmarked
+# `live_EXAMPLE_NOT_A_REAL_KEY` in an allowlisted test file and watching the scan
+# report clean. Listing a path would therefore restore exactly the whole-file
+# exemption this config exists to remove.
+#
+# So a placeholder has to SAY it is a placeholder, on its own line, and an
+# unmarked credential is reported wherever it is pasted, including inside the
+# scrubber's own tests. scripts/test-gitleaks-allowlist.sh plants one and
+# asserts the refusal.
 title = "flare"
 
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Config/test placeholders use obvious markers, not real secrets"
+[[allowlists]]
+description = "Documented placeholders and marked synthetic fixtures"
+regexTarget = "line"
 regexes = [
+  # Config-example placeholders.
   '''changeme''',
   '''change[_-]?me''',
   '''your_[a-z0-9_]*''',
-  '''_change_me''',
-  '''_here_''',
-  '''EXAMPLE''',
-  '''AKIAIOSFODNN7EXAMPLE''',
+  '''_here''',
+  '''(?i)example''',
+  '''dev-[a-z]+-key-not-for-production''',
+  # Test-fixture markers. Each is either an explicit label or a value distinctive
+  # enough that a real credential will not carry it.
+  '''(?i)synthetic''',
+  '''(?i)fixture''',
+  '''(?i)not-?a-?real''',
+  '''AbCdEfGhIjKlMnOpQrSt''',
+  '''(?i)sIgNaTuRe''',
+  '''(?i)supersecret''',
+  '''(?i)hunter2''',
+  '''(?i)victim''',
+  '''4111111111111111''',
   '''0123456789abcdef''',
-]
-# These are unit-test fixtures for the AI PII scrubber and the sensitive-data
-# detector: their whole purpose is to carry SYNTHETIC gcp/stripe/jwt secrets so
-# the tests can assert the scrubber redacts them. Not real credentials.
-paths = [
-  '''internal/ai/ai_test\.go''',
-  '''internal/api/sensitive_test\.go''',
 ]

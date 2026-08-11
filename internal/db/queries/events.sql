@@ -90,6 +90,24 @@ WHERE project_id = $1
 ORDER BY last_seen DESC, id DESC
 LIMIT $3 OFFSET $4;
 
+-- name: ListAllIssuesForExport :many
+-- EVERY issue, including info/debug, for data portability. ListIssues carries
+-- `level NOT IN ('info','debug')` so the dashboard shows incidents only, and
+-- handleExport reused it: the bundle whose own comment says "data portability
+-- means ALL of it" silently dropped every informational issue, with nothing in
+-- the output saying so. Keyset paging on (last_seen, id), not OFFSET: last_seen
+-- MUTATES on every ingested event, so an OFFSET walk under live ingest skips
+-- rows and repeats others.
+SELECT * FROM issues
+WHERE project_id = $1
+  AND org_id = $2
+  AND (
+    sqlc.narg(after_last_seen)::timestamptz IS NULL
+    OR (last_seen, id) < (sqlc.narg(after_last_seen)::timestamptz, sqlc.narg(after_id)::text)
+  )
+ORDER BY last_seen DESC, id DESC
+LIMIT $3;
+
 -- name: CountIssues :one
 -- MUST carry the same status/search predicates as ListIssues. It used to count
 -- every issue regardless of filter, so the total shown beside the tabs
