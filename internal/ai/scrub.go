@@ -1,183 +1,34 @@
 package ai
 
-import (
-	"bytes"
-	"encoding/json"
-	"regexp"
-	"strings"
-)
+import "github.com/bright-interaction/flare/internal/scan"
 
 // Scrub removes common PII/secret shapes from text before it is sent to the
 // model - the sovereign guarantee: raw personal data and credentials never
 // leave the tenant's boundary. Code structure (file names, functions, line
 // numbers) is preserved so triage stays useful.
-
-// High-confidence structured secrets, run first via dedicated passes.
-var (
-	// PEM private-key blocks of any type (RSA, EC, OPENSSH, plain).
-	rePEM = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	// Credentials embedded in a URL: scheme://user:PASSWORD@host -> redact the password.
-	reURLCreds = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://[^:@/\s]+:)[^@/\s]+(@)`)
-	// key=value / key: value / "key":"value" where the key names a secret. The
-	// key is matched as a whole identifier that CONTAINS a secret word, so
-	// snake_case names like aws_secret_access_key (no \b around the inner words)
-	// are caught. This scrubs credentials that carry no recognizable prefix (DB
-	// passwords, AWS secret access keys, generic API keys) by their context.
-	reAssignSecret = regexp.MustCompile(`(?i)([A-Za-z0-9_.\-]*(?:passphrase|password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|refresh[_-]?token|session[_-]?key|apikey)[A-Za-z0-9_.\-]*)(\s*["']?\s*[:=]\s*["']?)([^\s"',;)}<>]{6,})`)
-	// Authorization: Bearer <token> and Basic <b64>.
-	reBearer = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._+/=\-]{8,}`)
-	// Formatted or bare payment card: 13-19 digits with optional single space or
-	// dash between groups. Deliberately loose; IsPaymentCard does the real
-	// filtering so ordinary long numbers (ids, timestamps) are left intact.
-	reCardCandidate = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
-)
-
-var scrubbers = []struct {
-	re   *regexp.Regexp
-	with string
-}{
-	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}`), "[jwt]"},
-	// Prefixed tokens: Stripe/OpenAI (sk/pk), GitHub (ghp/ghs/gho/ghu/ghr/github_pat),
-	// Slack (xox*/xapp), AWS access-key id (AKIA/ASIA), GitLab (glpat).
-	{regexp.MustCompile(`\b(?:sk|pk|ghp|ghs|gho|ghu|ghr|github_pat|glpat|xox[baprs]|xapp|AKIA|ASIA)[-_A-Za-z0-9]{10,}\b`), "[secret]"},
-	// Google API key.
-	{regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`), "[secret]"},
-	{regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`), "[email]"},
-	// IPv6 BEFORE IPv4: an IPv4-mapped address (::ffff:192.0.2.1) must be
-	// matched whole, otherwise the IPv4 rule fires first and leaves ::ffff:[ip].
-	// Without these, a client's IPv6 address egressed raw through every MCP tool
-	// while the equivalent IPv4 address was redacted.
-	{regexp.MustCompile(`(?i)::(?:ffff:)?(?:\d{1,3}\.){3}\d{1,3}`), "[ip]"},
-	{regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b`), "[ip]"},
-	// Compressed form. Requires the "::", so a MAC address or a clock time
-	// (which never contain one) cannot match.
-	{regexp.MustCompile(`(?i)(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?`), "[ip]"},
-	{regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`), "[ip]"},
-	{regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b`), "[mac]"},
-	{regexp.MustCompile(`\b[A-Fa-f0-9]{40,}\b`), "[hash]"},
-	// Any remaining bare long digit run (unformatted, non-card).
-	{regexp.MustCompile(`\b\d{13,19}\b`), "[number]"},
-}
-
-// Scrub returns text with PII/secret shapes replaced by placeholders.
-func Scrub(s string) string {
-	// Structured, high-confidence secrets first.
-	s = rePEM.ReplaceAllString(s, "[private-key]")
-	s = reURLCreds.ReplaceAllString(s, "${1}[redacted]${2}")
-	s = reBearer.ReplaceAllString(s, "${1} [secret]")
-	s = reAssignSecret.ReplaceAllString(s, "${1}${2}[secret]")
-	// Payment cards (issuer prefix + length + Luhn) before the generic number
-	// rule below. See card.go: Luhn alone matches one in ten arbitrary digit
-	// runs, which ate 10% of every long id and timestamp that came through here.
-	s = reCardCandidate.ReplaceAllStringFunc(s, func(m string) string {
-		if IsPaymentCard(onlyDigits(m)) {
-			return "[card]"
-		}
-		return m
-	})
-	for _, sc := range scrubbers {
-		s = sc.re.ReplaceAllString(s, sc.with)
-	}
-	return s
-}
-
-// ScrubJSON scrubs a JSON document by walking it and applying Scrub to string
-// leaves only, then re-marshalling.
 //
-// Never run Scrub over serialized JSON directly: the number rules
-// (\b\d{13,19}\b -> [number] and the Luhn card rule) rewrite UNQUOTED numeric
-// values, so {"duration_ns":1712345678901234567} became
-// {"duration_ns":[number]}, which is not valid JSON. Callers wrap the result in
-// json.RawMessage, and encoding/json then fails on the whole response; the MCP
-// layer's marshal fallback rendered the []byte as a decimal byte dump.
-// Nanosecond timestamps are 19 digits, so this fired on ordinary OTLP traffic.
-//
-// The return value is ALWAYS valid JSON, including for input that was not JSON
-// to begin with: callers embed it as a json.RawMessage, so returning anything
-// else would reintroduce the same failure by another route.
-func ScrubJSON(raw []byte) []byte {
-	if len(raw) == 0 {
-		return raw
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	// Numbers stay as their literal text. Decoding into float64 silently rounds
-	// every integer above 2^53, so a 19-digit id or nanosecond timestamp would
-	// come back to the operator as 1.7123456789012346e+18.
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		// Not JSON. Scrub it as text and return it as a JSON *string*, which is
-		// still valid JSON and safe to embed.
-		if out, merr := marshalJSON(Scrub(string(raw))); merr == nil {
-			return out
-		}
-		return []byte(`"[unserializable]"`)
-	}
-	out, err := marshalJSON(scrubValue(v))
-	if err != nil {
-		return []byte(`{"_scrub_error":"redacted"}`)
-	}
-	return out
-}
+// The rules live in internal/scan, NOT here. They used to live here, and the
+// ingest-time detector in internal/api kept a second copy of the same
+// prefixed-token regex; this one gained six token families and dropped its
+// minimum length from 16 to 10, and that one did not. A GitLab token was
+// therefore redacted on its way to a model and stored in plain text in the
+// dashboard with no flag raised. One table, two entry points, no hand-syncing.
+func Scrub(s string) string { return scan.Text(s) }
 
-// scrubValue rewrites string leaves. Object KEYS are deliberately left alone:
-// they are structure, not payload, and scrubbing them can map two distinct keys
-// onto the same string, which silently drops one of the values.
-func scrubValue(v any) any {
-	switch t := v.(type) {
-	case string:
-		return Scrub(t)
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[k] = scrubValue(val)
-		}
-		return out
-	case []any:
-		for i := range t {
-			t[i] = scrubValue(t[i])
-		}
-		return t
-	default:
-		return v
-	}
-}
+// ScrubVersion scrubs an identifier-shaped value (a release, a version, an
+// environment). Credential and personal-data rules apply; the generic
+// form rules do not, because a release in this estate is a git SHA and the
+// 40-hex rule turned every one of them into "[hash]".
+func ScrubVersion(s string) string { return scan.Version(s) }
 
-// marshalJSON encodes without HTML-escaping so <, > and & inside a stack trace
-// or a log body are not mangled into \u003c on their way to the model.
-func marshalJSON(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
-}
+// ScrubJSON scrubs a JSON document by walking it, rewriting its leaves and its
+// keys, and re-marshalling. Always returns valid JSON.
+func ScrubJSON(raw []byte) []byte { return scan.JSON(raw) }
 
-func onlyDigits(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] >= '0' && s[i] <= '9' {
-			b.WriteByte(s[i])
-		}
-	}
-	return b.String()
-}
+// IsPaymentCard reports whether a digits-only string is plausibly a real
+// payment card. See internal/scan/card.go for why Luhn alone is not enough.
+func IsPaymentCard(digits string) bool { return scan.IsPaymentCard(digits) }
 
-// luhn reports whether an all-digit string passes the Luhn checksum.
-func luhn(num string) bool {
-	sum, alt := 0, false
-	for i := len(num) - 1; i >= 0; i-- {
-		d := int(num[i] - '0')
-		if alt {
-			d *= 2
-			if d > 9 {
-				d -= 9
-			}
-		}
-		sum += d
-		alt = !alt
-	}
-	return sum%10 == 0
-}
+// TextHasPaymentCard reports whether text contains a payment card number,
+// sharing the candidate search as well as the decision.
+func TextHasPaymentCard(text string) bool { return scan.TextHasPaymentCard(text) }

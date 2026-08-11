@@ -1,7 +1,12 @@
-package ai
+package scan
 
-// Payment-card recognition, shared by the scrubber (Scrub) and the ingest-time
-// sensitive-data detector (api.detectSensitive) so the two can never drift.
+import (
+	"regexp"
+	"strings"
+)
+
+// Payment-card recognition, shared by the scrubber (Text) and the ingest-time
+// sensitive-data detector (Kinds) so the two can never drift.
 //
 // A valid Luhn check digit is NOT evidence that a number is a payment card.
 // Luhn is a single mod-10 check digit, so one in ten arbitrary digit runs
@@ -111,4 +116,36 @@ func matchesIssuer(digits string) bool {
 		}
 	}
 	return false
+}
+
+// reCardCandidate finds a formatted or bare 13-19 digit run: optional single
+// space or dash between groups. Deliberately loose; IsPaymentCard does the real
+// filtering so ordinary long numbers (ids, timestamps) are left intact.
+var reCardCandidate = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
+
+func onlyDigits(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// luhn reports whether an all-digit string passes the Luhn checksum.
+func luhn(num string) bool {
+	sum, alt := 0, false
+	for i := len(num) - 1; i >= 0; i-- {
+		d := int(num[i] - '0')
+		if alt {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+		alt = !alt
+	}
+	return sum%10 == 0
 }

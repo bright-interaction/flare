@@ -1,4 +1,4 @@
-package ai
+package scan
 
 import (
 	"fmt"
@@ -51,7 +51,7 @@ func TestRealCardsStillDetected(t *testing.T) {
 		if !IsPaymentCard(c.pan) {
 			t.Errorf("%s: %s is a real test PAN and must be detected", c.network, c.pan)
 		}
-		if !strings.Contains(Scrub("charge "+c.pan+" declined"), "[card]") {
+		if !strings.Contains(Text("charge "+c.pan+" declined"), "[card]") {
 			t.Errorf("%s: Scrub must replace %s", c.network, c.pan)
 		}
 	}
@@ -65,8 +65,8 @@ func TestLuhnValidNonCardsSurvive(t *testing.T) {
 		if IsPaymentCard(c.value) {
 			t.Errorf("%s: %s passes Luhn but is not a card and must not be flagged", c.name, c.value)
 		}
-		if got := Scrub(c.value); strings.Contains(got, "[card]") {
-			t.Errorf("%s: Scrub(%s) = %s, must not be redacted as a card", c.name, c.value, got)
+		if got := Text(c.value); strings.Contains(got, "[card]") {
+			t.Errorf("%s: Text(%s) = %s, must not be redacted as a card", c.name, c.value, got)
 		}
 	}
 }
@@ -76,7 +76,7 @@ func TestLuhnValidNonCardsSurvive(t *testing.T) {
 func TestBackupTimestampRegression(t *testing.T) {
 	const msg = "hephaestus backup failed at db_snapshot: backup: vacuum into " +
 		"/var/backups/hephaestus/state-20260810-175840.sqlite: unable to open database file"
-	got := Scrub(msg)
+	got := Text(msg)
 	if !strings.Contains(got, "20260810-175840") {
 		t.Errorf("the timestamp naming the failed run was destroyed:\n got: %s", got)
 	}
