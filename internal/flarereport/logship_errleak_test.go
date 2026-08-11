@@ -64,6 +64,25 @@ func TestErrorAttrLeaksURLCredentials(t *testing.T) {
 
 // TestErrorAttrLeakShapes covers the other values that ride in under a
 // non-sensitive key. Each is a real shape from this estate's logs.
+//
+// The fixtures are shaped like credentials but say out loud that they are not,
+// and the api-key row in particular does NOT wear a real vendor prefix. This
+// file ships to the public mirror and the publish gate runs gitleaks over the
+// filtered clone WITH HISTORY, so a fixture that looks like a live key refuses
+// the publish over the product's own test data. It cost flare exactly that. A
+// value carrying an EXAMPLE marker is skipped by the stopword list gitleaks'
+// generic rules honour, but the vendor-prefix rules (stripe-access-token here)
+// ignore stopwords entirely, so the prefix has to go rather than be marked up.
+//
+// What the row still proves: ai.Scrub's reAssignSecret matches on the PARAMETER
+// NAME, api_key=, and never on the shape of the value, so the nested struct is
+// walked and redacted exactly as it was before. Ablate reAssignSecret and this
+// row goes red.
+//
+// The old spelling also happened to trip ai.Scrub's vendor-prefix rule, the one
+// that eats anything starting sk_/ghp_/AKIA. That coverage is not lost with the
+// prefix: it is exercised where it belongs, against the sk_ literal in
+// internal/ai/ai_test.go, which is the test for that package's own rules.
 func TestErrorAttrLeakShapes(t *testing.T) {
 	cases := []struct {
 		name   string
