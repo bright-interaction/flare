@@ -265,6 +265,8 @@ func (s *Server) mcpErrText(tool string, err error) string {
 		return errTriageNotConfigured.Error()
 	case errors.Is(err, errTriageEndpoint):
 		return errTriageEndpoint.Error()
+	case errors.Is(err, errTriageBudget):
+		return errTriageBudget.Error()
 	}
 	var ue mcpUserError
 	if errors.As(err, &ue) {
@@ -321,12 +323,40 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 			Description: "Estate-wide error health: total events in 24h, unresolved count, new-today count, the top unresolved issues, and per-project open-issue counts.",
 			InputSchema: schema(`{"type":"object","properties":{}}`),
 			Handler: func(ctx context.Context, org string, _ json.RawMessage) (any, error) {
-				ev, _ := s.q.OverviewEventCount24h(ctx, org)
-				un, _ := s.q.OverviewUnresolvedCount(ctx, org)
-				nt, _ := s.q.OverviewNewIssuesToday(ctx, org)
-				top, _ := s.q.OverviewTopIssues(ctx, org)
-				perProj, _ := s.q.OverviewProjectUnresolved(ctx, org)
-				projects, _ := s.q.ListProjectsByOrg(ctx, org)
+				// Every one of these errors used to be discarded, so when the
+				// database was saturated the tool the server's own initialize
+				// instructions tell the agent to start with answered
+				// `unresolved: 0, top_issues: []` with isError false. The agent
+				// then reported the estate healthy while every project was
+				// erroring, and the dashboard showed a red 500 beside it with
+				// no way for the human and the agent to reconcile. The trigger
+				// is the incident itself.
+				//
+				// The REST twin checks and logs all six. Fail the same way.
+				ev, err := s.q.OverviewEventCount24h(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				un, err := s.q.OverviewUnresolvedCount(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				nt, err := s.q.OverviewNewIssuesToday(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				top, err := s.q.OverviewTopIssues(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				perProj, err := s.q.OverviewProjectUnresolved(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				projects, err := s.q.ListProjectsByOrg(ctx, org)
+				if err != nil {
+					return nil, err
+				}
 				byID := make(map[string]*generated.Project, len(projects))
 				for _, p := range projects {
 					byID[p.ID] = p
@@ -455,7 +485,20 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Events <= 0 || a.Events > 20 {
 					a.Events = 3
 				}
-				events, _ := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
+				// Not discarded. get_issue is described as the core
+				// investigation tool and the whole point is the stack trace, so
+				// an empty events array reads as "no recorded events". A
+				// statement timeout on the events partition scan (the largest
+				// table, and under load precisely because the incident is
+				// generating events) produced exactly that, and an agent
+				// reasonably concludes the issue is stale and calls
+				// update_issue_status to resolve it. The live incident is then
+				// marked resolved and drops out of overview. The REST twin
+				// fails closed.
+				events, err := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
+				if err != nil {
+					return nil, err
+				}
 				return map[string]any{
 					"trust": "untrusted",
 					"note":  untrustedIssueNote,
