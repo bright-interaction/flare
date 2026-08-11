@@ -160,8 +160,22 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "only an owner can invite an owner")
 		return
 	}
+	// GetUserByEmail is deliberately UNSCOPED (an address is globally unique
+	// across the install), so a 409 here told an admin of ANY org whether an
+	// address has an account in some OTHER org, unlimited and unrated. The
+	// answer is now the same either way, and the invite is simply not created
+	// when the address is taken. handleLogin and handleForgotPassword were
+	// hardened against exactly this shape; this route undid it.
+	//
+	// The invitee is not silently misled: an account that already exists signs
+	// in normally, which is what an inviter wants anyway.
 	if _, err := s.q.GetUserByEmail(ctx, req.Email); err == nil {
-		writeErr(w, http.StatusConflict, "that email already has an account")
+		s.audit(ctx, "member.invite", req.Email+" as "+req.Role+" (already registered)")
+		writeJSON(w, http.StatusCreated, map[string]any{"email": req.Email, "role": req.Role})
+		return
+	}
+	if !s.signupLimiter.Allow("invite:" + orgIDFrom(ctx)) {
+		writeErr(w, http.StatusTooManyRequests, "too many invitations, try again later")
 		return
 	}
 
@@ -243,6 +257,15 @@ func (s *Server) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 // handleAcceptInvite consumes an invite token, creates the user with the
 // invited role, and signs them in. Public (no session yet).
 func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	// Limited BEFORE the body is parsed, like the register gate, so an
+	// unparseable body still consumes the budget. Register was the other
+	// unlimited unauthenticated POST and it was fixed alone; this is the twin
+	// that was left, and it is an unbounded bcrypt call (cost 12) reachable
+	// with no credential at all.
+	if !s.signupLimiter.Allow("accept-invite:" + remoteIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, "too many attempts, try again later")
+		return
+	}
 	var req struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
