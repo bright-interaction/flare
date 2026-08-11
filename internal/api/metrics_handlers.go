@@ -33,11 +33,13 @@ func (s *Server) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid OTLP metrics payload")
 		return
 	}
-	if err := s.persistMetrics(r.Context(), project, records); err != nil {
+	budget := newIngestBudget()
+	if err := s.persistMetrics(r.Context(), project, records, budget); err != nil {
 		slogError(w, "persist metrics", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	budget.report(project.ID, "metrics")
+	writeJSON(w, http.StatusOK, otlpResponse(budget.dropped, otlpRejectedDataPoints))
 }
 
 // handleNativeMetrics ingests a bare JSON array of metric points (or {"metrics":[...]}).
@@ -55,14 +57,18 @@ func (s *Server) handleNativeMetrics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid metrics payload")
 		return
 	}
-	if err := s.persistMetrics(r.Context(), project, records); err != nil {
+	budget := newIngestBudget()
+	if err := s.persistMetrics(r.Context(), project, records, budget); err != nil {
 		slogError(w, "persist metrics", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{})
+	budget.report(project.ID, "metrics")
+	writeJSON(w, http.StatusOK, map[string]int{"accepted": len(records) - budget.dropped})
 }
 
-func (s *Server) persistMetrics(ctx context.Context, project *generated.Project, records []ingest.MetricRecord) error {
+func (s *Server) persistMetrics(ctx context.Context, project *generated.Project, records []ingest.MetricRecord, budget *ingestBudget) error {
+	// Spend the request's row budget first. See maxIngestRecords.
+	records = records[:budget.take(len(records))]
 	if len(records) == 0 {
 		return nil
 	}
