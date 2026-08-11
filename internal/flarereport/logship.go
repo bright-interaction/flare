@@ -309,8 +309,14 @@ func (h *flareSlogHandler) ship(r slog.Record) {
 		}
 	}
 	h.shipper.enqueue(nativeLogLine{
-		Severity:   strings.ToLower(r.Level.String()),
-		Body:       r.Message,
+		Severity: strings.ToLower(r.Level.String()),
+		// The message is the other half of the same egress, and the attrs fix
+		// above landed without it. It is free text an author formats by hand, so
+		// slog.Error(fmt.Sprintf("POST %s failed", endpointWithToken)) put the
+		// credential in the body instead of the attribute, where the scrub above
+		// never looks. sentinel's copy has scrubbed the body since it found this;
+		// flare's had not.
+		Body:       ai.Scrub(r.Message),
 		Attributes: attrs,
 		TraceID:    traceID,
 		Timestamp:  r.Time.UTC().Format(time.RFC3339),

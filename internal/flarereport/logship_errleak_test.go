@@ -94,6 +94,40 @@ func TestErrorAttrLeakShapes(t *testing.T) {
 	}
 }
 
+// TestRecordMessageLeaksURLCredentials is the twin the attrs fix left behind.
+//
+// The scrub above runs over the marshalled ATTRIBUTES. The record's message is a
+// separate field on the shipped line, and it is free text an author formats by
+// hand, so the same credential arrives there whenever someone writes the URL
+// into the sentence instead of passing the error as an attribute. That is not a
+// hypothetical style: fmt.Sprintf into the message is how most of this estate
+// reports a failing call.
+//
+// sentinel's copy has scrubbed the body since it found this. flare's had not,
+// including in the commit that fixed the attribute half and named the pattern.
+func TestRecordMessageLeaksURLCredentials(t *testing.T) {
+	sh := &logShipper{ch: make(chan nativeLogLine, 4)}
+	h := &flareSlogHandler{next: slog.NewTextHandler(discard{}, nil), shipper: sh, minLvl: slog.LevelWarn}
+
+	secret := "s3cr3t-webhook-token"
+	msg := "POST https://hooks.partner.example.com/deliver?token=" + secret + " failed after 3 tries"
+	if e := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelError, msg, 0)); e != nil {
+		t.Fatalf("Handle: %v", e)
+	}
+
+	select {
+	case line := <-sh.ch:
+		if strings.Contains(line.Body, secret) {
+			t.Errorf("the webhook token was shipped in the message body:\n  %s", line.Body)
+		}
+		if !strings.Contains(line.Body, "hooks.partner.example.com") {
+			t.Errorf("the endpoint was destroyed along with the token:\n  %s", line.Body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing was enqueued; the test is not exercising the ship path")
+	}
+}
+
 type errString string
 
 func (e errString) Error() string { return string(e) }
