@@ -113,7 +113,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
 	// Brute-force lockout: 5 failed attempts per email+IP within 15 minutes.
-	lockKey := "login:" + req.Email + "|" + clientIP(r)
+	lockKey := "login:" + limiterEmailKey(req.Email) + "|" + clientIP(r)
 	if s.loginLimiter.Blocked(lockKey) {
 		w.Header().Set("Retry-After", "900")
 		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
@@ -211,7 +211,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Rate-limit per email+IP. The limit trips on the key regardless of whether
 	// the account exists, so it enables neither enumeration nor reset-email
 	// bombing while still letting a genuine user retry a few times.
-	if !s.resetLimiter.Allow("reset:" + email + "|" + clientIP(r)) {
+	if !s.resetLimiter.Allow("reset:" + limiterEmailKey(email) + "|" + clientIP(r)) {
 		w.Header().Set("Retry-After", "900")
 		writeErr(w, http.StatusTooManyRequests, "too many reset requests, try again later")
 		return
