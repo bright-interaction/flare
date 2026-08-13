@@ -56,10 +56,20 @@ type Server struct {
 	// resetLimiter caps password-reset requests per email+IP so /forgot-password
 	// cannot be used for account enumeration or reset-email bombing.
 	resetLimiter *ratelimit.Limiter
+	// resetConsumeLimiter caps the OTHER half of the reset flow, per IP.
+	// /forgot-password only MINTS a link; /auth/reset-password is the step that
+	// spends it, and it is the one that runs bcrypt. Limiting the mint and not
+	// the spend leaves the expensive half open, which is exactly how it shipped.
+	resetConsumeLimiter *ratelimit.Limiter
 
 	// signupLimiter caps registration attempts per IP so the one unauthenticated
 	// route that creates rows cannot be looped.
 	signupLimiter *ratelimit.Limiter
+	// inviteLimiter caps invite acceptances per IP. /auth/accept-invite is the
+	// OTHER unauthenticated POST, and once register was gated it was the last one
+	// with no ceiling at all: a bcrypt at cost 12 plus two queries, reachable
+	// without an account.
+	inviteLimiter *ratelimit.Limiter
 	// testLimiter caps per-org "send test notification" calls so the test route
 	// cannot be looped to spam a configured recipient or probe public hosts.
 	testLimiter *ratelimit.Limiter
@@ -299,11 +309,44 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
 		mcpLimiter:    ratelimit.New(mcpRatePerMin, time.Minute),
 		resetLimiter:  ratelimit.New(5, 15*time.Minute), // <=5 reset requests per (email, ip) / 15m
+		// <=10 reset COMPLETIONS per IP / 15m, keyed on IP alone. resetLimiter
+		// above covers /forgot-password and cannot cover this route: its key
+		// folds in the email address, and this request carries no address, only
+		// an opaque token, which must stay out of the key for the same reason
+		// inviteLimiter keeps its own token out (a caller-chosen component is a
+		// fresh budget, not a ceiling).
+		//
+		// A real reset costs ONE request. The two retries a person actually
+		// makes, a password under 8 characters and a mismatched confirmation,
+		// are both caught in the browser (minlength={8} and a password !==
+		// confirm check in reset-password/+page.svelte), so neither reaches
+		// here. Ten rather than resetLimiter's five because this bucket has no
+		// email in it to spread a shared address across: a whole office behind
+		// one NAT lands in a single bucket, and 15 minutes matches the token's
+		// own life so a wrongly-locked address is never stuck past the link it
+		// is trying to use.
+		resetConsumeLimiter: ratelimit.New(10, 15*time.Minute),
 		// <=5 registration attempts per IP / hour. Login and password reset were
 		// both limited; register, the only unauthenticated route that WRITES two
 		// rows, was not. Keyed on IP alone because the bootstrap gate below makes
 		// the email irrelevant to the outcome once an install has a user.
 		signupLimiter: ratelimit.New(5, time.Hour),
+		// <=10 invite acceptances per IP / 15m. Wider than register's 5/hour and
+		// on a shorter window, because the two routes have different shapes:
+		// registration happens once per install, while invites arrive in batches
+		// and a whole team can accept from one office NAT inside one window.
+		//
+		// A legitimate accept costs ONE request. The two retries a real person
+		// makes, a password under 8 characters and a confirmation that does not
+		// match, are both caught in the browser (minlength and an equality check
+		// in accept-invite/+page.svelte), so neither reaches here. What does
+		// reach here is a stale link, a network retry, and anyone driving the
+		// API directly. So ten leaves room for several colleagues behind one
+		// address and no room at all for a loop, and a wrongly-locked office is
+		// back in fifteen minutes rather than an hour. What it buys: an address
+		// can force at most 40 bcrypts an hour instead of as many as it can open
+		// sockets for.
+		inviteLimiter: ratelimit.New(10, 15*time.Minute),
 		testLimiter:   ratelimit.New(10, time.Minute), // <=10 test-sends per org / min
 		// <=20 monitor-failure alerts per ORG per minute, whatever the slug.
 		// Above any real estate (a flapping fleet transitions a handful of
