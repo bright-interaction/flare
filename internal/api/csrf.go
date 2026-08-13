@@ -3,24 +3,53 @@ package api
 import (
 	"net/http"
 
+	"github.com/bright-interaction/flare/internal/auth"
 	"github.com/gorilla/csrf"
 )
 
-// conditionalCSRF enforces CSRF on cookie-authenticated (browser) requests
-// but skips it when a Bearer API key is present. Bearer clients are not
-// browsers and carry no ambient cookie, so they are immune to CSRF; the
-// security rules explicitly allow them to skip the check.
+// conditionalCSRF enforces CSRF on cookie-authenticated (browser) requests and
+// skips it for pure Bearer API clients, which carry no ambient credential and
+// are therefore immune to CSRF by construction.
+//
+// The exemption used to be "an Authorization header is present", full stop, and
+// that is not the same question. requireAuth authenticates from the SESSION
+// first and only falls through to the API key when there is no session, so the
+// exemption decision and the authentication decision were made from two
+// different inputs and never reconciled: `curl -H 'Authorization: Bearer x'`
+// with a valid session cookie was CSRF-exempt AND session-authenticated. Junk
+// in the header was enough; the value was never looked at.
+//
+// It was blocked twice over in practice (SameSite=Strict on the cookie, and a
+// custom header forces a CORS preflight Flare answers with no
+// Access-Control-Allow-Origin), which is exactly the problem: the CSRF layer
+// was contributing nothing, and the whole defence rested on two controls one
+// config change away, a proxy that relaxes SameSite or a future CORS middleware
+// for a separate frontend origin.
+//
+// So the test is now "is there an ambient credential on this request", which is
+// the thing CSRF is actually about. A session cookie means enforce, whatever
+// else is present. This runs before requireAuth, so it reads the cookie rather
+// than the resolved session: an API client that also sends a stale cookie gets
+// CSRF enforced, which is over-enforcement against a client that does not
+// exist.
 func conditionalCSRF(csrfMW func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		protected := csrfMW(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if bearerToken(r) != "" {
+			if bearerToken(r) != "" && !hasSessionCookie(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
 			protected.ServeHTTP(w, r)
 		})
 	}
+}
+
+// hasSessionCookie reports whether the request carries the browser's ambient
+// session credential.
+func hasSessionCookie(r *http.Request) bool {
+	c, err := r.Cookie(auth.SessionCookieName)
+	return err == nil && c.Value != ""
 }
 
 // handleCSRFToken returns the per-session CSRF token the SPA echoes back in

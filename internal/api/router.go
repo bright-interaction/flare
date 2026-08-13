@@ -85,6 +85,7 @@ func (s *Server) Routes(build fs.FS, csrfMW func(http.Handler) http.Handler) htt
 				r.Get("/overview", s.handleOverview)
 				r.Get("/projects", s.handleListProjects)
 				r.Get("/projects/{id}", s.handleGetProject)
+				r.Get("/projects/by-dsn/{dsnID}", s.handleGetProjectByDsnID)
 				r.Get("/projects/{id}/issues", s.handleListIssues)
 				r.Get("/projects/{id}/logs", s.handleSearchLogs)
 				r.Get("/projects/{id}/traces", s.handleListTraces)

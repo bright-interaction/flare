@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -109,7 +110,13 @@ func (s *Server) handleCreateGithubIssue(w http.ResponseWriter, r *http.Request)
 	body := fmt.Sprintf("Reported by Flare.\n\n**Level:** %s\n**Culprit:** %s\n**Events:** %d\n\n%s/issues/%s",
 		issue.Level, issue.Culprit, issue.EventCount, strings.TrimRight(s.cfg.BaseURL, "/"), issue.ID)
 
-	url, err := github.CreateIssue(ctx, s.secrets.Decrypt(cfg.Token), cfg.Repo, title, body)
+	token, err := s.secrets.Decrypt(cfg.Token)
+	if err != nil {
+		slog.Error("github: stored token cannot be decrypted; check FLARE_SECRET_KEY", "org", org, "error", err)
+		writeErr(w, http.StatusBadGateway, "the stored GitHub token could not be read; reconnect the integration")
+		return
+	}
+	url, err := github.CreateIssue(ctx, token, cfg.Repo, title, body)
 	if err != nil {
 		slogError(w, "github create issue", err)
 		writeErr(w, http.StatusBadGateway, "could not create the GitHub issue (check the repo and token)")
@@ -119,5 +126,6 @@ func (s *Server) handleCreateGithubIssue(w http.ResponseWriter, r *http.Request)
 		slogError(w, "github issue: save url", err)
 		return
 	}
+	s.audit(ctx, "github.issue_create", issue.ID)
 	writeJSON(w, http.StatusCreated, map[string]string{"github_url": url})
 }

@@ -56,12 +56,12 @@ type Config struct {
 	// Turn it on only where public signup is the product.
 	AllowSignup bool
 
-	S3Endpoint             string
-	S3Bucket               string
-	S3AccessKey            string
-	S3SecretKey            string
-	S3Region               string
-	S3UseSSL               bool
+	S3Endpoint  string
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
+	S3UseSSL    bool
 
 	SessionKey         string
 	CSRFKey            string
@@ -120,7 +120,7 @@ func Load() (Config, error) {
 		CSRFKey:                env("CSRF_KEY", ""),
 		SessionLifetime:        time.Duration(envInt("SESSION_LIFETIME_HOURS", 720)) * time.Hour,
 		SessionIdleTimeout:     time.Duration(envInt("SESSION_IDLE_HOURS", 168)) * time.Hour,
-		DisableCSRF:            env("DISABLE_CSRF", "") == "true",
+		DisableCSRF:            isTrue(env("DISABLE_CSRF", "")),
 		RedisURL:               env("REDIS_URL", ""),
 		SMTPHost:               env("SMTP_HOST", ""),
 		SMTPPort:               envInt("SMTP_PORT", 587),
@@ -130,7 +130,10 @@ func Load() (Config, error) {
 		SMTPFromName:           env("SMTP_FROM_NAME", "Flare"),
 		SMTPTLS:                env("SMTP_TLS", "starttls"),
 		SecretKey:              env("FLARE_SECRET_KEY", ""),
-		AllowDropWithoutExport: env("FLARE_ALLOW_DROP_WITHOUT_EXPORT", "") == "true",
+		// isTrue, not == "true". Both of these currently fail SAFE, but three
+		// booleans parsed three ways in one struct literal is how the next one
+		// lands on the wrong side.
+		AllowDropWithoutExport: isTrue(env("FLARE_ALLOW_DROP_WITHOUT_EXPORT", "")),
 	}
 
 	if c.DatabaseURL == "" {
@@ -156,6 +159,34 @@ func Load() (Config, error) {
 		if len(missing) > 0 {
 			return c, fmt.Errorf("production requires: %s", strings.Join(missing, ", "))
 		}
+		// Present is not the same as set.
+		//
+		// "Required in production" was implemented as "non-empty", and
+		// .env.example ships your_session_key_here_change_me,
+		// your_csrf_key_32_bytes_change_me! and your_secret_key_here_change_me,
+		// all of which are non-empty and all of which are PUBLISHED in the
+		// open-source mirror. An instance provisioned from the example
+		// therefore booted production with a publicly known CSRF signing key,
+		// a publicly known session key and a publicly known at-rest key, and
+		// nothing said a word. FLARE_SECRET_KEY=x also booted cleanly on one
+		// byte of entropy.
+		for _, k := range []struct {
+			name, value string
+			minBytes    int
+		}{
+			{"SESSION_KEY", c.SessionKey, 32},
+			{"CSRF_KEY", c.CSRFKey, 32},
+			{"FLARE_SECRET_KEY", c.SecretKey, 32},
+		} {
+			if isPlaceholderSecret(k.value) {
+				return c, fmt.Errorf("%s is still the placeholder shipped in .env.example, "+
+					"which is public. Generate one: openssl rand -base64 32", k.name)
+			}
+			if len(k.value) < k.minBytes {
+				return c, fmt.Errorf("%s must be at least %d bytes (got %d). "+
+					"Generate one: openssl rand -base64 32", k.name, k.minBytes, len(k.value))
+			}
+		}
 	} else {
 		// Dev-only fallbacks so the service boots without ceremony.
 		if c.SessionKey == "" {
@@ -168,6 +199,25 @@ func Load() (Config, error) {
 	}
 
 	return c, nil
+}
+
+// placeholderMarkers are the substrings the shipped examples use. Matched on
+// the VALUE, so a real key can never trip them by accident: 32 bytes from
+// openssl does not contain "change_me".
+var placeholderMarkers = []string{
+	"change_me", "changeme", "your_", "_here", "replace_me", "example",
+}
+
+// isPlaceholderSecret reports whether a value is one of the documented
+// examples rather than a real secret.
+func isPlaceholderSecret(v string) bool {
+	l := strings.ToLower(v)
+	for _, m := range placeholderMarkers {
+		if strings.Contains(l, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func env(key, def string) string {

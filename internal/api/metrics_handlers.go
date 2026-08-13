@@ -114,7 +114,7 @@ func (s *Server) handleListMetrics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	names, err := s.store.ListMetricNames(r.Context(), proj.ID, proj.OrgID)
+	names, err := s.store.ListMetricNames(r.Context(), proj.ID, proj.OrgID, maxMetricNames)
 	if err != nil {
 		slogError(w, "list metrics", err)
 		return

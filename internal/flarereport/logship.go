@@ -91,6 +91,16 @@ var sensitiveLogKeyParts = []string{
 	"password", "passwd", "secret", "token", "authorization", "bearer",
 	"cookie", "credential", "api_key", "apikey", "access_key", "accesskey",
 	"private_key", "privatekey", "vault_key", "new_value", "jwt", "session_id", "dsn",
+	// The eleven the 2026-08-11 audit found missing. The ScrubJSON layer added
+	// in 5a7b06800 catches the credential-SHAPED ones by pattern, but not
+	// "ssn", "personnummer", "pin" or "otp": for those the key name is the ONLY
+	// control, because a Swedish personnummer or a 4-digit PIN has no shape a
+	// value scrubber can safely key on.
+	"privkey", "conn_str", "connection_string", "database_url", "db_url",
+	"webhook_url", "signature", "otp", "pin", "ssn", "personnummer",
+	// Suffix forms of "key". Bare "key" stays excluded (keyboard, monkey), but
+	// a name that ENDS in a key separator is a credential nine times in ten.
+	"_key", "key_", "-key",
 }
 
 func isSensitiveLogKey(key string) bool {

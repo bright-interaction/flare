@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -30,6 +31,17 @@ type monitorResponse struct {
 	CheckinURL      string  `json:"checkin_url"`
 }
 
+const (
+	// maxMonitorsPerProject bounds auto-created monitors. Far above any real
+	// cron fleet and far below the 1.7M rows a day a DSN key could otherwise
+	// mint.
+	maxMonitorsPerProject = 500
+	// monitorPruneAfter is how long an unconfigured monitor may stay quiet
+	// before the cap sweep removes it. A CONFIGURED monitor is never pruned:
+	// going quiet is exactly what it exists to report.
+	monitorPruneAfter = 30 * 24 * time.Hour
+)
+
 // checkinURL is the DSN-authed URL a scheduled job pings each run. The public
 // key is the ingest key (already embedded in the project DSN), so carrying it as
 // a query param lets a cron check in with a bare curl.
@@ -37,8 +49,12 @@ func (s *Server) checkinURL(proj *generated.Project, slug string) string {
 	return strings.TrimRight(s.cfg.BaseURL, "/") + "/api/" + proj.DsnID + "/checkins/" + slug + "?sentry_key=" + proj.PublicKey
 }
 
-func (s *Server) toMonitorResponse(m *generated.Monitor, proj *generated.Project) monitorResponse {
-	return monitorResponse{
+// toMonitorResponse renders a monitor. checkin_url embeds the project's ingest
+// public key, so it is the same write credential as the DSN and is omitted for
+// a viewer for the same reason: GET /api/{dsnID}/checkins/{slug} CREATES the
+// monitor, so a read-only credential could persist rows.
+func (s *Server) toMonitorResponse(ctx context.Context, m *generated.Monitor, proj *generated.Project) monitorResponse {
+	out := monitorResponse{
 		ID:              m.ID,
 		Slug:            m.Slug,
 		Name:            m.Name,
@@ -47,8 +63,11 @@ func (s *Server) toMonitorResponse(m *generated.Monitor, proj *generated.Project
 		LastPingAt:      tsPtr(m.LastPingAt),
 		LastStatus:      m.LastStatus,
 		State:           m.State,
-		CheckinURL:      s.checkinURL(proj, m.Slug),
 	}
+	if roleAtLeast(roleFrom(ctx), "member") {
+		out.CheckinURL = s.checkinURL(proj, m.Slug)
+	}
+	return out
 }
 
 // handleCheckin records a scheduled-job check-in. DSN-authed (same as ingest),
@@ -76,6 +95,43 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		ProjectID: project.ID, OrgID: project.OrgID, Slug: slug,
 	}); err == nil {
 		priorState = prior.State
+	}
+
+	// Bound the monitors one project can accumulate.
+	//
+	// UpsertMonitorCheckin CREATES the monitor on first ping and the slug is
+	// caller-chosen on a DSN-authed endpoint, so the slug regex bounded LENGTH
+	// and nothing bounded CARDINALITY: at 1200 requests/min per key that is 1.7M
+	// monitor rows a day per project. ListDueMonitors then sequentially scans
+	// that table every five minutes forever (EXTRACT(EPOCH ...) per row, so no
+	// index applies) and ListMonitorsByProject returns all of them to the
+	// dashboard.
+	//
+	// The cap only applies to a slug that does not exist yet, so an established
+	// monitor never stops being able to check in. Before refusing, sweep the
+	// unconfigured ones that have gone quiet: an honest project that churned
+	// through job names self-heals instead of wedging.
+	if priorState == "" {
+		n, cerr := s.q.CountMonitorsByProject(r.Context(), generated.CountMonitorsByProjectParams{
+			ProjectID: project.ID, OrgID: project.OrgID,
+		})
+		if cerr == nil && n >= maxMonitorsPerProject {
+			if _, perr := s.q.PruneUnconfiguredMonitors(r.Context(), generated.PruneUnconfiguredMonitorsParams{
+				ProjectID: project.ID, OrgID: project.OrgID,
+				LastPingAt: pgtype.Timestamptz{Time: now.Add(-monitorPruneAfter), Valid: true},
+			}); perr != nil {
+				slog.Warn("prune unconfigured monitors failed", "project_id", project.ID, "error", perr)
+			}
+			n, cerr = s.q.CountMonitorsByProject(r.Context(), generated.CountMonitorsByProjectParams{
+				ProjectID: project.ID, OrgID: project.OrgID,
+			})
+			if cerr == nil && n >= maxMonitorsPerProject {
+				slog.Warn("monitor check-in refused: project is at its monitor cap",
+					"project_id", project.ID, "slug", slug, "cap", maxMonitorsPerProject)
+				writeErr(w, http.StatusTooManyRequests, "this project has reached its monitor limit")
+				return
+			}
+		}
 	}
 
 	if _, err := s.q.UpsertMonitorCheckin(r.Context(), generated.UpsertMonitorCheckinParams{
@@ -113,7 +169,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		// DSN-authed check-in endpoint, so anyone holding a project's public key
 		// could otherwise loop ok->failed transitions and spawn one unbounded
 		// detached goroutine (plus one outbound alert) per request.
-		s.goBackground("monitor-failed", 15*time.Second, func(ctx context.Context) {
+		s.goBackgroundFor(org, "monitor-failed", 15*time.Second, func(ctx context.Context) {
 			// A monitor belongs to a project, so this respects routing.
 			s.dispatchToProject(ctx, org, pid, alerts.Notification{
 				ProjectName: name,
@@ -144,7 +200,7 @@ func (s *Server) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]monitorResponse, 0, len(mons))
 	for _, m := range mons {
-		out = append(out, s.toMonitorResponse(m, proj))
+		out = append(out, s.toMonitorResponse(r.Context(), m, proj))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -192,7 +248,8 @@ func (s *Server) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "could not create monitor (slug may already exist)")
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.toMonitorResponse(m, proj))
+	s.audit(r.Context(), "monitor.create", req.Slug)
+	writeJSON(w, http.StatusCreated, s.toMonitorResponse(r.Context(), m, proj))
 }
 
 func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +286,8 @@ func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toMonitorResponse(m, proj))
+	s.audit(r.Context(), "monitor.update", m.Slug)
+	writeJSON(w, http.StatusOK, s.toMonitorResponse(r.Context(), m, proj))
 }
 
 func (s *Server) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
@@ -244,5 +302,6 @@ func (s *Server) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "monitor not found")
 		return
 	}
+	s.audit(r.Context(), "monitor.delete", chi.URLParam(r, "id"))
 	writeJSON(w, http.StatusNoContent, nil)
 }

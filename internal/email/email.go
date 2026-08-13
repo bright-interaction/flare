@@ -6,7 +6,10 @@
 package email
 
 import (
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -61,7 +64,10 @@ func (m *Mailer) Send(to, subject, htmlBody, textBody string) error {
 	if !m.Enabled() {
 		return ErrDisabled
 	}
-	msg := m.build(to, subject, textBody, htmlBody)
+	msg, err := m.build(to, subject, textBody, htmlBody)
+	if err != nil {
+		return err
+	}
 	addr := net.JoinHostPort(m.host, fmt.Sprintf("%d", m.port))
 
 	var auth smtp.Auth
@@ -156,10 +162,50 @@ func stripHeaderCRLF(s string) string {
 	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
 }
 
-func (m *Mailer) build(to, subject, text, html string) []byte {
-	boundary := "flare-boundary-9d7f3a1c"
+// mimeBoundary mints a delimiter for one message.
+//
+// The old one was a compile-time constant, published in the open-source mirror.
+// A part separator an attacker knows is a part separator an attacker can write:
+// an exception value containing "\r\n--<boundary>\r\nContent-Type: text/html"
+// added an attacker-authored MIME part to a message sent from the real Flare
+// From: address, and anyone holding a project DSN key can put that string in an
+// exception value. Dot-stuffing prevents SMTP command injection, so the blast
+// radius was MIME parts rather than full message forgery, which is quite enough
+// for a password-reset phishing part.
+//
+// Random per message, and the bodies are checked against it below, so even a
+// collision cannot split the message.
+func mimeBoundary() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		// Fail closed rather than fall back to a predictable value: a caller
+		// that cannot get entropy must not send a message whose part
+		// separator an attacker can guess.
+		return ""
+	}
+	return "flare-" + hex.EncodeToString(raw[:])
+}
+
+func (m *Mailer) build(to, subject, text, html string) ([]byte, error) {
+	boundary := mimeBoundary()
+	if boundary == "" {
+		return nil, errors.New("mint mime boundary: no entropy available")
+	}
+	return m.buildWith(to, subject, text, html, boundary)
+}
+
+// buildWith is build with the boundary supplied, so the collision refusal can
+// be tested. build itself cannot be: its boundary is random by design, so a
+// test can never hand it a body containing that call's own separator.
+func (m *Mailer) buildWith(to, subject, text, html, boundary string) ([]byte, error) {
+	// A body containing the boundary would close the part early. With 128 bits
+	// of entropy this cannot happen in practice; the cost of checking is one
+	// scan and the failure it covers is total.
+	if strings.Contains(text, boundary) || strings.Contains(html, boundary) {
+		return nil, errors.New("message body collides with its own mime boundary")
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s <%s>\r\n", m.fromName, m.from)
+	fmt.Fprintf(&b, "From: %s <%s>\r\n", stripHeaderCRLF(m.fromName), stripHeaderCRLF(m.from))
 	// Strip CR/LF from the recipient + subject so a value with an embedded newline cannot
 	// inject extra SMTP headers or a body (defense-in-depth; callers use constant subjects
 	// today, but header safety should not depend on that).
@@ -179,5 +225,5 @@ func (m *Mailer) build(to, subject, text, html string) []byte {
 	b.WriteString("\r\n\r\n")
 
 	fmt.Fprintf(&b, "--%s--\r\n", boundary)
-	return []byte(b.String())
+	return []byte(b.String()), nil
 }

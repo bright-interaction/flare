@@ -12,7 +12,13 @@ SELECT name,
 FROM metrics
 WHERE project_id = $1 AND org_id = $2 AND observed_at > now() - interval '24 hours'
 GROUP BY name
-ORDER BY name;
+ORDER BY name
+-- CAPPED. The metric name is caller-chosen and unbounded in cardinality: one
+-- 8 MiB request produced 364,722 distinct names against the real parser, and
+-- handleListMetrics returned every row. The cap turns an attacker-chosen
+-- cardinality into a bounded response; a project with more real series than
+-- this has a naming problem the browser cannot help with anyway.
+LIMIT $3;
 
 -- name: QueryMetricSeries :many
 -- Raw points for one metric name over a window, newest first, capped. The UI

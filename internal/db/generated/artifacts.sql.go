@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countSourceMapsByProject = `-- name: CountSourceMapsByProject :one
+SELECT count(*)::bigint AS artifacts, coalesce(sum(length(content)), 0)::bigint AS bytes
+FROM source_map_artifacts WHERE project_id = $1 AND org_id = $2
+`
+
+type CountSourceMapsByProjectParams struct {
+	ProjectID string `json:"project_id"`
+	OrgID     string `json:"org_id"`
+}
+
+type CountSourceMapsByProjectRow struct {
+	Artifacts int64 `json:"artifacts"`
+	Bytes     int64 `json:"bytes"`
+}
+
+// Row count and total bytes for a project's source maps, for the upload quota.
+func (q *Queries) CountSourceMapsByProject(ctx context.Context, arg CountSourceMapsByProjectParams) (*CountSourceMapsByProjectRow, error) {
+	row := q.db.QueryRow(ctx, countSourceMapsByProject, arg.ProjectID, arg.OrgID)
+	var i CountSourceMapsByProjectRow
+	err := row.Scan(&i.Artifacts, &i.Bytes)
+	return &i, err
+}
+
 const deleteSourceMap = `-- name: DeleteSourceMap :execrows
 DELETE FROM source_map_artifacts WHERE id = $1 AND project_id = $2 AND org_id = $3
 `

@@ -63,11 +63,20 @@ func InitFlare(service, release string) bool {
 		ServerName:       service,
 		EnableTracing:    true,
 		TracesSampleRate: tracesSampleRate(),
-		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+		BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 			if !allowSend() {
 				return nil
 			}
-			return event
+			return scrubRequestEvent(event)
+		},
+		// Transaction envelopes route through a SEPARATE hook. Registering only
+		// BeforeSend covers errors and leaves every traced request unscrubbed,
+		// which on this service is the higher-volume half.
+		BeforeSendTransaction: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+			if !allowSend() {
+				return nil
+			}
+			return scrubRequestEvent(event)
 		},
 	})
 	if err != nil {

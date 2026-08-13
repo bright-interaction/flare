@@ -11,6 +11,7 @@ import (
 
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
+	"github.com/bright-interaction/flare/internal/ingest"
 )
 
 // maxArtifactBody bounds a source map upload. Maps for large bundles can be
@@ -28,6 +29,15 @@ type artifactResponse struct {
 // handleUploadSourceMap stores (or replaces) one minified file's source map for
 // a project + release. The `name` is the minified file as it appears in a stack
 // frame (e.g. "app.min.js"); `content` is the .map JSON.
+const (
+	// maxArtifactsPerProject bounds the row count. A real bundle ships a
+	// handful of maps per release and a project keeps a few releases' worth.
+	maxArtifactsPerProject = 2000
+	// maxArtifactBytesPerProject bounds the volume, which is what actually
+	// fills a disk: maxArtifactBody is 30 MiB per upload.
+	maxArtifactBytesPerProject = 2 << 30 // 2 GiB
+)
+
 func (s *Server) handleUploadSourceMap(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxArtifactBody))
 	if err != nil {
@@ -65,18 +75,42 @@ func (s *Server) handleUploadSourceMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-project quota. Sourcemap upload is the only pipeline with no ingest
+	// rate limit (it is an auth route) and it deliberately sits at MEMBER so CI
+	// keeps working, so a leaked CI key was an unbounded write of 30 MiB
+	// artifacts with (project_id, release, name) all caller-chosen: it fills the
+	// volume. Counted before the upsert, and an upsert over an existing
+	// (release, name) is allowed through so redeploying the same release never
+	// wedges.
+	if used, cerr := s.q.CountSourceMapsByProject(r.Context(), generated.CountSourceMapsByProjectParams{
+		ProjectID: chi.URLParam(r, "id"), OrgID: orgIDFrom(r.Context()),
+	}); cerr != nil {
+		slogError(w, "count source maps", cerr)
+		return
+	} else if used.Artifacts >= maxArtifactsPerProject || used.Bytes+int64(len(req.Content)) > maxArtifactBytesPerProject {
+		writeErr(w, http.StatusInsufficientStorage,
+			"this project has reached its source map storage limit; delete old releases' maps first")
+		return
+	}
+
 	row, err := s.q.UpsertSourceMap(r.Context(), generated.UpsertSourceMapParams{
 		ID:        id.New(),
 		ProjectID: chi.URLParam(r, "id"),
 		OrgID:     orgIDFrom(r.Context()),
-		Release:   req.Release,
-		Name:      req.Name,
-		Content:   req.Content,
+		// Sanitised like every other pipeline. This was the one that was not:
+		// a \u0000 inside a source map's sourcesContent fails the INSERT, so
+		// the upload 500s forever with no diagnostic and no way for the
+		// uploader to know what is wrong. SanitizeJSON parse-remarshals, so an
+		// escaped NUL is removed without corrupting the document.
+		Release: ingest.SanitizeColumn(req.Release),
+		Name:    ingest.SanitizeColumn(req.Name),
+		Content: string(ingest.SanitizeJSON([]byte(req.Content))),
 	})
 	if err != nil {
 		slogError(w, "upsert source map", err)
 		return
 	}
+	s.audit(r.Context(), "sourcemap.upload", row.Release+"/"+row.Name)
 	writeJSON(w, http.StatusCreated, artifactResponse{
 		ID: row.ID, Release: row.Release, Name: row.Name, Size: int64(row.Size), CreatedAt: row.CreatedAt.Time,
 	})
@@ -111,5 +145,6 @@ func (s *Server) handleDeleteSourceMap(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "source map not found")
 		return
 	}
+	s.audit(r.Context(), "sourcemap.delete", chi.URLParam(r, "artifactID"))
 	writeJSON(w, http.StatusNoContent, nil)
 }

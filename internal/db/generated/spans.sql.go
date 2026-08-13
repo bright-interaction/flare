@@ -16,18 +16,34 @@ const getTraceSpans = `-- name: GetTraceSpans :many
 SELECT trace_id, span_id, parent_span_id, project_id, org_id, name, kind, status, start_time, end_time, duration_ms, attributes FROM spans
 WHERE trace_id = $1 AND project_id = $2 AND org_id = $3
 ORDER BY start_time
+LIMIT $4
 `
 
 type GetTraceSpansParams struct {
 	TraceID   string `json:"trace_id"`
 	ProjectID string `json:"project_id"`
 	OrgID     string `json:"org_id"`
+	Limit     int32  `json:"limit"`
 }
 
 // project_id scoped: trace_id is not project-unique (a distributed trace can
 // span projects), so org_id alone would mix projects' spans.
+//
+// CAPPED. This was the only read tool with no result cap at any layer, while
+// its siblings cap at 200 (list_issues), 20 (get_issue events), 500
+// (search_logs) and 5000 points (query_metrics). trace_id is chosen by the
+// caller and ingest is rate-limited per DSN key rather than per trace, so spans
+// accumulate under one id: 100,000 spans in one trace rendered a single MCP
+// tool result of 52 MB, about 13.7M tokens, after running the scrubber over
+// every name and attributes document. On a self-host that allocation lands on
+// a shared process, so it takes ingest down for every other tenant.
 func (q *Queries) GetTraceSpans(ctx context.Context, arg GetTraceSpansParams) ([]*Span, error) {
-	rows, err := q.db.Query(ctx, getTraceSpans, arg.TraceID, arg.ProjectID, arg.OrgID)
+	rows, err := q.db.Query(ctx, getTraceSpans,
+		arg.TraceID,
+		arg.ProjectID,
+		arg.OrgID,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -86,16 +102,17 @@ SELECT
        ORDER BY (r.parent_span_id = '') DESC, r.start_time
        LIMIT 1) AS root_name
 FROM spans s
-WHERE s.project_id = $1 AND s.org_id = $2
+WHERE s.project_id = $1 AND s.org_id = $2 AND s.start_time >= $4
 GROUP BY s.trace_id, s.org_id, s.project_id
 ORDER BY started DESC
 LIMIT $3
 `
 
 type ListTracesParams struct {
-	ProjectID string `json:"project_id"`
-	OrgID     string `json:"org_id"`
-	Limit     int32  `json:"limit"`
+	ProjectID string             `json:"project_id"`
+	OrgID     string             `json:"org_id"`
+	Limit     int32              `json:"limit"`
+	Since     pgtype.Timestamptz `json:"since"`
 }
 
 type ListTracesRow struct {
@@ -107,11 +124,19 @@ type ListTracesRow struct {
 	RootName  string             `json:"root_name"`
 }
 
+// A time predicate, not just a LIMIT. Without one this grouped the WHOLE spans
+// table for the project before the LIMIT could discard anything, so the cost
+// grew with retention rather than with the page size.
 // project_id MUST be grouped: the root_name subquery correlates on it, and
 // Postgres rejects an ungrouped outer reference ("subquery uses ungrouped
 // column"). The WHERE pins it to one value, so this does not change cardinality.
 func (q *Queries) ListTraces(ctx context.Context, arg ListTracesParams) ([]*ListTracesRow, error) {
-	rows, err := q.db.Query(ctx, listTraces, arg.ProjectID, arg.OrgID, arg.Limit)
+	rows, err := q.db.Query(ctx, listTraces,
+		arg.ProjectID,
+		arg.OrgID,
+		arg.Limit,
+		arg.Since,
+	)
 	if err != nil {
 		return nil, err
 	}

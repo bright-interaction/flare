@@ -34,7 +34,7 @@ func TestEncryptIsNotADecryptionOracle(t *testing.T) {
 	if !strings.HasPrefix(lifted, prefix) || lifted == victimSecret {
 		t.Fatalf("ABORT: lifted value is not ciphertext (%q)", lifted)
 	}
-	if got := c.Decrypt(lifted); got != victimSecret {
+	if got, _ := c.Decrypt(lifted); got != victimSecret {
 		t.Fatalf("ABORT: lifted blob does not decrypt under this key (%q), the oracle assertion would be vacuous", got)
 	}
 	t.Logf("attacker submits api_key = %s... (len %d)", lifted[:20], len(lifted))
@@ -47,7 +47,7 @@ func TestEncryptIsNotADecryptionOracle(t *testing.T) {
 	}
 
 	// The read path must hand back the attacker's own literal string.
-	out := c.Decrypt(stored)
+	out, _ := c.Decrypt(stored)
 	if strings.Contains(out, victimSecret) {
 		t.Fatalf("ORACLE OPEN: decrypt returned the victim's plaintext %q", victimSecret)
 	}
@@ -91,7 +91,7 @@ func TestEncryptHasNoIdempotentEscapeHatch(t *testing.T) {
 	if out := off.Encrypt(secret); out != secret {
 		t.Fatalf("disabled Encrypt should pass through, got %q", out)
 	}
-	if out := off.Decrypt(stored); out != stored {
+	if out, _ := off.Decrypt(stored); out != stored {
 		t.Fatalf("disabled Decrypt should pass through, got %q", out)
 	}
 }

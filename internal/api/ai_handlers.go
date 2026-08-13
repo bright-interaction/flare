@@ -15,6 +15,7 @@ import (
 
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
+	"github.com/bright-interaction/flare/internal/netguard"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
@@ -71,8 +72,18 @@ func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Format == "" {
 		req.Format = "openai"
 	}
-	if !strings.HasPrefix(req.BaseURL, "https://") || req.Model == "" {
+	if req.Model == "" {
 		writeErr(w, http.StatusBadRequest, "base_url (https) and model are required")
+		return
+	}
+	// Validated at the trust boundary, not only at dial time. The runtime guard
+	// blocks the connection, so this is not a breach; what it fixes is a stored
+	// config the UI shows as working while every triage silently fails with
+	// nothing saying why. It also closes the case the dial guard cannot cover:
+	// FLARE_ALLOW_PRIVATE_AI_ENDPOINT turns that guard off process-wide, and
+	// then there is no check at either layer.
+	if err := netguard.ValidatePublicURL(req.BaseURL); err != nil && !s.allowPrivateAI {
+		writeErr(w, http.StatusBadRequest, "base_url "+err.Error())
 		return
 	}
 	if req.Format != "openai" && req.Format != "anthropic" {
@@ -89,11 +100,29 @@ func (s *Server) handleSetAIConfig(w http.ResponseWriter, r *http.Request) {
 	// decryption oracle, and here it is an exfiltration primitive: base_url is
 	// client-controlled too, so the decrypted victim key would be sent as a
 	// Bearer token to a host the attacker picked.
+	// "Omit the key to keep the stored one" is safe only while the DESTINATION
+	// is unchanged. It was not gated on that, so an org admin, who by design can
+	// never read the stored key back, could PUT a new base_url with no api_key,
+	// call triage, and have Flare send the org's real provider key as a Bearer
+	// token to a host they chose. The storage-layer decryption oracle was closed
+	// and this front door was left open; netguard is no help because the
+	// attacker's host is public.
+	//
+	// So changing where the credential is sent requires re-supplying the
+	// credential, and the change is recorded as a security event either way.
 	storedAPIKey := ""
 	if req.APIKey == "" {
 		existing, err := s.q.GetAIConfig(r.Context(), orgIDFrom(r.Context()))
 		if err != nil || existing.ApiKey == "" {
 			writeErr(w, http.StatusBadRequest, "an api key is required")
+			return
+		}
+		if existing.BaseUrl != req.BaseURL {
+			s.recordSecurityEvent(orgIDFrom(r.Context()), "ai-endpoint-change-without-key",
+				"base_url changed from "+existing.BaseUrl+" to "+req.BaseURL+" with no api_key supplied",
+				remoteIP(r))
+			writeErr(w, http.StatusBadRequest,
+				"changing base_url requires supplying the api key again")
 			return
 		}
 		storedAPIKey = existing.ApiKey
@@ -147,6 +176,8 @@ func (s *Server) handleTriageIssue(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errTriageNotConfigured.Error())
 		case errors.Is(err, errTriageEndpoint):
 			writeErr(w, http.StatusBadGateway, errTriageEndpoint.Error())
+		case errors.Is(err, errTriageBudget):
+			writeErr(w, http.StatusTooManyRequests, errTriageBudget.Error())
 		default:
 			slogError(w, "ai triage", err)
 		}
@@ -176,6 +207,21 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 		return "", false, err
 	}
 
+	// The BYOAI cost guard belongs HERE, not on the callers, because it kept
+	// being written on some of them. Three surfaces reach this function: MCP
+	// (rate-limited per org), auto-triage (budget-claimed), and
+	// POST /issues/{id}/triage, which had neither. Any member, or any
+	// member-scoped API key (which CI holds), could loop ?refresh=true and
+	// spend the tenant's own OpenAI or Anthropic account one completion per
+	// request, with TriageDailyBudget never consulted, so setting it to 1 did
+	// not stop it. A retry loop in a deploy script was enough.
+	//
+	// Claimed before the outbound call and only when a call is actually going
+	// to happen: a cached answer costs nothing and must not consume budget.
+	if err := s.claimTriageBudget(ctx, org, cfg.TriageDailyBudget); err != nil {
+		return "", false, err
+	}
+
 	// The report is written by whoever sent the event, not by us: a DSN public
 	// key lives in a browser bundle, so the exception message and every stack
 	// frame are anonymous input. Fence it and tell the model what the fence
@@ -192,7 +238,16 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 		"Only use what the report supports; do not invent details. " +
 		untrustedRule
 
-	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: s.secrets.Decrypt(cfg.ApiKey), Model: cfg.Model, Format: cfg.Format}, system, fenced)
+	// Fail closed. Returning the ciphertext on a decrypt failure sent
+	// "x-api-key: enc:v1:<base64>" to the org's provider, putting the encrypted
+	// form of their live credential in a third party's access log and breaking
+	// every triage with no error naming why.
+	apiKey, err := s.secrets.Decrypt(cfg.ApiKey)
+	if err != nil {
+		slog.Error("ai triage: stored provider key cannot be decrypted; check FLARE_SECRET_KEY", "org", org, "error", err)
+		return "", false, errTriageNotConfigured
+	}
+	triage, err := s.ai.Complete(ctx, ai.Config{BaseURL: cfg.BaseUrl, APIKey: apiKey, Model: cfg.Model, Format: cfg.Format}, system, fenced)
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", errTriageEndpoint, err)
 	}
@@ -204,8 +259,35 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 	if err := s.q.SetIssueTriage(ctx, generated.SetIssueTriageParams{ID: issue.ID, OrgID: org, AiTriage: triage}); err != nil {
 		return "", false, err
 	}
-	s.audit(ctx, "ai.triage", issue.Title)
+	// Scrubbed and capped. Every other egress site scrubs; this one wrote the
+	// raw, unbounded issue title into audit_log, which handleListAuditLog then
+	// serves to admins, so a leaked secret in an exception title survived in a
+	// second place nobody was scrubbing.
+	s.audit(ctx, "ai.triage", ai.Line(ai.Scrub(issue.Title)))
 	return triage, false, nil
+}
+
+// errTriageBudget is returned when the org has spent its BYOAI budget for the
+// day. Caller-actionable and carrying no upstream detail, so mcpErrText passes
+// it through like the other two triage sentinels.
+var errTriageBudget = errors.New("this workspace has reached its AI triage budget for today")
+
+// claimTriageBudget takes one unit of the org's daily BYOAI allowance,
+// atomically. A budget of 0 means unlimited, which is the shipped default and
+// what every install that never opened the setting has.
+func (s *Server) claimTriageBudget(ctx context.Context, org string, budget int32) error {
+	if budget <= 0 {
+		return nil
+	}
+	if _, err := s.q.ClaimAITriageBudget(ctx, generated.ClaimAITriageBudgetParams{
+		OrgID: org, Budget: budget,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errTriageBudget
+		}
+		return err
+	}
+	return nil
 }
 
 // maybeAutoTriage runs AI triage on a newly-seen issue in the background when
@@ -214,23 +296,20 @@ func (s *Server) triageIssue(ctx context.Context, org, issueID string, refresh b
 // claimed atomically BEFORE the model call, so a burst of new fingerprints
 // cannot run more than triage_daily_budget BYOAI completions in a day.
 func (s *Server) maybeAutoTriage(org, issueID string) {
-	s.goBackground("auto-triage", 90*time.Second, func(ctx context.Context) {
+	s.goBackgroundFor(org, "auto-triage", 90*time.Second, func(ctx context.Context) {
 		cfg, err := s.q.GetAIConfig(ctx, org)
 		if err != nil || !cfg.Enabled || !cfg.AutoTriage || cfg.TriageDailyBudget <= 0 {
 			return
 		}
-		if _, err := s.q.ClaimAITriageBudget(ctx, generated.ClaimAITriageBudgetParams{
-			OrgID: org, Budget: cfg.TriageDailyBudget,
-		}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				slog.Info("auto-triage skipped: daily budget reached", "org", org, "budget", cfg.TriageDailyBudget)
-			} else {
-				slog.Warn("auto-triage budget claim failed", "org", org, "error", err)
-			}
-			return
-		}
+		// The claim lives inside triageIssue now, so this path no longer takes
+		// its own. Claiming here as well would spend two units per new issue.
 		if _, _, err := s.triageIssue(ctx, org, issueID, false); err != nil {
-			slog.Warn("auto-triage failed", "issue", issueID, "error", err)
+			switch {
+			case errors.Is(err, errTriageBudget):
+				slog.Info("auto-triage skipped: daily budget reached", "org", org, "budget", cfg.TriageDailyBudget)
+			default:
+				slog.Warn("auto-triage failed", "issue", issueID, "error", err)
+			}
 		}
 	})
 }

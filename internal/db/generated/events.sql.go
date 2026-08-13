@@ -34,9 +34,22 @@ const countIssues = `-- name: CountIssues :one
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
   AND ($3::text IS NULL OR status = $3)
-  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
-  -- "%" matches every issue and "_" matches any character, so the search box
-  -- silently lies about what it found.
+  -- ESCAPE '\' is a REDUNDANT restatement of PostgreSQL's default, kept as
+  -- documentation. Measured 2026-08-11 against postgres:16-alpine with
+  -- standard_conforming_strings=on: with the clause and without it, the term
+  -- escapeLike("50%") produces identical results (matches the literal-50% row,
+  -- does not match the other). Backslash is already the LIKE escape character
+  -- when no ESCAPE clause is given.
+  --
+  -- The comment this replaces claimed the opposite, and the 2026-08-11 audit
+  -- repeated it as finding M1's SQL half. That half was WRONG. The real defect
+  -- was entirely Go-side: the logs search term got no escapeLike, no
+  -- SanitizeText and no length cap, which is where all three of M1's named
+  -- harms came from.
+  --
+  -- The clause stays because it makes the dependency on the escape character
+  -- explicit rather than inherited, and internal/ciguard keeps both pillars
+  -- spelling it the same way.
   AND ($4::text IS NULL
        OR title ILIKE '%' || $4 || '%' ESCAPE '\'
        OR culprit ILIKE '%' || $4 || '%' ESCAPE '\')
@@ -180,6 +193,78 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 	return err
 }
 
+const listAllIssuesForExport = `-- name: ListAllIssuesForExport :many
+SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platform, first_seen, last_seen, event_count, last_spike_at, github_url, first_release, ai_triage, ai_triaged_at, sensitive FROM issues
+WHERE project_id = $1
+  AND org_id = $2
+  AND (
+    $4::timestamptz IS NULL
+    OR (last_seen, id) < ($4::timestamptz, $5::text)
+  )
+ORDER BY last_seen DESC, id DESC
+LIMIT $3
+`
+
+type ListAllIssuesForExportParams struct {
+	ProjectID     string             `json:"project_id"`
+	OrgID         string             `json:"org_id"`
+	Limit         int32              `json:"limit"`
+	AfterLastSeen pgtype.Timestamptz `json:"after_last_seen"`
+	AfterID       pgtype.Text        `json:"after_id"`
+}
+
+// EVERY issue, including info/debug, for data portability. ListIssues carries
+// `level NOT IN ('info','debug')` so the dashboard shows incidents only, and
+// handleExport reused it: the bundle whose own comment says "data portability
+// means ALL of it" silently dropped every informational issue, with nothing in
+// the output saying so. Keyset paging on (last_seen, id), not OFFSET: last_seen
+// MUTATES on every ingested event, so an OFFSET walk under live ingest skips
+// rows and repeats others.
+func (q *Queries) ListAllIssuesForExport(ctx context.Context, arg ListAllIssuesForExportParams) ([]*Issue, error) {
+	rows, err := q.db.Query(ctx, listAllIssuesForExport,
+		arg.ProjectID,
+		arg.OrgID,
+		arg.Limit,
+		arg.AfterLastSeen,
+		arg.AfterID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.OrgID,
+			&i.Fingerprint,
+			&i.Title,
+			&i.Culprit,
+			&i.Level,
+			&i.Status,
+			&i.Platform,
+			&i.FirstSeen,
+			&i.LastSeen,
+			&i.EventCount,
+			&i.LastSpikeAt,
+			&i.GithubUrl,
+			&i.FirstRelease,
+			&i.AiTriage,
+			&i.AiTriagedAt,
+			&i.Sensitive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventsByIssue = `-- name: ListEventsByIssue :many
 SELECT id, project_id, org_id, issue_id, level, message, exception_type, exception_value, platform, environment, release, stacktrace, payload, received_at, trace_id, span_id FROM events WHERE issue_id = $1 AND org_id = $2 ORDER BY received_at DESC LIMIT $3
 `
@@ -233,9 +318,22 @@ SELECT id, project_id, org_id, fingerprint, title, culprit, level, status, platf
 WHERE project_id = $1
   AND org_id = $2
   AND ($5::text IS NULL OR status = $5)
-  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
-  -- "%" matches every issue and "_" matches any character, so the search box
-  -- silently lies about what it found.
+  -- ESCAPE '\' is a REDUNDANT restatement of PostgreSQL's default, kept as
+  -- documentation. Measured 2026-08-11 against postgres:16-alpine with
+  -- standard_conforming_strings=on: with the clause and without it, the term
+  -- escapeLike("50%") produces identical results (matches the literal-50% row,
+  -- does not match the other). Backslash is already the LIKE escape character
+  -- when no ESCAPE clause is given.
+  --
+  -- The comment this replaces claimed the opposite, and the 2026-08-11 audit
+  -- repeated it as finding M1's SQL half. That half was WRONG. The real defect
+  -- was entirely Go-side: the logs search term got no escapeLike, no
+  -- SanitizeText and no length cap, which is where all three of M1's named
+  -- harms came from.
+  --
+  -- The clause stays because it makes the dependency on the escape character
+  -- explicit rather than inherited, and internal/ciguard keeps both pillars
+  -- spelling it the same way.
   AND ($6::text IS NULL
        OR title ILIKE '%' || $6 || '%' ESCAPE '\'
        OR culprit ILIKE '%' || $6 || '%' ESCAPE '\')

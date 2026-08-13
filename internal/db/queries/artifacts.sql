@@ -36,3 +36,8 @@ LIMIT 1000;
 
 -- name: DeleteSourceMap :execrows
 DELETE FROM source_map_artifacts WHERE id = $1 AND project_id = $2 AND org_id = $3;
+
+-- name: CountSourceMapsByProject :one
+-- Row count and total bytes for a project's source maps, for the upload quota.
+SELECT count(*)::bigint AS artifacts, coalesce(sum(length(content)), 0)::bigint AS bytes
+FROM source_map_artifacts WHERE project_id = $1 AND org_id = $2;

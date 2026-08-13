@@ -137,6 +137,13 @@ migrations_check() {
 # releases: an unpinned sqlc would report a diff that means "newer generator", not
 # "stale code". Bump this and regenerate in the same commit.
 SQLC_VERSION="v1.30.0"
+
+# gitleaks and govulncheck were installed @latest, so CI executed whatever
+# upstream published at that moment, in a job that holds the mirror deploy key.
+# A compromised release of either would run with write access to a public repo
+# the moment it shipped. Pinned like SQLC_VERSION above; bump deliberately.
+GITLEAKS_VERSION="v8.30.0"
+GOVULNCHECK_VERSION="v1.1.4"
 sqlc_check() {
   local bin rc out
   bin="$(tool sqlc "github.com/sqlc-dev/sqlc/cmd/sqlc@$SQLC_VERSION")"; rc=$?
@@ -167,7 +174,7 @@ bun_step() {
 # that shape reports "clean" exactly when there is the most to find.
 secret_scan() {
   local bin rc args
-  bin="$(tool gitleaks github.com/zricethezav/gitleaks/v8@latest)"; rc=$?
+  bin="$(tool gitleaks "github.com/zricethezav/gitleaks/v8@$GITLEAKS_VERSION")"; rc=$?
   [ $rc -eq 0 ] || { [ $rc -eq 99 ] && echo "not run: FLARE_CI_SKIP_TOOLS=1"; return $rc; }
   # In the mirror every published commit is this project's, so scanning the full history
   # is exactly right and is the last gate before a credential becomes world-readable.
@@ -197,7 +204,7 @@ secret_scan() {
 VULN_ACCEPTED=(GO-2025-3884)
 vuln_scan() {
   local bin rc out ids id unexpected=() accepted_seen=()
-  bin="$(tool govulncheck golang.org/x/vuln/cmd/govulncheck@latest)"; rc=$?
+  bin="$(tool govulncheck "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION")"; rc=$?
   [ $rc -eq 0 ] || { [ $rc -eq 99 ] && echo "not run: FLARE_CI_SKIP_TOOLS=1"; return $rc; }
   out="$("$bin" ./... 2>&1)"; rc=$?
   if [ $rc -eq 0 ]; then

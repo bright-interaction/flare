@@ -98,8 +98,11 @@ func (s *PGStore) SearchLogs(ctx context.Context, projectID, orgID string, f tel
 	return out, nil
 }
 
-func (s *PGStore) ListTraces(ctx context.Context, projectID, orgID string, limit int32) ([]telemetry.TraceSummary, error) {
-	rows, err := s.q.ListTraces(ctx, generated.ListTracesParams{ProjectID: projectID, OrgID: orgID, Limit: limit})
+func (s *PGStore) ListTraces(ctx context.Context, projectID, orgID string, since time.Time, limit int32) ([]telemetry.TraceSummary, error) {
+	rows, err := s.q.ListTraces(ctx, generated.ListTracesParams{
+		ProjectID: projectID, OrgID: orgID,
+		Since: pgtype.Timestamptz{Time: since, Valid: true}, Limit: limit,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -117,8 +120,10 @@ func (s *PGStore) ListTraces(ctx context.Context, projectID, orgID string, limit
 	return out, nil
 }
 
-func (s *PGStore) GetTraceSpans(ctx context.Context, traceID, projectID, orgID string) ([]telemetry.Span, error) {
-	rows, err := s.q.GetTraceSpans(ctx, generated.GetTraceSpansParams{TraceID: traceID, ProjectID: projectID, OrgID: orgID})
+func (s *PGStore) GetTraceSpans(ctx context.Context, traceID, projectID, orgID string, limit int32) ([]telemetry.Span, error) {
+	rows, err := s.q.GetTraceSpans(ctx, generated.GetTraceSpansParams{
+		TraceID: traceID, ProjectID: projectID, OrgID: orgID, Limit: limit,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -165,8 +170,8 @@ func nTs(p *time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: *p, Valid: true}
 }
 
-func (s *PGStore) ListMetricNames(ctx context.Context, projectID, orgID string) ([]telemetry.MetricName, error) {
-	rows, err := s.q.ListMetricNames(ctx, generated.ListMetricNamesParams{ProjectID: projectID, OrgID: orgID})
+func (s *PGStore) ListMetricNames(ctx context.Context, projectID, orgID string, limit int32) ([]telemetry.MetricName, error) {
+	rows, err := s.q.ListMetricNames(ctx, generated.ListMetricNamesParams{ProjectID: projectID, OrgID: orgID, Limit: limit})
 	if err != nil {
 		return nil, err
 	}
