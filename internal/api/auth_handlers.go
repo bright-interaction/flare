@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -43,9 +44,43 @@ func toUserResponse(u *generated.User) userResponse {
 	return userResponse{ID: u.ID, Email: u.Email, OrgID: u.OrgID, Role: u.Role}
 }
 
-// handleRegister creates a new org plus its first (owner) user and logs them
-// in. This is the self-host first-run path; further members are invited.
+// handleRegister creates a new org plus its first (owner) user and logs them in.
+//
+// This is the self-host FIRST-RUN path, and it is now gated as one. The doc
+// comment said "further members are invited" while the code let anyone on the
+// internet mint an unlimited number of orgs, on every deployment, with no way to
+// turn it off: CountUsers was written for this check, documented as the "pre-auth
+// bootstrap check (is this a fresh install)", and never wired to a caller. Each
+// minted org carries its own INGEST_RATE_PER_MIN budget, so ingest capacity
+// scaled linearly with orgs created, against one shared Postgres.
+//
+// Three things had to move together, because they are one route's failure:
+//
+//   - The bootstrap gate. Open only while the install has no users, or when
+//     FLARE_ALLOW_SIGNUP is explicitly set.
+//   - The rate limit. Login and password reset were both limited; the only
+//     unauthenticated route that WRITES was not.
+//   - The transaction. CreateOrg and CreateUser ran as two statements, so two
+//     concurrent registrations for one email left an orphan org with zero users:
+//     unreachable through the API (DELETE /org needs owner auth from inside it),
+//     and if it happened to be the oldest org, systemOrgID picks it via
+//     GetFirstOrg and writes every tenantless security event into a workspace
+//     nobody can open. provisionSSOUser had already learned this and wrapped its
+//     own two steps; register is its twin and did not.
+//
+// The closed answer is deliberately identical for a taken and a free address.
+// handleLogin and handleForgotPassword are both hardened against enumeration and
+// this route undid it with a 409-versus-201 oracle on every address in the world.
+// With the gate closed, which is every configuration except a fresh install and
+// an explicit opt-in, no response here varies by email.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// Before the body is parsed: the limit must not depend on well-formed input.
+	if !s.signupLimiter.Allow("signup:" + clientIP(r)) {
+		w.Header().Set("Retry-After", "3600")
+		writeErr(w, http.StatusTooManyRequests, "too many registration attempts, try again later")
+		return
+	}
+
 	var req registerRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -62,6 +97,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// The bootstrap gate, before any lookup that could vary by email.
+	if !s.cfg.AllowSignup {
+		n, err := s.q.CountUsers(ctx)
+		if err != nil {
+			slogError(w, "count users", err)
+			return
+		}
+		if n > 0 {
+			writeErr(w, http.StatusForbidden, "registration is closed on this instance")
+			return
+		}
+	}
+
 	if _, err := s.q.GetUserByEmail(ctx, req.Email); err == nil {
 		writeErr(w, http.StatusConflict, "email already registered")
 		return
@@ -82,21 +131,41 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	slug = slug + "-" + id.New()[:6]
 
-	org, err := s.q.CreateOrg(ctx, generated.CreateOrgParams{ID: id.New(), Name: orgName, Slug: slug})
+	org, user, err := s.createOrgWithOwner(ctx, orgName, slug, req.Email, hash)
 	if err != nil {
-		slogError(w, "create org", err)
-		return
-	}
-	user, err := s.q.CreateUser(ctx, generated.CreateUserParams{
-		ID: id.New(), OrgID: org.ID, Email: req.Email, PasswordHash: hash, Role: "owner",
-	})
-	if err != nil {
-		slogError(w, "create user", err)
+		slogError(w, "create org and owner", err)
 		return
 	}
 
 	s.establishSession(ctx, user.ID, org.ID)
 	writeJSON(w, http.StatusCreated, toUserResponse(user))
+}
+
+// createOrgWithOwner writes the org and its first owner in ONE transaction, so a
+// failed second step cannot leave an org behind with no user able to reach it.
+// Same reasoning, and the same shape, as provisionSSOUser.
+func (s *Server) createOrgWithOwner(ctx context.Context, orgName, slug, email, passwordHash string) (*generated.Org, *generated.User, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
+
+	q := s.q.WithTx(tx)
+	org, err := q.CreateOrg(ctx, generated.CreateOrgParams{ID: id.New(), Name: orgName, Slug: slug})
+	if err != nil {
+		return nil, nil, err
+	}
+	user, err := q.CreateUser(ctx, generated.CreateUserParams{
+		ID: id.New(), OrgID: org.ID, Email: email, PasswordHash: passwordHash, Role: "owner",
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+	return org, user, nil
 }
 
 type loginRequest struct {
@@ -113,7 +182,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
 	// Brute-force lockout: 5 failed attempts per email+IP within 15 minutes.
-	lockKey := "login:" + req.Email + "|" + clientIP(r)
+	lockKey := "login:" + limiterEmailKey(req.Email) + "|" + clientIP(r)
 	if s.loginLimiter.Blocked(lockKey) {
 		w.Header().Set("Retry-After", "900")
 		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
@@ -211,7 +280,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Rate-limit per email+IP. The limit trips on the key regardless of whether
 	// the account exists, so it enables neither enumeration nor reset-email
 	// bombing while still letting a genuine user retry a few times.
-	if !s.resetLimiter.Allow("reset:" + email + "|" + clientIP(r)) {
+	if !s.resetLimiter.Allow("reset:" + limiterEmailKey(email) + "|" + clientIP(r)) {
 		w.Header().Set("Retry-After", "900")
 		writeErr(w, http.StatusTooManyRequests, "too many reset requests, try again later")
 		return

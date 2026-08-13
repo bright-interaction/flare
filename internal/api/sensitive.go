@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/ingest"
 )
 
@@ -17,10 +18,12 @@ import (
 var (
 	reJWT    = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}`)
 	reSecret = regexp.MustCompile(`\b(?:sk|pk|ghp|gho|ghs|xox[baprs]|AKIA)[-_A-Za-z0-9]{16,}\b`)
-	// A run of 13-19 digits, allowing single spaces/dashes as card formatting.
-	// luhnValid does the real filtering, so this stays loose on purpose.
-	reCardCandidate = regexp.MustCompile(`[0-9](?:[ -]?[0-9]){12,18}`)
 )
+
+// NOTE: there is deliberately no card regex here. Card detection, candidate
+// search included, lives in ai.TextHasPaymentCard and is shared with the
+// scrubber. This file used to keep its own unanchored copy, which flagged
+// issues whose card the scrubber then left intact. Do not reintroduce one.
 
 // detectSensitive returns the sorted, distinct sensitive-data kinds found in an
 // event's high-signal text fields, or nil when clean.
@@ -43,11 +46,8 @@ func detectSensitive(ev ingest.NormalizedEvent) []string {
 	if reSecret.MatchString(text) {
 		found["secret"] = true
 	}
-	for _, m := range reCardCandidate.FindAllString(text, -1) {
-		if luhnValid(m) {
-			found["card"] = true
-			break
-		}
+	if ai.TextHasPaymentCard(text) {
+		found["card"] = true
 	}
 	if len(found) == 0 {
 		return nil
@@ -58,31 +58,4 @@ func detectSensitive(ev ingest.NormalizedEvent) []string {
 	}
 	sort.Strings(kinds)
 	return kinds
-}
-
-// luhnValid strips non-digits from s and reports whether the remaining 13-19
-// digit number passes the Luhn checksum (the property real card numbers have).
-// This keeps the card detector from firing on ordinary long integers.
-func luhnValid(s string) bool {
-	digits := make([]int, 0, len(s))
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			digits = append(digits, int(r-'0'))
-		}
-	}
-	if len(digits) < 13 || len(digits) > 19 {
-		return false
-	}
-	sum, dbl := 0, false
-	for i := len(digits) - 1; i >= 0; i-- {
-		d := digits[i]
-		if dbl {
-			if d *= 2; d > 9 {
-				d -= 9
-			}
-		}
-		sum += d
-		dbl = !dbl
-	}
-	return sum%10 == 0
 }

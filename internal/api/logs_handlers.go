@@ -35,12 +35,15 @@ func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid OTLP logs payload")
 		return
 	}
-	if err := s.persistLogs(r.Context(), project, records); err != nil {
+	budget := newIngestBudget()
+	if err := s.persistLogs(r.Context(), project, records, budget); err != nil {
 		slogError(w, "persist otlp logs", err)
 		return
 	}
-	// Minimal OTLP success response.
-	writeJSON(w, http.StatusOK, map[string]any{})
+	budget.report(project.ID, "logs")
+	// OTLP success response, carrying partial_success when the row cap truncated
+	// the export so the collector does not count dropped rows as delivered.
+	writeJSON(w, http.StatusOK, otlpResponse(budget.dropped, otlpRejectedLogRecords))
 }
 
 // handleNativeLogs ingests a JSON array of log records (the thin SDK path).
@@ -58,14 +61,22 @@ func (s *Server) handleNativeLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid logs payload")
 		return
 	}
-	if err := s.persistLogs(r.Context(), project, records); err != nil {
+	budget := newIngestBudget()
+	if err := s.persistLogs(r.Context(), project, records, budget); err != nil {
 		slogError(w, "persist logs", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"accepted": len(records)})
+	budget.report(project.ID, "logs")
+	// accepted is what was STORED, not what was posted: reporting the posted
+	// count after truncating would be the silent loss the cap must not introduce.
+	writeJSON(w, http.StatusOK, map[string]int{"accepted": len(records) - budget.dropped})
 }
 
-func (s *Server) persistLogs(ctx context.Context, project *generated.Project, records []ingest.LogRecord) error {
+func (s *Server) persistLogs(ctx context.Context, project *generated.Project, records []ingest.LogRecord, budget *ingestBudget) error {
+	// Spend the request's row budget first: an OTLP export nests
+	// resource -> scope -> record, so the byte cap alone leaves the row count
+	// unbounded. See maxIngestRecords.
+	records = records[:budget.take(len(records))]
 	if len(records) == 0 {
 		return nil
 	}
@@ -75,14 +86,14 @@ func (s *Server) persistLogs(ctx context.Context, project *generated.Project, re
 			ID:        id.New(),
 			ProjectID: project.ID,
 			OrgID:     project.OrgID,
-			Severity:  ingest.SanitizeText(rec.Severity),
+			Severity:  ingest.SanitizeColumn(rec.Severity),
 			// InsertLogs is a CopyFrom: it is all-or-nothing, so one record
 			// carrying a NUL byte or invalid UTF-8 failed the whole batch, and an
 			// OTLP collector's retry made that record a permanent poison pill.
-			Body:       ingest.SanitizeText(rec.Body),
+			Body:       ingest.SanitizeColumn(rec.Body),
 			Attributes: ingest.SanitizeJSON(rec.Attributes),
-			TraceID:    ingest.SanitizeText(rec.TraceID),
-			SpanID:     ingest.SanitizeText(rec.SpanID),
+			TraceID:    ingest.SanitizeColumn(rec.TraceID),
+			SpanID:     ingest.SanitizeColumn(rec.SpanID),
 			ObservedAt: pgtype.Timestamptz{Time: rec.ObservedAt, Valid: true},
 		})
 	}

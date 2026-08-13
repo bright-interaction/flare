@@ -13,3 +13,21 @@ flare.example.com==>flare.example.com
 sk_live_REDACTED==>sk_live_REDACTED
 # same, second spelling
 sk_live_REDACTED==>sk_live_REDACTED
+# The third spelling, from the log-shipper error-attribute test. It was the one
+# stripe fixture that never got a rule, so flare's publish stayed refused by
+# stripe-access-token while its two siblings above were handled.
+#
+# ORDER IS LOAD BEARING and this rule must stay last of the three. The literal is
+# a PREFIX of both rules above, git-filter-repo applies --replace-text rules in
+# file order, and the shared list is concatenated ahead of this file. Hoist it
+# and it eats the prefix of the longer two, leaving QRSTUVWX and 012345 dangling
+# on a rewritten stem: the longer rules then match nothing, and their assertion
+# still passes because the literal they hunt for is gone, mangled rather than
+# redacted. Silent, and wrong in two other tests.
+#
+# Rewritten to the value the fixture carries at HEAD rather than to
+# sk_live_REDACTED, because unlike its siblings this one has a HEAD replacement
+# to converge on, so published history reads continuously across the fix. Both
+# occurrences on that line are the same literal, so the pair moves together and
+# the published test still asserts what it always did.
+live_EXAMPLE_NOT_A_REAL_KEY==>live_EXAMPLE_NOT_A_REAL_KEY

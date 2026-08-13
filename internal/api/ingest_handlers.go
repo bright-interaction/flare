@@ -72,6 +72,12 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 			"project_id", project.ID, "kept", maxEnvelopeItems, "dropped", dropped)
 	}
 
+	// One budget for the whole request. maxEnvelopeItems bounds the ITEMS, and on
+	// the events path one item is one row, but a transaction item carries its
+	// whole span tree: capping per persistSpans call would still let one envelope
+	// write maxEnvelopeItems x cap span rows. See maxIngestRecords.
+	budget := newIngestBudget()
+
 	var lastID string
 	var events, stored int
 	for _, item := range items {
@@ -85,7 +91,7 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("envelope transaction parse failed", "project_id", project.ID, "error", perr)
 				continue
 			}
-			if perr := s.persistSpans(r.Context(), project, spans); perr != nil {
+			if perr := s.persistSpans(r.Context(), project, spans, budget); perr != nil {
 				slog.Warn("persist transaction spans failed", "project_id", project.ID, "error", perr)
 			}
 		case "event":
@@ -111,6 +117,7 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "no event in the envelope could be stored")
 		return
 	}
+	budget.report(project.ID, "spans")
 	writeJSON(w, http.StatusOK, map[string]string{"id": lastID})
 }
 
