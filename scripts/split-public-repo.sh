@@ -41,20 +41,60 @@ STRIP_GLOBS=(
   'regex:.*AUDIT-.*\.md$'
 )
 
+# The three-phase contract is shared by every mirror (CLAUDE.md section 15) and is
+# sourced by a path relative to THIS file, because a phase flag decides which of
+# the regions below run at all and that decision is needed before `git rev-parse`
+# has been asked where the monorepo root is. The push phase in particular runs in
+# a container that has no monorepo and therefore no `rev-parse` answer at all.
+# shellcheck source=../../scripts/mirror-phases.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/mirror-phases.sh"
+
 for arg in "$@"; do
   case "$arg" in
     --push) PUSH=1 ;;
     --remote=*) REMOTE_URL="${arg#--remote=}" ;;
     -h|--help) echo "usage: $0 [--push] [--remote=git@github.com:org/repo.git]"; exit 0 ;;
-    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    # Phase flags are consumed by the shared helper. The || refusal is kept so a
+    # typo'd flag still stops the publish instead of silently falling through to
+    # the default phase, which would run all three regions in one container and
+    # undo the split.
+    *) mirror_phase_arg "$arg" || { echo "unknown arg: $arg" >&2; exit 2; } ;;
   esac
 done
 
 command -v git-filter-repo >/dev/null 2>&1 || {
   echo "error: git-filter-repo is required (pip install git-filter-repo)." >&2; exit 1; }
 
-ROOT="$(git rev-parse --show-toplevel)"
+mirror_phase_reject_push_flag "$PUSH"
+
+# MIRROR_ROOT exists for the push phase, whose container mounts the two shared
+# helper scripts it needs and nothing else: there is no monorepo there, so
+# `git rev-parse --show-toplevel` has nothing to answer with. Every other phase
+# resolves the root the normal way.
+ROOT="${MIRROR_ROOT:-$(git rev-parse --show-toplevel)}"
 cd "$ROOT"
+
+# Sourced in EVERY phase, push included: the push container mounts the shared
+# scripts/ directory precisely so these resolve there, and defining a function
+# costs nothing. Only the CALLS below are phase-dependent.
+# shellcheck source=../../scripts/mirror-secret-preflight.sh
+. "$ROOT/scripts/mirror-secret-preflight.sh"
+. "$ROOT/scripts/mirror-enterprise-check.sh"
+# shellcheck source=../../scripts/mirror-module-path.sh
+. "$ROOT/scripts/mirror-module-path.sh"
+# shellcheck source=../../scripts/mirror-redactions.sh
+. "$ROOT/scripts/mirror-redactions.sh"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+CLONE="$WORK/flare-public"
+
+# ============================ PHASE: prepare =================================
+# Decides WHAT is published. Reads the monorepo; runs git, git-filter-repo and
+# python and nothing else. Holds no credential and executes no repository build
+# code, which is what makes its output trustworthy enough to publish later.
+# =============================================================================
+if mirror_phase_does_prepare; then
 [ -d "$PREFIX" ] || { echo "error: $PREFIX/ not found at $ROOT" >&2; exit 1; }
 
 # Coarse pre-flight secret guard. Shared by every product mirror, in ONE file, so
@@ -62,20 +102,12 @@ cd "$ROOT"
 # which could not fire at all. See scripts/mirror-secret-preflight.sh for both bugs.
 # This is the fast pre-check; the gitleaks scan on the filtered clone below is the
 # authoritative gate.
-# shellcheck source=../../scripts/mirror-secret-preflight.sh
-. "$ROOT/scripts/mirror-secret-preflight.sh"
-. "$ROOT/scripts/mirror-enterprise-check.sh"
-# shellcheck source=../../scripts/mirror-module-path.sh
-. "$ROOT/scripts/mirror-module-path.sh"
 mirror_secret_preflight "$PREFIX" "$ROOT/$PREFIX/scripts/mirror-secret-allowlist.txt"
 
 echo "Splitting $PREFIX/ subtree (history-preserving) into $SPLIT_BRANCH ..."
 git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
 git subtree split --prefix="$PREFIX" -b "$SPLIT_BRANCH"
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-CLONE="$WORK/flare-public"
 # --single-branch + --no-tags: the throwaway clone holds ONLY the disjoint flare
 # subtree history, never the monorepo's other branches (which carry unrelated
 # project CI secrets). The clone == the publish payload, which makes the gitleaks
@@ -114,8 +146,6 @@ REDACT="$WORK/redactions.txt"
 # per-product copies drifted: slab's never got the estate host IP or the internal
 # service hostnames, so the production IP sat in its test fixtures labelled "prod
 # host" and 98 occurrences of an internal SaaS hostname stayed in its history.
-# shellcheck source=../../scripts/mirror-redactions.sh
-. "$ROOT/scripts/mirror-redactions.sh"
 mirror_redaction_file "$ROOT" "$ROOT/flare/scripts/mirror-redactions.txt" "$REDACT"
 echo "Redacting internal infra hostnames from all history ..."
 ( cd "$CLONE" && git filter-repo --force --replace-text "$REDACT" --replace-message "$REDACT" )
@@ -141,11 +171,32 @@ mirror_blob_sanity_check "$CLONE" "$ROOT/flare/scripts/mirror-blob-allowlist.txt
 # than after someone remembers to back-port the gate.
 mirror_enterprise_check "$CLONE" || exit 1
 
+fi
+# ========================== end PHASE: prepare ===============================
+
+# In --prepare-only mode this writes the payload out and exits. In every other
+# mode it is a no-op.
+mirror_phase_export "$CLONE"
+# In --gate-only / --push-prepared mode this points $CLONE at the prepared
+# payload (a private copy for the gate phase) and proves it is the tree the
+# prepare phase built. In "all" mode it is a no-op.
+mirror_phase_import
+
+
 
 # Defense in depth: fail if a stripped path survived.
 for p in "${STRIP_PATHS[@]}"; do
   [ -e "$CLONE/$p" ] && { echo "REFUSING: stripped path '$p' still present." >&2; exit 1; }
 done
+
+# ============================= PHASE: gate ===================================
+# Decides whether the payload is FIT to push. The build and test steps below run
+# every transitive dependency's test code and every frontend build plugin, so
+# this is the only phase that executes code we do not control, and therefore the
+# only phase that must be assumed hostile. It gets the payload read-only and
+# works on a copy; it never sees the bare repo or a credential.
+# =============================================================================
+if mirror_phase_does_gates; then
 
 echo "Build-checking the mirror ..."
 # `cmd && echo OK` does NOT fail the script when cmd fails, even under `set -e`:
@@ -203,7 +254,22 @@ else
   [ "$PUSH" -eq 1 ] && { echo "REFUSING to --push without the gitleaks gate." >&2; exit 1; }
 fi
 
-if [ "$PUSH" -eq 0 ]; then
+
+fi
+# =========================== end PHASE: gate =================================
+
+# In --gate-only mode this reports the clean result and exits. In every other
+# mode it is a no-op.
+mirror_phase_gates_done
+
+# ============================= PHASE: push ===================================
+# Holds the deploy key and the workflow token. Executes no repository code, does
+# not mount the bare repo, and runs no gate: everything it publishes was built
+# by the prepare phase and cleared by the gate phase.
+# =============================================================================
+if mirror_phase_does_push; then
+
+if [ "$PUSH" -eq 0 ] && [ "$MIRROR_PHASE" = "all" ]; then
   echo; echo "DRY RUN. Filtered mirror ready at: $CLONE"
   echo "Would push its HEAD -> $REMOTE_URL main"
   echo "Re-run with --push once the public repo exists (gh repo create bright-interaction/flare --public)."
@@ -230,5 +296,9 @@ mirror_force_publish "$CLONE" "$REMOTE_URL"
 # shellcheck source=../../scripts/mirror-release-tag.sh
 . "$ROOT/scripts/mirror-release-tag.sh"
 mirror_release_tag "$CLONE" "$REMOTE_URL"
+
+fi
+# =========================== end PHASE: push =================================
+
 
 echo "Done. Cleanup: git branch -D $SPLIT_BRANCH"
