@@ -92,10 +92,23 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	projOut := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
+		// ListAllIssuesForExport, not ListIssues: the latter carries
+		// `level NOT IN ('info','debug')` for the dashboard, so the bundle
+		// whose own comment says "data portability means ALL of it" was
+		// dropping every informational issue silently.
+		//
+		// Keyset paging, not OFFSET. last_seen MUTATES on every ingested event,
+		// so an OFFSET walk over a DESC last_seen ordering is computed against
+		// a list that moved between pages: rows are skipped and repeated under
+		// live ingest, which is the exact bug SearchLogs was switched away from
+		// OFFSET to avoid.
 		var issues []*generated.Issue
-		for offset := int32(0); ; offset += exportPage {
-			page, err := s.q.ListIssues(ctx, generated.ListIssuesParams{
-				ProjectID: p.ID, OrgID: org, Limit: exportPage, Offset: offset,
+		var cursorSeen pgtype.Timestamptz
+		var cursorID pgtype.Text
+		for {
+			page, err := s.q.ListAllIssuesForExport(ctx, generated.ListAllIssuesForExportParams{
+				ProjectID: p.ID, OrgID: org, Limit: exportPage,
+				AfterLastSeen: cursorSeen, AfterID: cursorID,
 			})
 			if err != nil {
 				exportWarnings = append(exportWarnings,
@@ -103,9 +116,11 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			issues = append(issues, page...)
-			if len(page) < exportPage {
+			if len(page) < int(exportPage) {
 				break
 			}
+			last := page[len(page)-1]
+			cursorSeen, cursorID = last.LastSeen, pgText(last.ID)
 		}
 		issueOut := make([]map[string]any, 0, len(issues))
 		for _, i := range issues {
@@ -154,6 +169,14 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	org := orgIDFrom(ctx)
+
+	// Workspace erasure is the single most destructive action in the product
+	// and it was the one with no record at all. An audit_log row is no use
+	// here: audit_log is FK-linked to orgs, so the cascade below deletes the
+	// evidence along with everything else. The durable record is the server
+	// log, written BEFORE the transaction so it exists whether or not the
+	// delete succeeds.
+	slog.Warn("workspace erasure requested", "org_id", org, "actor_user_id", userIDFrom(ctx))
 
 	// Right-to-erasure must reach the raw telemetry. events/logs/spans are
 	// partitioned hot tables with NO foreign key to projects/orgs, so the

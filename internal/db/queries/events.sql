@@ -76,9 +76,22 @@ SELECT * FROM issues
 WHERE project_id = $1
   AND org_id = $2
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
-  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
-  -- "%" matches every issue and "_" matches any character, so the search box
-  -- silently lies about what it found.
+  -- ESCAPE '\' is a REDUNDANT restatement of PostgreSQL's default, kept as
+  -- documentation. Measured 2026-08-11 against postgres:16-alpine with
+  -- standard_conforming_strings=on: with the clause and without it, the term
+  -- escapeLike("50%") produces identical results (matches the literal-50% row,
+  -- does not match the other). Backslash is already the LIKE escape character
+  -- when no ESCAPE clause is given.
+  --
+  -- The comment this replaces claimed the opposite, and the 2026-08-11 audit
+  -- repeated it as finding M1's SQL half. That half was WRONG. The real defect
+  -- was entirely Go-side: the logs search term got no escapeLike, no
+  -- SanitizeText and no length cap, which is where all three of M1's named
+  -- harms came from.
+  --
+  -- The clause stays because it makes the dependency on the escape character
+  -- explicit rather than inherited, and internal/ciguard keeps both pillars
+  -- spelling it the same way.
   AND (sqlc.narg(q)::text IS NULL
        OR title ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\'
        OR culprit ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\')
@@ -90,6 +103,24 @@ WHERE project_id = $1
 ORDER BY last_seen DESC, id DESC
 LIMIT $3 OFFSET $4;
 
+-- name: ListAllIssuesForExport :many
+-- EVERY issue, including info/debug, for data portability. ListIssues carries
+-- `level NOT IN ('info','debug')` so the dashboard shows incidents only, and
+-- handleExport reused it: the bundle whose own comment says "data portability
+-- means ALL of it" silently dropped every informational issue, with nothing in
+-- the output saying so. Keyset paging on (last_seen, id), not OFFSET: last_seen
+-- MUTATES on every ingested event, so an OFFSET walk under live ingest skips
+-- rows and repeats others.
+SELECT * FROM issues
+WHERE project_id = $1
+  AND org_id = $2
+  AND (
+    sqlc.narg(after_last_seen)::timestamptz IS NULL
+    OR (last_seen, id) < (sqlc.narg(after_last_seen)::timestamptz, sqlc.narg(after_id)::text)
+  )
+ORDER BY last_seen DESC, id DESC
+LIMIT $3;
+
 -- name: CountIssues :one
 -- MUST carry the same status/search predicates as ListIssues. It used to count
 -- every issue regardless of filter, so the total shown beside the tabs
@@ -98,9 +129,22 @@ LIMIT $3 OFFSET $4;
 SELECT count(*) FROM issues
 WHERE project_id = $1 AND org_id = $2
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
-  -- ESCAPE '\' plus caller-side escaping of \ % _ : without it a user typing
-  -- "%" matches every issue and "_" matches any character, so the search box
-  -- silently lies about what it found.
+  -- ESCAPE '\' is a REDUNDANT restatement of PostgreSQL's default, kept as
+  -- documentation. Measured 2026-08-11 against postgres:16-alpine with
+  -- standard_conforming_strings=on: with the clause and without it, the term
+  -- escapeLike("50%") produces identical results (matches the literal-50% row,
+  -- does not match the other). Backslash is already the LIKE escape character
+  -- when no ESCAPE clause is given.
+  --
+  -- The comment this replaces claimed the opposite, and the 2026-08-11 audit
+  -- repeated it as finding M1's SQL half. That half was WRONG. The real defect
+  -- was entirely Go-side: the logs search term got no escapeLike, no
+  -- SanitizeText and no length cap, which is where all three of M1's named
+  -- harms came from.
+  --
+  -- The clause stays because it makes the dependency on the escape character
+  -- explicit rather than inherited, and internal/ciguard keeps both pillars
+  -- spelling it the same way.
   AND (sqlc.narg(q)::text IS NULL
        OR title ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\'
        OR culprit ILIKE '%' || sqlc.narg(q) || '%' ESCAPE '\')

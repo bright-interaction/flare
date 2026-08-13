@@ -160,6 +160,9 @@ export const api = {
   createProject: (name: string, platform: string) =>
     req<Project>('POST', '/projects', { name, platform }),
   project: (id: string) => req<Project>('GET', `/projects/${id}`),
+  // Resolves a provisioner deep-link's numeric DSN id behind the session, so
+  // /go/<dsnID> is no longer an unauthenticated existence oracle.
+  projectByDsnID: (dsnID: string) => req<Project>('GET', `/projects/by-dsn/${dsnID}`),
   deleteProject: (id: string) => req<PartialErasure | void>('DELETE', `/projects/${id}`),
 
   issues: (pid: string, status?: string, opts?: { q?: string; limit?: number; offset?: number }) => {

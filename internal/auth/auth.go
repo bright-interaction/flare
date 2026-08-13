@@ -13,13 +13,20 @@ import (
 	"github.com/bright-interaction/flare/internal/id"
 )
 
+// SessionCookieName is the browser's ambient credential. Named because the CSRF
+// layer has to ask whether a request carries one: the exemption used to be "an
+// Authorization header is present", which is a different question from "is
+// this request authenticated by an ambient credential", and the two were never
+// reconciled.
+const SessionCookieName = "flare_session"
+
 // NewSessionManager builds the scs session manager. The pgxstore is attached
 // by the caller (it needs the live pool).
 func NewSessionManager(lifetime, idleTimeout time.Duration, secure bool) *scs.SessionManager {
 	m := scs.New()
 	m.Lifetime = lifetime
 	m.IdleTimeout = idleTimeout
-	m.Cookie.Name = "flare_session"
+	m.Cookie.Name = SessionCookieName
 	m.Cookie.HttpOnly = true
 	m.Cookie.Secure = secure
 	m.Cookie.SameSite = http.SameSiteStrictMode

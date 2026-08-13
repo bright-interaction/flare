@@ -3,7 +3,12 @@
 // same list and it cannot drift between call sites.
 package netguard
 
-import "net"
+import (
+	"errors"
+	"net"
+	"net/url"
+	"strings"
+)
 
 // reserved holds ranges the Go stdlib private/loopback checks do NOT cover. 100.64.0.0/10
 // is carrier-grade NAT, which is ALSO the Tailscale tailnet range: Flare runs on a
@@ -44,4 +49,49 @@ func IsBlockedIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// ValidatePublicURL rejects a stored outbound URL at the trust boundary, before
+// it is ever persisted.
+//
+// The runtime Dialer.Control guard blocks the connection, which is why none of
+// these are a breach today. It is not enough on its own, and the OIDC handler's
+// own comment says why: accepting https://169.254.169.254 as a stored issuer
+// passed a live probe on 2026-06-30. The config is saved, the UI shows a working
+// integration, and every delivery fails at dial time with nothing explaining it.
+// That guard was then written for OIDC only, so the BYOAI base_url and the
+// notification webhook URL, which are the two an ordinary member can set, kept
+// accepting anything. One helper, all three surfaces.
+//
+// A hostname that resolves to a blocked address is deliberately NOT rejected
+// here: this runs at config time, resolution can change, and answering "that
+// host is internal" for an arbitrary name is itself a disclosure. The dial
+// guard owns that decision, on the resolved address, at the moment of use.
+func ValidatePublicURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return errors.New("not a valid URL")
+	}
+	if u.Scheme != "https" {
+		return errors.New("must be an https:// URL")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("must include a host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if IsBlockedIP(ip) {
+			return errors.New("must not point at a private, loopback or link-local address")
+		}
+		return nil
+	}
+	// A bare name with no dot is a container or search-domain name, never a
+	// public host, and "localhost" is the obvious one.
+	if !strings.Contains(host, ".") || strings.EqualFold(host, "localhost") ||
+		strings.HasSuffix(strings.ToLower(host), ".localhost") ||
+		strings.HasSuffix(strings.ToLower(host), ".internal") ||
+		strings.HasSuffix(strings.ToLower(host), ".local") {
+		return errors.New("must be a public hostname")
+	}
+	return nil
 }

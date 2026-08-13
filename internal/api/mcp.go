@@ -10,6 +10,7 @@ package api
 // registered in mcpToolset are exposed.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,12 +19,11 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/bright-interaction/flare/internal/ai"
 	"github.com/bright-interaction/flare/internal/db/generated"
-	"github.com/bright-interaction/flare/internal/ingest"
+	"github.com/bright-interaction/flare/internal/scan"
 	"github.com/bright-interaction/flare/internal/telemetry"
 )
 
@@ -79,8 +79,13 @@ func (e mcpUserError) Error() string { return e.msg }
 func metricNamesForMCP(names []telemetry.MetricName) map[string]any {
 	out := make([]metricNameResponse, 0, len(names))
 	for _, m := range names {
-		out = append(out, metricNameResponse{Name: ai.Scrub(m.Name), Kind: m.Kind, Points: m.Points, LastSeen: m.LastSeen})
+		out = append(out, metricNameResponse{Name: m.Name, Kind: m.Kind, Points: m.Points, LastSeen: m.LastSeen})
 	}
+	// By struct, not by field. The previous version of this function scrubbed
+	// Name and left Kind raw beside it, and ParseNativeMetrics passes the
+	// client's kind straight through, so 512 bytes of attacker text reached the
+	// org's model provider next to a name that WAS redacted.
+	scan.Struct(out)
 	return map[string]any{
 		"metrics": out,
 		"trust":   "untrusted",
@@ -91,6 +96,11 @@ func metricNamesForMCP(names []telemetry.MetricName) map[string]any {
 func userErr(format string, a ...any) error { return mcpUserError{msg: fmt.Sprintf(format, a...)} }
 
 const mcpProtocol = "2025-03-26"
+
+// maxMCPBody bounds one JSON-RPC request. Generous for a tool call; the point
+// is that the cap is enforced by a reader that ERRORS rather than one that
+// truncates.
+const maxMCPBody = 1 << 20
 
 type mcpRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -146,14 +156,48 @@ func (s *Server) mcpHandler() http.Handler {
 			mcpWriteErr(w, nil, -32600, "not authenticated")
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		// MaxBytesReader, not io.LimitReader. LimitReader TRUNCATES silently,
+		// so a request one byte over the cap arrived as a valid prefix of JSON
+		// and was reported to the caller as "-32700 invalid JSON": the client
+		// is told its request was malformed when the real answer is "too
+		// large". MaxBytesReader errors instead, and signals the connection.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMCPBody))
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				mcpWriteErr(w, nil, -32600, "request body too large")
+				return
+			}
 			mcpWriteErr(w, nil, -32700, "read body failed")
+			return
+		}
+		// DisallowUnknownFields is deliberately NOT set (a client may send
+		// protocol extensions), but duplicate keys ARE rejected below, because
+		// encoding/json resolves them last-wins: a body carrying two "method"
+		// or two "name" keys means a first-wins policy inspector in front of
+		// Flare and Flare itself disagree about what was called. No such
+		// inspector exists here today, so this is a latent primitive rather
+		// than a live bypass, and it costs one scan to remove.
+		if dupJSONKey(body) {
+			mcpWriteErr(w, nil, -32600, "duplicate keys in the JSON-RPC request")
 			return
 		}
 		var req mcpRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			mcpWriteErr(w, nil, -32700, "invalid JSON")
+			return
+		}
+		// The envelope is validated rather than assumed. A missing or wrong
+		// jsonrpc field used to execute the call anyway, a bare `null` body and
+		// an explicit `"id": null` were both treated as notifications, and a
+		// batch was rejected as a parse error rather than as unsupported.
+		// Interop risk only, but "we accept whatever arrives" is not a protocol.
+		if req.JSONRPC != "2.0" {
+			mcpWriteErr(w, req.ID, -32600, `"jsonrpc" must be "2.0"`)
+			return
+		}
+		if req.Method == "" {
+			mcpWriteErr(w, req.ID, -32600, `"method" is required`)
 			return
 		}
 		if req.ID == nil { // notification
@@ -229,7 +273,24 @@ func (s *Server) mcpCall(ctx context.Context, org string, params json.RawMessage
 	if err != nil {
 		return mcpToolResult{IsError: true, Content: []mcpContent{{Type: "text", Text: s.mcpErrText(p.Name, err)}}}, nil
 	}
-	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: mcpJSON(val)}}}, nil
+	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: mcpJSON(scrubForMCP(val))}}}, nil
+}
+
+// scrubForMCP is the LAST thing every tool result passes through before it is
+// rendered for the model, and it scrubs by structure rather than by field list.
+//
+// Twelve attacker-writable fields were crossing this boundary raw, in four
+// tools whose siblings WERE scrubbed. The sharpest instance is the one that
+// proves a list cannot hold: metricNamesForMCP is the function a previous fix
+// pass wrote to close "unscrubbed metric names", and it scrubbed Name while
+// leaving Kind raw beside it. The fix introduced its own twin.
+//
+// Handlers still scrub what they own, which is defence in depth and keeps the
+// REST paths that share those helpers correct. This pass is the guarantee: a
+// response field added next year is covered the day it is added.
+func scrubForMCP(v any) any {
+	scan.Struct(&v)
+	return v
 }
 
 // mcpErrText renders a tool error for the client, returning only messages that
@@ -244,6 +305,8 @@ func (s *Server) mcpErrText(tool string, err error) string {
 		return errTriageNotConfigured.Error()
 	case errors.Is(err, errTriageEndpoint):
 		return errTriageEndpoint.Error()
+	case errors.Is(err, errTriageBudget):
+		return errTriageBudget.Error()
 	}
 	var ue mcpUserError
 	if errors.As(err, &ue) {
@@ -277,6 +340,53 @@ func mcpJSON(v any) string {
 
 func schema(raw string) json.RawMessage { return json.RawMessage(raw) }
 
+// dupJSONKey reports whether any object in the document declares the same key
+// twice. encoding/json takes the LAST one silently, so a duplicate is a way to
+// show one value to an inspector and another to the server.
+func dupJSONKey(raw []byte) bool {
+	return hasDupKeys(json.NewDecoder(bytes.NewReader(raw)))
+}
+
+func hasDupKeys(dec *json.Decoder) bool {
+	tok, err := dec.Token()
+	if err != nil {
+		return false
+	}
+	switch d := tok.(type) {
+	case json.Delim:
+		switch d {
+		case '{':
+			seen := map[string]bool{}
+			for dec.More() {
+				kt, kerr := dec.Token()
+				if kerr != nil {
+					return false
+				}
+				key, ok := kt.(string)
+				if !ok {
+					return false
+				}
+				if seen[key] {
+					return true
+				}
+				seen[key] = true
+				if hasDupKeys(dec) {
+					return true
+				}
+			}
+			_, _ = dec.Token() // closing brace
+		case '[':
+			for dec.More() {
+				if hasDupKeys(dec) {
+					return true
+				}
+			}
+			_, _ = dec.Token() // closing bracket
+		}
+	}
+	return false
+}
+
 // resolveProjectRef finds a project by its id OR its slug, scoped to org.
 func (s *Server) resolveProjectRef(ctx context.Context, org, ref string) (*generated.Project, error) {
 	if ref == "" {
@@ -300,12 +410,40 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 			Description: "Estate-wide error health: total events in 24h, unresolved count, new-today count, the top unresolved issues, and per-project open-issue counts.",
 			InputSchema: schema(`{"type":"object","properties":{}}`),
 			Handler: func(ctx context.Context, org string, _ json.RawMessage) (any, error) {
-				ev, _ := s.q.OverviewEventCount24h(ctx, org)
-				un, _ := s.q.OverviewUnresolvedCount(ctx, org)
-				nt, _ := s.q.OverviewNewIssuesToday(ctx, org)
-				top, _ := s.q.OverviewTopIssues(ctx, org)
-				perProj, _ := s.q.OverviewProjectUnresolved(ctx, org)
-				projects, _ := s.q.ListProjectsByOrg(ctx, org)
+				// Every one of these errors used to be discarded, so when the
+				// database was saturated the tool the server's own initialize
+				// instructions tell the agent to start with answered
+				// `unresolved: 0, top_issues: []` with isError false. The agent
+				// then reported the estate healthy while every project was
+				// erroring, and the dashboard showed a red 500 beside it with
+				// no way for the human and the agent to reconcile. The trigger
+				// is the incident itself.
+				//
+				// The REST twin checks and logs all six. Fail the same way.
+				ev, err := s.q.OverviewEventCount24h(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				un, err := s.q.OverviewUnresolvedCount(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				nt, err := s.q.OverviewNewIssuesToday(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				top, err := s.q.OverviewTopIssues(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				perProj, err := s.q.OverviewProjectUnresolved(ctx, org)
+				if err != nil {
+					return nil, err
+				}
+				projects, err := s.q.ListProjectsByOrg(ctx, org)
+				if err != nil {
+					return nil, err
+				}
 				byID := make(map[string]*generated.Project, len(projects))
 				for _, p := range projects {
 					byID[p.ID] = p
@@ -367,6 +505,13 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
+				// Capped like every sibling read tool. Projects are
+				// member-created rather than attacker-created, so this is the
+				// weakest of the caps, but "the one tool with no limit" is how
+				// get_trace got to 52 MB.
+				if len(projects) > maxProjectsListed {
+					projects = projects[:maxProjectsListed]
+				}
 				out := make([]map[string]string, 0, len(projects))
 				for _, p := range projects {
 					out = append(out, map[string]string{"id": p.ID, "name": p.Name, "slug": p.Slug, "platform": p.Platform})
@@ -397,12 +542,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Status != "" && a.Status != "all" {
 					statusFilter = &a.Status
 				}
-				var qFilter *string
-				if q := strings.TrimSpace(a.Q); q != "" {
-					// Same bounds and LIKE escaping as the REST sibling.
-					q = escapeLike(ingest.SanitizeText(truncateRunes(q, 200)))
-					qFilter = &q
-				}
+				qFilter := searchTerm(a.Q)
 				issues, err := s.store.ListIssues(ctx, proj.ID, org, a.Limit, 0, statusFilter, qFilter)
 				if err != nil {
 					return nil, err
@@ -439,7 +579,20 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Events <= 0 || a.Events > 20 {
 					a.Events = 3
 				}
-				events, _ := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
+				// Not discarded. get_issue is described as the core
+				// investigation tool and the whole point is the stack trace, so
+				// an empty events array reads as "no recorded events". A
+				// statement timeout on the events partition scan (the largest
+				// table, and under load precisely because the incident is
+				// generating events) produced exactly that, and an agent
+				// reasonably concludes the issue is stale and calls
+				// update_issue_status to resolve it. The live incident is then
+				// marked resolved and drops out of overview. The REST twin
+				// fails closed.
+				events, err := s.store.ListEventsByIssue(ctx, a.IssueID, org, a.Events)
+				if err != nil {
+					return nil, err
+				}
 				return map[string]any{
 					"trust": "untrusted",
 					"note":  untrustedIssueNote,
@@ -502,12 +655,11 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if a.Severity != "" {
 					f.Severity = &a.Severity
 				}
-				if a.Query != "" {
-					f.Query = &a.Query
-				}
+				f.Query = searchTerm(a.Query)
 				if a.TraceID != "" {
 					f.TraceID = &a.TraceID
 				}
+				clampLogWindow(&f)
 				logs, err := s.store.SearchLogs(ctx, proj.ID, org, f)
 				if err != nil {
 					return nil, err
@@ -537,7 +689,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				if err != nil {
 					return nil, err
 				}
-				spans, err := s.store.GetTraceSpans(ctx, a.TraceID, proj.ID, org)
+				spans, err := s.store.GetTraceSpans(ctx, a.TraceID, proj.ID, org, maxTraceSpans)
 				if err != nil {
 					return nil, err
 				}
@@ -568,8 +720,12 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 				// label the surface untrusted like every sibling read tool.
 				return map[string]any{
 					"spans": out,
-					"trust": "untrusted",
-					"note":  untrustedTelemetryNote,
+					// Truncation is stated. A partial trace presented as a whole
+					// one is the same silent-corruption shape as a scrubber that
+					// rewrites a field without saying so.
+					"truncated": len(spans) == maxTraceSpans,
+					"trust":     "untrusted",
+					"note":      untrustedTelemetryNote,
 				}, nil
 			},
 		},
@@ -589,7 +745,7 @@ func (s *Server) mcpToolset() map[string]mcpTool {
 					return nil, err
 				}
 				if a.Name == "" {
-					names, err := s.store.ListMetricNames(ctx, proj.ID, org)
+					names, err := s.store.ListMetricNames(ctx, proj.ID, org, maxMetricNames)
 					if err != nil {
 						return nil, err
 					}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -27,15 +28,32 @@ type projectResponse struct {
 	OTLPEndpoint string `json:"otlp_endpoint"`
 }
 
-func (s *Server) toProjectResponse(p *generated.Project) projectResponse {
-	return projectResponse{
+// toProjectResponse renders a project. The DSN is omitted for a VIEWER.
+//
+// The DSN public key is itself a write credential: the ingest surface sits
+// entirely outside requireAuth and authenticates on that key alone. So handing
+// it to every reader made "read-only" false. A leaked viewer API key (the
+// DEFAULT role, the one handed out for dashboards) could read every project's
+// DSN, then create arbitrary issues that fire the org's alert rules into its
+// Slack and email, persist monitor rows through the check-in endpoint, and
+// spend the org's BYOAI budget through maybeAutoTriage on every new
+// fingerprint. apiKeyRole's comment reads as though a viewer key cannot cause a
+// write; now it cannot.
+//
+// Member+ still gets it inline, because that is how a developer wires up an SDK
+// and moving it behind a second request would break every existing client.
+func (s *Server) toProjectResponse(ctx context.Context, p *generated.Project) projectResponse {
+	out := projectResponse{
 		ID:           p.ID,
 		Name:         p.Name,
 		Slug:         p.Slug,
 		Platform:     p.Platform,
-		DSN:          s.dsn(p.PublicKey, p.DsnID),
 		OTLPEndpoint: s.otlpEndpoint(),
 	}
+	if roleAtLeast(roleFrom(ctx), "member") {
+		out.DSN = s.dsn(p.PublicKey, p.DsnID)
+	}
+	return out
 }
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +102,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r.Context(), "project.create", req.Name)
-	writeJSON(w, http.StatusCreated, s.toProjectResponse(p))
+	writeJSON(w, http.StatusCreated, s.toProjectResponse(r.Context(), p))
 }
 
 // handleDSNRedirect maps a numeric DSN id to the dashboard project page. The
@@ -92,12 +110,28 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 // routes on, so the Observability deep-link points here and we 302 to the real
 // project. Unauthenticated: the target page enforces the session itself.
 func (s *Server) handleDSNRedirect(w http.ResponseWriter, r *http.Request) {
-	p, err := s.q.GetProjectByDsnID(r.Context(), chi.URLParam(r, "dsnID"))
+	// No lookup here. Redirecting to /projects/<cuid> on a hit and /projects on
+	// a miss made this an unauthenticated existence oracle for the 12-digit DSN
+	// id space, and it also handed out the internal cuid to an anonymous
+	// caller. The SPA resolves the dsn id behind the session instead, so the
+	// answer no longer depends on whether the project exists.
+	http.Redirect(w, r, "/projects/dsn/"+chi.URLParam(r, "dsnID"), http.StatusFound)
+}
+
+// handleGetProjectByDsnID resolves a numeric DSN id to the project, scoped to
+// the caller's org. This is the authenticated half of the /go/{dsnID}
+// deep-link: the redirect no longer resolves anything itself, so the SPA asks
+// here behind the session and a caller with no session learns nothing.
+func (s *Server) handleGetProjectByDsnID(w http.ResponseWriter, r *http.Request) {
+	p, err := s.q.GetProjectByDsnIDScoped(r.Context(), generated.GetProjectByDsnIDScopedParams{
+		DsnID: chi.URLParam(r, "dsnID"),
+		OrgID: orgIDFrom(r.Context()),
+	})
 	if err != nil {
-		http.Redirect(w, r, "/projects", http.StatusFound)
+		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	http.Redirect(w, r, "/projects/"+p.ID, http.StatusFound)
+	writeJSON(w, http.StatusOK, s.toProjectResponse(r.Context(), p))
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +142,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]projectResponse, 0, len(projects))
 	for _, p := range projects {
-		out = append(out, s.toProjectResponse(p))
+		out = append(out, s.toProjectResponse(r.Context(), p))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -122,7 +156,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toProjectResponse(p))
+	writeJSON(w, http.StatusOK, s.toProjectResponse(r.Context(), p))
 }
 
 // handleDeleteProject permanently removes a project and all of its telemetry.
@@ -228,7 +262,7 @@ func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if p, err := s.q.GetProjectBySlug(r.Context(), generated.GetProjectBySlugParams{OrgID: org, Slug: slug}); err == nil {
-		writeJSON(w, http.StatusOK, s.toProjectResponse(p))
+		writeJSON(w, http.StatusOK, s.toProjectResponse(r.Context(), p))
 		return
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		slogError(w, "provision lookup", err)
@@ -259,7 +293,7 @@ func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		// Lost a race with a concurrent deploy: fall back to the existing row.
 		if p2, e2 := s.q.GetProjectBySlug(r.Context(), generated.GetProjectBySlugParams{OrgID: org, Slug: slug}); e2 == nil {
-			writeJSON(w, http.StatusOK, s.toProjectResponse(p2))
+			writeJSON(w, http.StatusOK, s.toProjectResponse(r.Context(), p2))
 			return
 		}
 		slogError(w, "provision create", err)
@@ -269,5 +303,5 @@ func (s *Server) handleProvisionProject(w http.ResponseWriter, r *http.Request) 
 	// could not be reconstructed partly because provisioned projects left no
 	// trail; name+id in one target keeps both greppable.
 	s.audit(r.Context(), "project.provision", name+" ("+p.ID+")")
-	writeJSON(w, http.StatusCreated, s.toProjectResponse(p))
+	writeJSON(w, http.StatusCreated, s.toProjectResponse(r.Context(), p))
 }

@@ -55,11 +55,6 @@ VALUES ($1, $2, $3, $4);
 -- name: GetPasswordResetToken :one
 SELECT * FROM password_reset_tokens
 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now();
-
--- name: MarkPasswordResetTokenUsed :exec
-UPDATE password_reset_tokens SET used_at = now() WHERE id = $1;
-
--- ciguard:allow-unscoped invalidates all of one user's outstanding reset tokens on a completed reset
 -- name: InvalidatePasswordResetTokensForUser :exec
 UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL;
 

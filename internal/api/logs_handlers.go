@@ -125,9 +125,7 @@ const (
 func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := telemetry.LogFilter{Limit: 100}
-	if v := strings.TrimSpace(q.Get("q")); v != "" {
-		f.Query = &v
-	}
+	f.Query = searchTerm(q.Get("q"))
 	if v := strings.TrimSpace(q.Get("severity")); v != "" {
 		f.Severity = &v
 	}
@@ -180,6 +178,8 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 		f.Limit = int32(n)
 	}
 
+	clampLogWindow(&f)
+
 	logs, err := s.store.SearchLogs(r.Context(), chi.URLParam(r, "id"), orgIDFrom(r.Context()), f)
 	if err != nil {
 		slogError(w, "search logs", err)
@@ -194,6 +194,20 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 		resp["next_before"] = logs[len(logs)-1].ObservedAt.Format(time.RFC3339Nano)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// clampLogWindow gives the search a floor, and gives it to every caller.
+//
+// `hours` was clamped and `since` was not, so ?since=0001-01-01T00:00:00Z with
+// ?q=%% was a full unindexed ILIKE scan of the entire retained logs table, on
+// demand, from any viewer session or read-only API key. An absent window is the
+// same scan, so it gets the floor too: the query already returns the newest
+// rows first, and nothing is retained beyond the window anyway.
+func clampLogWindow(f *telemetry.LogFilter) {
+	floor := time.Now().Add(-maxLogWindowHours * time.Hour)
+	if f.Since == nil || f.Since.Before(floor) {
+		f.Since = &floor
+	}
 }
 
 // toLogResponses maps stored logs to the clean API shape. Used by the REST

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/bright-interaction/flare/internal/alerts"
 	"github.com/bright-interaction/flare/internal/db/generated"
 	"github.com/bright-interaction/flare/internal/id"
+	"github.com/bright-interaction/flare/internal/netguard"
 )
 
 type channelResponse struct {
@@ -82,8 +84,21 @@ func mapChannelSecret(chType string, cfg json.RawMessage, fn func(string) string
 func (s *Server) encryptChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
 	return mapChannelSecret(chType, cfg, s.secrets.Encrypt)
 }
+
+// decryptChannelConfig opens the stored webhook secret at the dispatch
+// boundary. An undecryptable value becomes EMPTY rather than the ciphertext:
+// posting "enc:v1:<base64>" at a third-party webhook host both leaks the
+// encrypted credential and looks like a working delivery. Empty makes the send
+// fail, which is what a broken key should look like.
 func (s *Server) decryptChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
-	return mapChannelSecret(chType, cfg, s.secrets.Decrypt)
+	return mapChannelSecret(chType, cfg, func(v string) string {
+		out, err := s.secrets.Decrypt(v)
+		if err != nil {
+			slog.Error("alert channel secret cannot be decrypted; check FLARE_SECRET_KEY", "error", err)
+			return ""
+		}
+		return out
+	})
 }
 
 // redactChannelConfig decrypts then masks the webhook secret before it is
@@ -91,7 +106,13 @@ func (s *Server) decryptChannelConfig(chType string, cfg json.RawMessage) json.R
 // short suffix for identification, mirroring the "shown once" rule for API keys
 // and the GitHub token. Email destinations and the empty log config are kept.
 func (s *Server) redactChannelConfig(chType string, cfg json.RawMessage) json.RawMessage {
-	return mapChannelSecret(chType, cfg, func(v string) string { return maskURL(s.secrets.Decrypt(v)) })
+	return mapChannelSecret(chType, cfg, func(v string) string {
+		out, err := s.secrets.Decrypt(v)
+		if err != nil {
+			return "(unreadable: check FLARE_SECRET_KEY)"
+		}
+		return maskURL(out)
+	})
 }
 
 // maskURL keeps scheme://host and a 4-char suffix, dropping the secret path so
@@ -130,16 +151,28 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		var cfg struct {
 			URL string `json:"url"`
 		}
-		if json.Unmarshal(req.Config, &cfg) != nil || !strings.HasPrefix(cfg.URL, "http") {
-			writeErr(w, http.StatusBadRequest, "webhook channel requires config.url (http/https)")
+		if json.Unmarshal(req.Config, &cfg) != nil {
+			writeErr(w, http.StatusBadRequest, "webhook channel requires config.url (https)")
+			return
+		}
+		// strings.HasPrefix(cfg.URL, "http") accepted "http://169.254.169.254"
+		// and, being a prefix test, "httpfoo" too. The dial guard blocks the
+		// delivery, so what shipped was a channel the UI shows as configured
+		// whose every alert fails silently.
+		if err := netguard.ValidatePublicURL(cfg.URL); err != nil {
+			writeErr(w, http.StatusBadRequest, "webhook config.url "+err.Error())
 			return
 		}
 	case "slack":
 		var cfg struct {
 			WebhookURL string `json:"webhook_url"`
 		}
-		if json.Unmarshal(req.Config, &cfg) != nil || !strings.HasPrefix(cfg.WebhookURL, "https://") {
+		if json.Unmarshal(req.Config, &cfg) != nil {
 			writeErr(w, http.StatusBadRequest, "slack channel requires config.webhook_url (https incoming webhook)")
+			return
+		}
+		if err := netguard.ValidatePublicURL(cfg.WebhookURL); err != nil {
+			writeErr(w, http.StatusBadRequest, "slack config.webhook_url "+err.Error())
 			return
 		}
 	case "email":
@@ -159,15 +192,42 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap the channels an org may hold. Every enabled channel is one more
+	// outbound delivery per alert, each holding a background slot for up to its
+	// own timeout, so "how many channels can one tenant create" was directly
+	// "how much of the shared alert pool can one tenant occupy". Nothing capped
+	// it: CountEnabledNotificationChannelsByOrg existed and only the dashboard
+	// read it.
+	org := orgIDFrom(r.Context())
+	if n, cerr := s.q.CountEnabledNotificationChannelsByOrg(r.Context(), org); cerr == nil && n >= maxChannelsPerOrg {
+		writeErr(w, http.StatusConflict, "this workspace already has the maximum number of notification channels")
+		return
+	} else if cerr != nil {
+		slogError(w, "count channels", cerr)
+		return
+	}
+
 	ch, err := s.q.CreateNotificationChannel(r.Context(), generated.CreateNotificationChannelParams{
-		ID: id.New(), OrgID: orgIDFrom(r.Context()), Type: req.Type, Config: s.encryptChannelConfig(req.Type, req.Config), Enabled: true,
+		ID: id.New(), OrgID: org, Type: req.Type, Config: s.encryptChannelConfig(req.Type, req.Config), Enabled: true,
 	})
 	if err != nil {
 		slogError(w, "create channel", err)
 		return
 	}
+	// Audited, because creating a channel is how an alert stream is redirected.
+	// channel.update was audited and create and delete were not, which is the
+	// one operation on this resource that IS recorded being the least
+	// sensitive: a compromised member could point a new webhook at their own
+	// endpoint, mirror every alert in the org (including the
+	// sensitive-data-in-payload security events), and the audit log an admin
+	// reads showed nothing. Deleting it afterwards was equally invisible.
+	s.audit(r.Context(), "channel.create", ch.ID+" ("+ch.Type+")")
 	writeJSON(w, http.StatusCreated, s.toChannelResponse(ch))
 }
+
+// maxChannelsPerOrg bounds the fan-out of one alert. Well above any real
+// workspace (a handful of Slack channels, a webhook, a couple of mailboxes).
+const maxChannelsPerOrg = 25
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	chans, err := s.q.ListNotificationChannelsByOrg(r.Context(), orgIDFrom(r.Context()))
@@ -221,9 +281,11 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	if derr := s.dispatcher.DispatchOne(r.Context(), alerts.Channel{
 		ID: ch.ID, OrgID: ch.OrgID, Type: ch.Type, Config: s.decryptChannelConfig(ch.Type, ch.Config),
 	}, n); derr != nil {
+		s.audit(r.Context(), "channel.test", ch.ID+" (failed)")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": derr.Error()})
 		return
 	}
+	s.audit(r.Context(), "channel.test", ch.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -316,6 +378,7 @@ func (s *Server) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 		slogError(w, "create alert rule", err)
 		return
 	}
+	s.audit(r.Context(), "alert_rule.create", rule.Type+" on "+proj.Slug)
 	writeJSON(w, http.StatusCreated, alertRuleResponse{
 		ID: rule.ID, Name: rule.Name, Type: rule.Type, Threshold: rule.Threshold, WindowMinutes: rule.WindowMinutes, Enabled: rule.Enabled,
 	})
@@ -335,12 +398,14 @@ func (s *Server) handleDeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "alert rule not found")
 		return
 	}
+	s.audit(r.Context(), "alert_rule.delete", chi.URLParam(r, "ruleID"))
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	channelID := chi.URLParam(r, "id")
 	rows, err := s.q.DeleteNotificationChannel(r.Context(), generated.DeleteNotificationChannelParams{
-		ID:    chi.URLParam(r, "id"),
+		ID:    channelID,
 		OrgID: orgIDFrom(r.Context()),
 	})
 	if err != nil {
@@ -351,6 +416,7 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "channel not found")
 		return
 	}
+	s.audit(r.Context(), "channel.delete", channelID)
 	writeJSON(w, http.StatusNoContent, nil)
 }
 

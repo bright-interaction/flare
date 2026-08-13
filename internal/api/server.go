@@ -73,6 +73,16 @@ type Server struct {
 	// bounds an honestly-flapping cron and bounds nothing at all against someone
 	// varying the slug.
 	monitorAlertLimiter *ratelimit.Limiter
+	// issueAlertLimiter caps issue alerts PER ORG, the same way
+	// monitorAlertLimiter caps monitor alerts.
+	//
+	// The monitor path spells out this exact attack and caps it twice; the
+	// new-issue path had no equivalent at all. bgAlertWorkers is a CONCURRENCY
+	// bound, not a volume bound: it holds parallel sends at 24 and drops the
+	// overflow, so a sustained flood of unique fingerprints from one DSN key
+	// produced a sustained 24-way email/Slack/webhook send with nothing
+	// throttling total volume, into the org's own recipients.
+	issueAlertLimiter *ratelimit.Limiter
 
 	// Security-event recording: Flare's own security signals (ingest-auth
 	// rejections, login lockouts) become grouped issues in a per-org
@@ -96,8 +106,17 @@ type Server struct {
 	// burst of new fingerprints could fill every slot with 90-second BYOAI
 	// completions, so 15-second alert evaluation, the thing that actually pages a
 	// human, was dropped while the optional nice-to-have ran.
-	bgSlots     map[string]chan struct{}
+	bgSlots map[string]chan struct{}
+	// allowPrivateAI is the EFFECTIVE value of FLARE_ALLOW_PRIVATE_AI_ENDPOINT
+	// after the multi-workspace check in NewServer. Read this, never cfg: the
+	// config value is what the operator asked for, this is what applies.
+	allowPrivateAI bool
+
 	bgSlotsOnce sync.Once
+	// orgSlots counts the background slots each org currently holds, per job
+	// class, so no single tenant can occupy the shared pool.
+	orgSlotMu sync.Mutex
+	orgSlots  map[string]int
 	// bgWG tracks in-flight background jobs so shutdown can wait for them.
 	// Without it SIGTERM dropped alert dispatches that were mid-flight and
 	// abandoned AI triage calls whose token budget had already been claimed.
@@ -124,6 +143,18 @@ func (s *Server) WaitBackground(ctx context.Context) {
 const (
 	bgAlertWorkers  = 24
 	bgTriageWorkers = 8
+	// bgPerOrgWorkers is the share of a class's slots any ONE tenant may hold.
+	//
+	// A global pool with no per-tenant accounting is a pool one tenant can own.
+	// Two webhook channels pointing at a host that accepts the TCP connection
+	// and never answers, plus a flood of distinct fingerprints to that org's
+	// own DSN (1200/min is allowed), occupied every alert-eval slot
+	// continuously; goBackground then DROPS the overflow with a log line, no
+	// retry and no queue, so every OTHER tenant's new-issue, regression, spike,
+	// monitor-failed and watchdog alert silently stopped. That is the product's
+	// core promise failing under one tenant's control, and one org with a
+	// genuinely dead endpoint does it by accident.
+	bgPerOrgWorkers = 6
 )
 
 // bgPool returns the worker pool for a job class, lazily initialised so a Server
@@ -149,11 +180,30 @@ func (s *Server) bgPool(name string) chan struct{} {
 
 // goBackground runs fn on a bounded worker slot with its own detached, deadlined
 // context. Returns false (and drops fn) when every slot for that class is busy.
+//
+// Prefer goBackgroundFor for anything a tenant can trigger.
 func (s *Server) goBackground(name string, timeout time.Duration, fn func(context.Context)) bool {
+	return s.goBackgroundFor("", name, timeout, fn)
+}
+
+// goBackgroundFor is goBackground with per-org accounting on top of the global
+// pool: one tenant may hold at most bgPerOrgWorkers slots of a class, so a
+// tenant whose delivery endpoints hang cannot starve every other tenant's
+// alerts. An empty org means server-owned work with no tenant to attribute it
+// to and takes the global pool only.
+func (s *Server) goBackgroundFor(org, name string, timeout time.Duration, fn func(context.Context)) bool {
 	pool := s.bgPool(name)
+	if org != "" && !s.claimOrgSlot(org, name) {
+		slog.Warn("background work dropped: org is at its share of the pool",
+			"job", name, "org_id", org, "per_org_capacity", bgPerOrgWorkers)
+		return false
+	}
 	select {
 	case pool <- struct{}{}:
 	default:
+		if org != "" {
+			s.releaseOrgSlot(org, name)
+		}
 		slog.Warn("background work dropped: all worker slots busy", "job", name, "capacity", cap(pool))
 		return false
 	}
@@ -161,6 +211,9 @@ func (s *Server) goBackground(name string, timeout time.Duration, fn func(contex
 	go func() {
 		defer s.bgWG.Done()
 		defer func() { <-pool }()
+		if org != "" {
+			defer s.releaseOrgSlot(org, name)
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("background job panicked", "job", name, "panic", r)
@@ -173,20 +226,74 @@ func (s *Server) goBackground(name string, timeout time.Duration, fn func(contex
 	return true
 }
 
+// claimOrgSlot takes one of an org's per-class slots, or reports that it has
+// none left. Counters are deleted at zero so the map cannot grow with the
+// tenant list over the process lifetime.
+func (s *Server) claimOrgSlot(org, class string) bool {
+	key := class + "\x00" + org
+	s.orgSlotMu.Lock()
+	defer s.orgSlotMu.Unlock()
+	if s.orgSlots == nil {
+		s.orgSlots = map[string]int{}
+	}
+	if s.orgSlots[key] >= bgPerOrgWorkers {
+		return false
+	}
+	s.orgSlots[key]++
+	return true
+}
+
+func (s *Server) releaseOrgSlot(org, class string) {
+	key := class + "\x00" + org
+	s.orgSlotMu.Lock()
+	defer s.orgSlotMu.Unlock()
+	if s.orgSlots[key] <= 1 {
+		delete(s.orgSlots, key)
+		return
+	}
+	s.orgSlots[key]--
+}
+
 func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Config, analyticsMgr *analytics.Manager) *Server {
 	mailer := email.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom, cfg.SMTPFromName, cfg.SMTPTLS)
+
+	// FLARE_ALLOW_PRIVATE_AI_ENDPOINT exists so a developer can point BYOAI at
+	// a local Ollama. On a SHARED deployment it is a global kill switch on a
+	// per-tenant control: with it set, ANY org can point base_url at an
+	// internal address and read the response back through triage. So it only
+	// applies while the instance is what it was written for, one workspace.
+	//
+	// Fails closed by ignoring the flag rather than refusing to boot: an
+	// operator who added a second workspace to a dev instance should lose the
+	// escape hatch, not lose the server.
+	allowPrivateAI := cfg.AllowPrivateAIEndpoint
+	if allowPrivateAI {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		n, err := generated.New(pool).CountOrgs(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("could not count workspaces; ignoring FLARE_ALLOW_PRIVATE_AI_ENDPOINT", "error", err)
+			allowPrivateAI = false
+		} else if n > 1 {
+			slog.Error("FLARE_ALLOW_PRIVATE_AI_ENDPOINT is set on an instance with more than one "+
+				"workspace, which would let any tenant reach internal addresses through AI triage. "+
+				"Ignoring it; the SSRF guard stays on.", "workspaces", n)
+			allowPrivateAI = false
+		}
+	}
 	srv := &Server{
-		q:            generated.New(pool),
-		pool:         pool,
-		store:        pgstore.New(pool),
-		analytics:    analyticsMgr,
-		sessions:     sessions,
-		cfg:          cfg,
-		dispatcher:   alerts.NewDispatcher(mailer),
-		mailer:       mailer,
-		symbolicator: sourcemaps.NewResolver(),
-		ai:           ai.New(!cfg.AllowPrivateAIEndpoint),
-		secrets:      secretbox.New(cfg.SecretKey),
+		q:              generated.New(pool),
+		pool:           pool,
+		store:          pgstore.New(pool),
+		analytics:      analyticsMgr,
+		sessions:       sessions,
+		cfg:            cfg,
+		dispatcher:     alerts.NewDispatcher(mailer),
+		mailer:         mailer,
+		symbolicator:   sourcemaps.NewResolver(),
+		ai:             ai.New(!allowPrivateAI),
+		allowPrivateAI: allowPrivateAI,
+		secrets:        secretbox.New(cfg.SecretKey),
 
 		loginLimiter:  ratelimit.New(loginFailBudget, loginFailWindow),
 		ingestLimiter: ratelimit.New(cfg.IngestRatePerMin, time.Minute),
@@ -197,11 +304,16 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 		// rows, was not. Keyed on IP alone because the bootstrap gate below makes
 		// the email irrelevant to the outcome once an install has a user.
 		signupLimiter: ratelimit.New(5, time.Hour),
-		testLimiter:   ratelimit.New(10, time.Minute),   // <=10 test-sends per org / min
+		testLimiter:   ratelimit.New(10, time.Minute), // <=10 test-sends per org / min
 		// <=20 monitor-failure alerts per ORG per minute, whatever the slug.
 		// Above any real estate (a flapping fleet transitions a handful of
 		// monitors a minute) and far below what a mailbox tolerates.
 		monitorAlertLimiter: ratelimit.New(20, time.Minute),
+		// <=30 issue alerts per ORG per minute. Above any real incident (an
+		// outage produces a handful of distinct fingerprints a minute, and
+		// TrySetIssueSpike already dedups per issue) and far below what a
+		// mailbox or a Slack channel tolerates.
+		issueAlertLimiter: ratelimit.New(30, time.Minute),
 
 		secProjects:      map[string]*generated.Project{},
 		secIPLimiter:     ratelimit.New(1, 10*time.Second), // <=1 per (kind, ip) / 10s
@@ -221,9 +333,12 @@ func NewServer(pool *pgxpool.Pool, sessions *scs.SessionManager, cfg config.Conf
 // dispatchToProject sends one notification to the channels routed to a project,
 // which is every channel routed to it PLUS every channel with no routing at all.
 //
-// Prefer this over dispatchToOrg wherever a project is known. Alerts are almost
-// always about a project, and org-wide fan-out is what put a production incident
-// and a side project in the same Slack.
+// This is the ONLY dispatch helper. dispatchToOrg used to sit beside it with
+// zero callers and a doc comment admitting it "fans out to EVERY enabled
+// channel in the org, ignoring routing", which is a routing bypass waiting for
+// someone to reach for the shorter name. Org-wide fan-out is what put a
+// production incident and a side project in the same Slack; it is deleted, not
+// deprecated.
 func (s *Server) dispatchToProject(ctx context.Context, org, project string, n alerts.Notification) {
 	chans, err := s.q.ListEnabledChannelsForProject(ctx, generated.ListEnabledChannelsForProjectParams{
 		OrgID: org, ProjectID: project,
@@ -237,32 +352,6 @@ func (s *Server) dispatchToProject(ctx context.Context, org, project string, n a
 	}
 	s.dispatcher.Dispatch(ctx, channels, n)
 }
-
-// dispatchToOrg fans out to EVERY enabled channel in the org, ignoring routing.
-//
-// Reserved for notifications that genuinely belong to no single project. Routing
-// is per project, so a channel scoped to project A has no answer to "should this
-// org-level message reach you"; delivering is the safe direction, because the
-// alternative is an alert that silently reaches nobody once anyone configures
-// routing. Deciding that once and writing it here is the point: the recurring
-// defect in this codebase is a rule applied to some call sites and not others.
-//
-// If you are reaching for this and you have a project id, use dispatchToProject.
-func (s *Server) dispatchToOrg(ctx context.Context, org string, n alerts.Notification) {
-	chans, err := s.q.ListEnabledNotificationChannelsByOrg(ctx, org)
-	if err != nil || len(chans) == 0 {
-		return
-	}
-	channels := make([]alerts.Channel, 0, len(chans))
-	for _, c := range chans {
-		channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
-	}
-	s.dispatcher.Dispatch(ctx, channels, n)
-}
-
-// recordChannelDelivery persists the outcome of one notification delivery
-// attempt. Best-effort: a failed write must never affect alert dispatch. Runs
-// in the dispatch goroutine (ingest/watchdog) or the test-send request.
 func (s *Server) recordChannelDelivery(ctx context.Context, orgID, channelID string, derr error) {
 	// Detach from the dispatch context, which a prior slow/hung channel in the
 	// same org may already have cancelled, with a fresh short deadline. Without

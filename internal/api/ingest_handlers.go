@@ -80,6 +80,14 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 
 	var lastID string
 	var events, stored int
+	// Transactions are counted the same way events are. They were the ONE
+	// ingest path that discarded data on a DB error and still answered 200: a
+	// Sentry SDK reads 200 as "accepted" and drops the payload, so every
+	// database blip permanently lost tracing data on the Sentry-wire path,
+	// while the OTLP trace path beside it returned 500 and the client retried.
+	// This is the prior audit's "4xx on ingest failure" fix applied to the
+	// events arm and not to the arm next to it.
+	var transactions, storedTransactions int
 	for _, item := range items {
 		switch item.Type {
 		case "transaction":
@@ -91,9 +99,12 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("envelope transaction parse failed", "project_id", project.ID, "error", perr)
 				continue
 			}
+			transactions++
 			if perr := s.persistSpans(r.Context(), project, spans, budget); perr != nil {
 				slog.Warn("persist transaction spans failed", "project_id", project.ID, "error", perr)
+				continue
 			}
+			storedTransactions++
 		case "event":
 			events++
 			eid, ierr := s.ingestOne(r.Context(), project, item.Payload)
@@ -115,6 +126,13 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 	// because the SDK cannot retry individual items.
 	if events > 0 && stored == 0 {
 		writeErr(w, http.StatusServiceUnavailable, "no event in the envelope could be stored")
+		return
+	}
+	// Same rule for an envelope that carried only transactions. A parse failure
+	// is the client's problem and is not counted here; a persist failure is
+	// ours, and telling the SDK "accepted" is how the span tree is lost.
+	if events == 0 && transactions > 0 && storedTransactions == 0 {
+		writeErr(w, http.StatusServiceUnavailable, "no transaction in the envelope could be stored")
 		return
 	}
 	budget.report(project.ID, "spans")
@@ -312,7 +330,7 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 	if !pageableLevel(issue.Level) {
 		return
 	}
-	s.goBackground("alert-eval", 15*time.Second, func(ctx context.Context) {
+	s.goBackgroundFor(project.OrgID, "alert-eval", 15*time.Second, func(ctx context.Context) {
 		rules, err := s.q.ListEnabledAlertRulesByProject(ctx, generated.ListEnabledAlertRulesByProjectParams{
 			ProjectID: project.ID,
 			OrgID:     project.OrgID,
@@ -367,6 +385,16 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 			return
 		}
 
+		// Per-org volume cap, matching the monitor path. Checked AFTER the
+		// reason is settled so an event that was never going to alert does not
+		// consume the org's budget, and BEFORE the channel load so a throttled
+		// alert costs one query rather than a fan-out.
+		if !s.issueAlertLimiter.Allow("issue-alert-org:" + project.OrgID) {
+			slog.Warn("issue alert throttled: org is over its per-minute alert budget",
+				"org_id", project.OrgID, "project_id", project.ID, "issue_id", issue.ID)
+			return
+		}
+
 		// Respect per-project routing: an issue alert is about this project.
 		chans, err := s.q.ListEnabledChannelsForProject(ctx, generated.ListEnabledChannelsForProjectParams{
 			OrgID: project.OrgID, ProjectID: project.ID,
@@ -378,20 +406,29 @@ func (s *Server) evaluateAlerts(project *generated.Project, issue *generated.Ups
 		for _, c := range chans {
 			channels = append(channels, alerts.Channel{ID: c.ID, OrgID: c.OrgID, Type: c.Type, Config: s.decryptChannelConfig(c.Type, c.Config)})
 		}
-		// When the detector flagged this issue, the title and culprit ARE the
-		// leaked value. Alerts go out over email/Slack/webhooks, i.e. off-box to
-		// third parties, so scrub before dispatch: otherwise the feature that
-		// exists to catch a leaked secret is what forwards it.
-		alertTitle, alertCulprit := issue.Title, issue.Culprit
-		if sensitive != "" {
-			alertTitle, alertCulprit = ai.Scrub(alertTitle), ai.Scrub(alertCulprit)
-		}
+		// Alerts leave the tenant boundary: three of the four channel types
+		// (webhook, slack, email) deliver to a third party. So the scrub is
+		// UNCONDITIONAL, the way recordSecurityEvent already does it.
+		//
+		// It used to be gated on `sensitive != ""`, which is the detector's
+		// verdict, and the detector is strictly narrower than the scrubber it
+		// then calls. Seven of eight measured shapes walked straight through:
+		// a postgres URL with credentials, an Authorization header, an
+		// assignment-style secret, a plain database password, a customer email,
+		// a customer IP, a GitLab PAT. Every one of them is a string an
+		// anonymous holder of a DSN public key can put in an exception message,
+		// so the gate turned "catch a leaked secret" into "forward an arbitrary
+		// string to an endpoint the attacker chose". The comment two lines up
+		// said exactly what would happen; the condition made it happen.
+		//
+		// detectSensitive decides whether to raise the badge. It never decides
+		// whether redaction runs.
 		s.dispatcher.Dispatch(ctx, channels, alerts.Notification{
 			ProjectName: project.Name,
 			IssueID:     issue.ID,
-			Title:       alertTitle,
+			Title:       ai.Scrub(issue.Title),
 			Level:       issue.Level,
-			Culprit:     alertCulprit,
+			Culprit:     ai.Scrub(issue.Culprit),
 			EventCount:  issue.EventCount,
 			Reason:      reason,
 			URL:         strings.TrimRight(s.cfg.BaseURL, "/") + "/issues/" + issue.ID,

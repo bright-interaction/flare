@@ -247,7 +247,6 @@ const invalidatePasswordResetTokensForUser = `-- name: InvalidatePasswordResetTo
 UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL
 `
 
-// ciguard:allow-unscoped invalidates all of one user's outstanding reset tokens on a completed reset
 func (q *Queries) InvalidatePasswordResetTokensForUser(ctx context.Context, userID string) error {
 	_, err := q.db.Exec(ctx, invalidatePasswordResetTokensForUser, userID)
 	return err
@@ -311,15 +310,6 @@ func (q *Queries) ListUsersByOrg(ctx context.Context, orgID string) ([]*ListUser
 		return nil, err
 	}
 	return items, nil
-}
-
-const markPasswordResetTokenUsed = `-- name: MarkPasswordResetTokenUsed :exec
-UPDATE password_reset_tokens SET used_at = now() WHERE id = $1
-`
-
-func (q *Queries) MarkPasswordResetTokenUsed(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, markPasswordResetTokenUsed, id)
-	return err
 }
 
 const updateUserEmail = `-- name: UpdateUserEmail :exec
