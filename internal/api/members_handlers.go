@@ -256,16 +256,47 @@ func (s *Server) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 
 // handleAcceptInvite consumes an invite token, creates the user with the
 // invited role, and signs them in. Public (no session yet).
+//
+// Rate limited per IP, and the limit runs before the body is parsed. With
+// register gated this was the last unlimited unauthenticated POST on the
+// service. The secret token means an attacker holding none creates no rows, so
+// this is not the row-minting hole register was, but "creates nothing" is not
+// the same as "costs nothing": every tokenless request still buys an
+// unauthenticated Postgres lookup, and a request WITH a token buys a bcrypt at
+// cost 12, the most expensive thing this binary does. One invite link forwarded
+// out of a mailbox is enough to loop that from an IP with no account at all.
+//
+// The bucket is the IP and NOTHING the caller sends, which is the point rather
+// than an omission. A key with a caller-chosen component is not a ceiling: the
+// caller mints a fresh budget by changing it. monitorAlertLimiter in server.go
+// carries the same lesson from the other side, where a chosen slug
+// auto-registered a monitor and got its own budget along with it. So the token
+// stays out of the key, hashed or not. clientIP is fixed-width by construction
+// (realIP only ever stores a net.ParseIP-validated address), so there is nothing
+// left here to bound; limiterEmailKey exists for the login and reset keys, which
+// do fold a caller-supplied address in, and it is what an unbounded key on this
+// path would need.
+//
+// The refusal is one constant string. It names no invitee, no org, and does not
+// say whether the address is taken, so the one response an unauthenticated
+// caller can always reach carries nothing about the workspace.
+//
+// The 409 below stays. It is the same enumeration shape register was just
+// hardened against, but the address is not the caller's: it comes off the
+// invitation row that a secret token resolved, so it varies by an email the
+// inviter chose and only a live token reaches. Folding it into the 400 would
+// cost a real user (already has an account, clicks an invite anyway) the one
+// message that explains what happened, and would hide nothing from the admin who
+// minted the invite in the first place.
 func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
-	// Limited BEFORE the body is parsed, like the register gate, so an
-	// unparseable body still consumes the budget. Register was the other
-	// unlimited unauthenticated POST and it was fixed alone; this is the twin
-	// that was left, and it is an unbounded bcrypt call (cost 12) reachable
-	// with no credential at all.
-	if !s.signupLimiter.Allow("accept-invite:" + remoteIP(r)) {
-		writeErr(w, http.StatusTooManyRequests, "too many attempts, try again later")
+	// Before the body is parsed: a limit decodeJSON can skip is not a limit,
+	// because an unparseable body is the cheapest thing an attacker can send.
+	if !s.inviteLimiter.Allow("accept-invite:" + clientIP(r)) {
+		w.Header().Set("Retry-After", "900")
+		writeErr(w, http.StatusTooManyRequests, "too many invite attempts, try again later")
 		return
 	}
+
 	var req struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
