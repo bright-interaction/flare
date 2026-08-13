@@ -35,6 +35,10 @@ type Limiter struct {
 	// checked lastSweep, which the pre-fix code never wrote, so it passed against
 	// the very code it was meant to reject.
 	sweeps int
+	// evicts counts O(n log n) ceiling evictions, for the same reason. Eviction
+	// frees a whole batch, so this must stay far below the insert count; when it
+	// tracks the insert count, eviction is freeing nothing and repeating.
+	evicts int
 }
 
 // New returns a limiter allowing limit events per window per key.
@@ -122,41 +126,76 @@ func (l *Limiter) get(key string, now time.Time) *entry {
 // and the limiter re-creates any key on its next request.
 //
 // An UNEXPIRED at-limit entry (count >= limit, reset still in the future) is a
-// live lockout and is EXEMPT from eviction. Without this a flood of junk keys
+// live lockout and is evicted LAST. Without that preference a flood of junk keys
 // evicts the attacker's own auth-lockout counter: it was created first, so it
 // carries the earliest reset and this scan would pick it before any of the
-// later junk, letting the attacker resume past the cap. The exemption cannot
-// grow the map without bound because a live lockout self-expires at its reset,
-// and creating one costs the attacker the full at-limit run of requests per key
-// (five failed logins, each paying a bcrypt, for the login limiter), so exempt
-// entries can only accumulate as fast as they can be earned and drain as the
-// window passes. Expired at-limit entries are NOT exempt: they are dead weight
-// and evict like any other stale key.
+// later junk, letting the attacker resume past the cap. Expired at-limit entries
+// get no preference: they are dead weight and evict like any other stale key.
+//
+// The preference is an ORDER, not an exemption, and that distinction is the
+// whole point. As a hard exemption its bound was argued this way: a live lockout
+// self-expires, and earning one costs the attacker a full at-limit run of
+// requests per key (five failed logins, each paying a bcrypt, on the login
+// limiter), so exempt entries accumulate no faster than they can be earned.
+// That argument quietly assumes the limit is meaningfully greater than one.
+// Flare runs a limiter where it is not: secIPLimiter is New(1, 10s), so the
+// FIRST request for a key leaves it at its limit and permanently protected until
+// its window passes, at a cost of exactly one request. Every entry was then
+// exempt, evictOldest freed nothing, and two things followed: maxKeys bounded
+// nothing at all, and the O(n) scan plus its ~4.8 MB allocation repeated on
+// EVERY insert instead of once per batch (measured at 2.28 ms of lock-held work
+// per request, serialising every other caller of that limiter). A ceiling that
+// stops holding under a flood is not a ceiling, so bounded memory wins and the
+// lockout gets priority rather than immunity.
+//
+// Falling back to lockouts costs an attacker maxKeys live at-limit entries
+// before it triggers, which on a limiter whose limit is worth bypassing is the
+// full earned cost the original argument described.
 func (l *Limiter) evictOldest(n int, now time.Time) {
 	if n <= 0 || len(l.hits) == 0 {
 		return
 	}
-	exempt := func(v *entry) bool { return v.count >= l.limit && now.Before(v.reset) }
-	resets := make([]time.Time, 0, len(l.hits))
+	l.evicts++
+	byReset := func(a, b time.Time) int { return a.Compare(b) }
+	locked := func(v *entry) bool { return v.count >= l.limit && now.Before(v.reset) }
+
+	// Two pools: ordinary entries are spent first, live lockouts only to top up
+	// a batch that the ordinary pool could not fill.
+	free := make([]time.Time, 0, len(l.hits))
+	var held []time.Time
 	for _, v := range l.hits {
-		if exempt(v) {
+		if locked(v) {
+			held = append(held, v.reset)
 			continue
 		}
-		resets = append(resets, v.reset)
+		free = append(free, v.reset)
 	}
-	if len(resets) == 0 {
-		return
+
+	// The zero time is the "evict none from this pool" sentinel: a real reset is
+	// always now+window, so it can never be zero.
+	var freeCutoff, heldCutoff time.Time
+	want := n
+	if len(free) > 0 {
+		k := min(want, len(free))
+		slices.SortFunc(free, byReset)
+		freeCutoff = free[k-1]
+		want -= k
 	}
-	if n > len(resets) {
-		n = len(resets)
+	if want > 0 && len(held) > 0 {
+		k := min(want, len(held))
+		slices.SortFunc(held, byReset)
+		heldCutoff = held[k-1]
 	}
-	slices.SortFunc(resets, func(a, b time.Time) int { return a.Compare(b) })
-	threshold := resets[n-1]
+
 	for k, v := range l.hits {
-		if exempt(v) {
+		cutoff := freeCutoff
+		if locked(v) {
+			cutoff = heldCutoff
+		}
+		if cutoff.IsZero() {
 			continue
 		}
-		if !v.reset.After(threshold) {
+		if !v.reset.After(cutoff) {
 			delete(l.hits, k)
 		}
 	}
