@@ -43,6 +43,12 @@ type NormalizedEvent struct {
 	TraceID        string
 	SpanID         string
 	Raw            json.RawMessage
+
+	// ClientFingerprint is the grouping key the CLIENT asked for, verbatim off
+	// the wire. Empty for the overwhelming majority of events, which is why
+	// Fingerprint falls back to the derived key rather than treating this as
+	// authoritative. See Fingerprint for why honouring it matters.
+	ClientFingerprint []string
 }
 
 // sentryEvent is the subset of the Sentry event payload Flare reads.
@@ -54,6 +60,11 @@ type sentryEvent struct {
 	Release     string          `json:"release"`
 	Transaction string          `json:"transaction"`
 	Message     json.RawMessage `json:"message"`
+	// Fingerprint is the Sentry-wire grouping override. Typed as a lenient
+	// raw message rather than []string because a client that sends it as a
+	// bare string (or anything else) must not fail the whole event, which is
+	// the same rule the exception and contexts decoders below follow.
+	Fingerprint json.RawMessage `json:"fingerprint"`
 	Logentry    *struct {
 		Formatted string `json:"formatted"`
 		Message   string `json:"message"`
@@ -165,6 +176,8 @@ func ParseEvent(raw []byte) (NormalizedEvent, error) {
 		}
 	}
 
+	ev.ClientFingerprint = parseFingerprint(se.Fingerprint)
+
 	ev.TraceID, ev.SpanID = parseTraceContext(se.Contexts)
 
 	ev.Title = title(ev)
@@ -174,9 +187,124 @@ func ParseEvent(raw []byte) (NormalizedEvent, error) {
 	return bound(ev), nil
 }
 
-// Fingerprint is the stable grouping key. Exceptions group by type + in-app
-// frame signatures; bare messages group by their text.
+// defaultFingerprintToken is Sentry's placeholder for "splice the
+// server-computed default in here", so a client can REFINE the default
+// grouping (["{{ default }}", tenantID]) instead of replacing it.
+const defaultFingerprintToken = "{{ default }}"
+
+// Bounds on the client-supplied grouping key. Same reasoning as the byte caps
+// on every other client-controlled column: the fingerprint is attacker-shaped
+// input that decides which row an event lands on, so it is capped in BOTH
+// dimensions before it reaches the hash.
+const (
+	maxFingerprintParts     = 32
+	maxFingerprintPartBytes = 256
+)
+
+// parseFingerprint reads the Sentry-wire fingerprint leniently. A shape it does
+// not understand yields nil, which means "no override" and leaves the derived
+// grouping untouched, rather than failing the event.
+func parseFingerprint(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+		// A bare string is not the documented shape, but it is an obvious
+		// client slip and its intent is unambiguous.
+		var one string
+		if json.Unmarshal(raw, &one) != nil {
+			return nil
+		}
+		if one = cleanFingerprintPart(one); one == "" {
+			return nil
+		}
+		return []string{one}
+	}
+
+	// Decode element by element and STOP at the cap, rather than unmarshalling
+	// the array and trimming afterwards. The array is client-controlled and
+	// compresses extremely well: a gzipped body of a few KB expands to hundreds
+	// of thousands of entries, and materialising them costs hundreds of MB per
+	// concurrent request for a field that is truncated to maxFingerprintParts
+	// anyway. Streaming bounds the cost at ~maxFingerprintParts *
+	// maxFingerprintPartBytes no matter what arrives.
+	//
+	// The cap is on elements READ, not elements kept, so the work is bounded
+	// too: a caller who sends thirty-two empty strings followed by a real one
+	// gets no fingerprint. That is the correct trade -- the alternative is
+	// letting the client decide how long we spend skipping its padding.
+	out := make([]string, 0, maxFingerprintParts)
+	for i := 0; i < maxFingerprintParts && dec.More(); i++ {
+		var p string
+		if err := dec.Decode(&p); err != nil {
+			// A non-string element means this is not a fingerprint array at
+			// all; fall back to the derived key rather than half-honouring it.
+			return nil
+		}
+		// An empty part carries no grouping information. Keeping it would let
+		// a client that sends [""] collapse every event in the project into
+		// one issue, which is the failure mode this bound exists to prevent.
+		if p = cleanFingerprintPart(p); p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// cleanFingerprintPart normalises one part and bounds its length. Returns ""
+// for anything that carries no grouping information.
+func cleanFingerprintPart(p string) string {
+	return strings.TrimSpace(truncate(SanitizeText(p), maxFingerprintPartBytes))
+}
+
+// Fingerprint is the stable grouping key.
+//
+// A client-supplied fingerprint WINS when present. It is the only way a caller
+// can group events whose message text varies by design, and ignoring it was a
+// silent alert-destroying bug rather than a cosmetic one: Hephaestus's
+// ci-health watchdog sets a stable fingerprint ("ci-health:hephaestus") and
+// emits a message ending in "head-of-queue has waited 1973s", so grouping by
+// message text minted a BRAND-NEW unresolved error issue every five minutes.
+// It produced 372 issues in ten days, each with event_count 1, which is both
+// the alert and the thing that buries the alert.
+//
+// Absent an override the derived key is unchanged, so this is additive: every
+// existing issue keeps its grouping and no backfill is required.
 func (e NormalizedEvent) Fingerprint() string {
+	parts := e.ClientFingerprint
+	if len(parts) == 0 {
+		return e.derivedFingerprint()
+	}
+	// ["{{ default }}"] alone means exactly the default. Hashing the token
+	// would silently move those events into a new group, which is the one
+	// outcome a caller writing "default" cannot have meant.
+	if len(parts) == 1 && parts[0] == defaultFingerprintToken {
+		return e.derivedFingerprint()
+	}
+	h := sha1.New()
+	for _, p := range parts {
+		if p == defaultFingerprintToken {
+			p = e.derivedFingerprint()
+		}
+		// A separator that cannot occur in the parts themselves, so ["ab","c"]
+		// and ["a","bc"] cannot collide.
+		io.WriteString(h, "\x1e"+p)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// derivedFingerprint is the server-computed grouping key: exceptions group by
+// type + in-app frame signatures; bare messages group by their text.
+func (e NormalizedEvent) derivedFingerprint() string {
 	h := sha1.New()
 	if e.ExceptionType != "" {
 		io.WriteString(h, e.ExceptionType)
