@@ -41,6 +41,43 @@ STRIP_GLOBS=(
   'regex:.*AUDIT-.*\.md$'
 )
 
+# Test files whose FIXTURES cannot be published, stripped from the mirror's
+# entire history.
+#
+# Deliberately a separate array from STRIP_PATHS. That one is documented as
+# "internal-ONLY files (not app code)" and is the open-core boundary; these are
+# app code, and folding them in would make that comment a lie. Same reason mesh
+# keeps DEBRIS_PATHS out of PRO_PATHS.
+#
+# WHY. publish-flare-mirror has been red since 2026-08-13 because gitleaks scans
+# the payload's HISTORY, and six synthetic credentials sit in historical blobs of
+# these two files: five in internal/scan/rules_test.go (slack-app-token,
+# slack-bot-token, stripe-access-token, jwt, private-key) and one jwt in
+# internal/api/sensitive_test.go. At HEAD those exact lines already carry the
+# `// synthetic` marker .gitleaks.toml allowlists on -- somebody applied the
+# obvious fix and the gate stayed red, because a marker added at HEAD does
+# nothing for a blob in an ancestor commit. That is the whole reason the scan
+# runs against the single-branch clone rather than the checkout.
+#
+# WHY NOT THE ALTERNATIVES. A `paths` entry in .gitleaks.toml is closed on
+# purpose: that config's header records that gitleaks v8.30.0 resolves `paths`
+# and `regexes` as OR even under condition = "AND", measured, so one path entry
+# restores the whole-file exemption the config exists to remove. A
+# .gitleaksignore keyed on fingerprints embeds commit SHAs, and this mirror
+# rewrites every SHA on every publish, so it would go stale silently. Redacting
+# the literals would rewrite the fixtures that flare's own scanner tests assert
+# it detects.
+#
+# COST, stated plainly: the public mirror does not carry these two test files.
+# `go test ./...` on the payload still passes -- removing a _test.go file removes
+# tests, not compilation units -- so the gate that would notice a real break
+# still runs. Re-publishing them needs fixtures that are inert to gitleaks and to
+# GitHub push protection in EVERY historical blob, not just at HEAD.
+UNPUBLISHABLE_FIXTURE_PATHS=(
+  internal/scan/rules_test.go
+  internal/api/sensitive_test.go
+)
+
 # The three-phase contract is shared by every mirror (CLAUDE.md section 15) and is
 # sourced by a path relative to THIS file, because a phase flag decides which of
 # the regions below run at all and that decision is needed before `git rev-parse`
@@ -115,11 +152,13 @@ git subtree split --prefix="$PREFIX" -b "$SPLIT_BRANCH"
 echo "Cloning $SPLIT_BRANCH -> $CLONE (single-branch) ..."
 git clone --quiet --single-branch --no-tags --branch "$SPLIT_BRANCH" "file://$ROOT" "$CLONE"
 
-if [ "${#STRIP_PATHS[@]}" -gt 0 ] || [ "${#STRIP_GLOBS[@]}" -gt 0 ]; then
+if [ "${#STRIP_PATHS[@]}" -gt 0 ] || [ "${#STRIP_GLOBS[@]}" -gt 0 ] || [ "${#UNPUBLISHABLE_FIXTURE_PATHS[@]}" -gt 0 ]; then
   FR_ARGS=()
   for p in "${STRIP_PATHS[@]}"; do FR_ARGS+=(--path "$p"); done
+  for p in "${UNPUBLISHABLE_FIXTURE_PATHS[@]}"; do FR_ARGS+=(--path "$p"); done
   for g in "${STRIP_GLOBS[@]}"; do FR_ARGS+=(--path-regex "${g#regex:}"); done
   echo "Stripping internal-only paths from all history: ${STRIP_PATHS[*]} ${STRIP_GLOBS[*]}"
+  echo "Stripping unpublishable test fixtures from all history: ${UNPUBLISHABLE_FIXTURE_PATHS[*]}"
   ( cd "$CLONE" && git filter-repo --force --invert-paths "${FR_ARGS[@]}" )
 fi
 
@@ -185,7 +224,7 @@ mirror_phase_import
 
 
 # Defense in depth: fail if a stripped path survived.
-for p in "${STRIP_PATHS[@]}"; do
+for p in "${STRIP_PATHS[@]}" "${UNPUBLISHABLE_FIXTURE_PATHS[@]}"; do
   [ -e "$CLONE/$p" ] && { echo "REFUSING: stripped path '$p' still present." >&2; exit 1; }
 done
 
